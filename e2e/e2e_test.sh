@@ -609,7 +609,7 @@ test_cc_skills_minimal() {
     log_test "Claude Code: skills injection (minimal preset = SDD skills only)"
     cleanup_test_env
 
-    if $BINARY install --agent claude-code --component skills --preset minimal --persona neutral 2>&1; then
+    if $BINARY install --agent claude-code --component skills --preset minimal --persona custom 2>&1; then
         local skills_dir="$HOME/.claude/skills"
         assert_dir_exists "$skills_dir" "Claude skills directory"
 
@@ -887,7 +887,7 @@ test_oc_skills_minimal() {
     log_test "OpenCode: skills injection (minimal)"
     cleanup_test_env
 
-    if $BINARY install --agent opencode --component skills --preset minimal --persona neutral 2>&1; then
+    if $BINARY install --agent opencode --component skills --preset minimal --persona custom 2>&1; then
         local skill_dir="$HOME/.config/opencode/skills"
         assert_dir_exists "$skill_dir" "OpenCode skill directory"
         assert_file_count "$skill_dir" "SKILL.md" 12 "Minimal preset: 12 skill files"
@@ -1099,7 +1099,7 @@ test_minimal_preset_opencode_only_engram_no_persona() {
     log_test "Minimal preset: OpenCode (engram only, no persona side effect)"
     cleanup_test_env
 
-    if $BINARY install --agent opencode --preset minimal --persona neutral 2>&1; then
+    if $BINARY install --agent opencode --preset minimal --persona custom 2>&1; then
         local settings="$HOME/.config/opencode/opencode.json"
         local agents_md="$HOME/.config/opencode/AGENTS.md"
 
@@ -1122,7 +1122,7 @@ test_minimal_preset_claude_only_engram() {
     log_test "Minimal preset: Claude Code (only engram, nothing else)"
     cleanup_test_env
 
-    if $BINARY install --agent claude-code --preset minimal --persona neutral 2>&1; then
+    if $BINARY install --agent claude-code --preset minimal --persona custom 2>&1; then
         # Engram should be installed (MCP + CLAUDE.md)
         assert_file_exists "$HOME/.claude/CLAUDE.md" "CLAUDE.md exists"
         assert_file_contains "$HOME/.claude/CLAUDE.md" "gentle-ai:engram-protocol" "Engram protocol section"
@@ -1428,12 +1428,12 @@ test_idempotent_skills_claude() {
     log_test "Idempotency: skills injection produces same files"
     cleanup_test_env
 
-    $BINARY install --agent claude-code --component skills --preset minimal --persona neutral 2>&1 || true
+    $BINARY install --agent claude-code --component skills --preset minimal --persona custom 2>&1 || true
     # Capture file hashes
     local first_hashes
     first_hashes=$(find "$HOME/.claude/skills" -name "SKILL.md" -exec md5sum {} \; 2>/dev/null | sort)
 
-    $BINARY install --agent claude-code --component skills --preset minimal --persona neutral 2>&1 || true
+    $BINARY install --agent claude-code --component skills --preset minimal --persona custom 2>&1 || true
     local second_hashes
     second_hashes=$(find "$HOME/.claude/skills" -name "SKILL.md" -exec md5sum {} \; 2>/dev/null | sort)
 
