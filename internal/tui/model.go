@@ -1441,7 +1441,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 		switch m.Cursor {
 		case 0: // Configure Claude models
 			m.ModelConfigMode = true
-			m.ClaudeModelPicker = screens.NewClaudeModelPickerState()
+			m.ClaudeModelPicker = screens.NewClaudeModelPickerStateFromAssignments(m.Selection.ClaudeModelAssignments)
 			m.setScreen(ScreenClaudeModelPicker)
 		case 1: // Configure OpenCode models
 			m.ModelConfigMode = true
@@ -1514,7 +1514,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			m.Selection.Preset = options[m.Cursor]
 			m.Selection.Components = componentsForPreset(options[m.Cursor], m.Selection.Persona)
 			if m.shouldShowClaudeModelPickerScreen() {
-				m.ClaudeModelPicker = screens.NewClaudeModelPickerState()
+				m.ClaudeModelPicker = screens.NewClaudeModelPickerStateFromAssignments(m.Selection.ClaudeModelAssignments)
 				m.setScreen(ScreenClaudeModelPicker)
 				return m, nil
 			}
@@ -1778,7 +1778,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 				m.buildDependencyPlan()
 				// Show model picker screens if needed (components are now set).
 				if m.shouldShowClaudeModelPickerScreen() {
-					m.ClaudeModelPicker = screens.NewClaudeModelPickerState()
+					m.ClaudeModelPicker = screens.NewClaudeModelPickerStateFromAssignments(m.Selection.ClaudeModelAssignments)
 					m.setScreen(ScreenClaudeModelPicker)
 					return m, nil
 				}

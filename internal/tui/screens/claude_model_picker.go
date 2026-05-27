@@ -90,6 +90,52 @@ func NewClaudeModelPickerState() ClaudeModelPickerState {
 	}
 }
 
+// NewClaudeModelPickerStateFromAssignments returns the picker state initialized
+// from previously persisted Claude model assignments. If the assignments match
+// a known preset (Balanced/Performance/Economy), that preset is preselected.
+// Otherwise the picker opens in Custom mode preserving the user's exact assignments.
+// When assignments is empty or nil, it falls back to the balanced default.
+func NewClaudeModelPickerStateFromAssignments(assignments map[string]model.ClaudeModelAlias) ClaudeModelPickerState {
+	if len(assignments) == 0 {
+		return NewClaudeModelPickerState()
+	}
+	for preset, constructor := range presetConstructors {
+		if assignmentsEqual(constructor(), assignments) {
+			return ClaudeModelPickerState{
+				Preset:            preset,
+				CustomAssignments: copyAssignments(assignments),
+				InCustomMode:      false,
+			}
+		}
+	}
+	// Doesn't match any built-in preset → custom.
+	return ClaudeModelPickerState{
+		Preset:            ClaudePresetCustom,
+		CustomAssignments: copyAssignments(assignments),
+		InCustomMode:      false,
+	}
+}
+
+func assignmentsEqual(a, b map[string]model.ClaudeModelAlias) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func copyAssignments(m map[string]model.ClaudeModelAlias) map[string]model.ClaudeModelAlias {
+	out := make(map[string]model.ClaudeModelAlias, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // presetConstructors maps preset IDs to their constructor functions.
 var presetConstructors = map[ClaudeModelPreset]func() map[string]model.ClaudeModelAlias{
 	ClaudePresetBalanced:    model.ClaudeModelPresetBalanced,
@@ -208,6 +254,8 @@ func renderPresetList(state ClaudeModelPickerState, cursor int) string {
 	var b strings.Builder
 
 	b.WriteString(styles.TitleStyle.Render("Claude Model Assignments"))
+	b.WriteString("\n")
+	b.WriteString(styles.SubtextStyle.Render("Current: " + string(state.Preset)))
 	b.WriteString("\n\n")
 	b.WriteString(styles.SubtextStyle.Render("Choose how Claude models are assigned to each SDD phase:"))
 	b.WriteString("\n\n")
