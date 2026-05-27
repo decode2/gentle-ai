@@ -145,8 +145,8 @@ func TestConfigPathsCrossPlatform(t *testing.T) {
 		t.Fatalf("SkillsDir() = %q, want %q", got, filepath.Join(home, ".codex", "skills"))
 	}
 
-	if got := a.SystemPromptFile(home); got != filepath.Join(home, ".codex", "agents.md") {
-		t.Fatalf("SystemPromptFile() = %q, want %q", got, filepath.Join(home, ".codex", "agents.md"))
+	if got := a.SystemPromptFile(home); got != filepath.Join(home, ".codex", "AGENTS.md") {
+		t.Fatalf("SystemPromptFile() = %q, want %q", got, filepath.Join(home, ".codex", "AGENTS.md"))
 	}
 
 	// Codex has no settings path.
@@ -162,6 +162,19 @@ func TestConfigPathsCrossPlatform(t *testing.T) {
 	// Server name argument is ignored — always returns config.toml.
 	if got := a.MCPConfigPath(home, "ctx7"); got != want {
 		t.Fatalf("MCPConfigPath(ctx7) = %q, want %q (server name should be ignored)", got, want)
+	}
+}
+
+// TestAdapterSystemPromptFile_UsesUppercaseAGENTSmd asserts that the system
+// prompt file path uses the exact uppercase filename "AGENTS.md" that the
+// codex CLI expects. Lowercase "agents.md" causes the file to be silently
+// ignored on case-sensitive filesystems (Linux) — regression for #299.
+func TestAdapterSystemPromptFile_UsesUppercaseAGENTSmd(t *testing.T) {
+	a := NewAdapter()
+	got := a.SystemPromptFile("/home/user")
+	const want = "AGENTS.md"
+	if filepath.Base(got) != want {
+		t.Fatalf("SystemPromptFile() base = %q, want %q (codex CLI requires uppercase AGENTS.md)", filepath.Base(got), want)
 	}
 }
 

@@ -878,7 +878,8 @@ func TestConfigPathsForBackup_CoversRegistryAgentsNotInOldList(t *testing.T) {
 	homeDir := t.TempDir()
 
 	// Create a file under codex config dir — not in old hardcoded list.
-	codexFile := filepath.Join(homeDir, ".codex", "agents.md")
+	// Use uppercase AGENTS.md to match the codex CLI convention (fix for #299).
+	codexFile := filepath.Join(homeDir, ".codex", "AGENTS.md")
 	if err := os.MkdirAll(filepath.Dir(codexFile), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
