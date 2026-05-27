@@ -21,6 +21,7 @@ COMMANDS
   update       Check for available updates
   upgrade      Apply updates to managed tools
   restore      Restore a config backup
+  doctor       Run ecosystem health diagnostics
   version      Print version
 
 FLAGS

@@ -176,6 +176,8 @@ func RunArgs(args []string, stdout io.Writer) error {
 		return nil
 	case "restore":
 		return cli.RunRestore(args[1:], stdout)
+	case "doctor":
+		return cli.RunDoctor(context.Background(), stdout)
 	default:
 		return fmt.Errorf("unknown command %q — run 'gentle-ai help' for available commands", args[0])
 	}
