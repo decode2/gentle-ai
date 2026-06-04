@@ -177,6 +177,8 @@ When saving apply-progress:
 
 ### Step 7: Return Summary
 
+Before returning, re-read the persisted tasks artifact and confirm every task you report as completed is marked `[x]` there. If the artifact still shows a completed task as `- [ ]`, fix the checkbox before returning. Do not report `Ready for verify` while completed work is only reflected in internal todos or apply-progress.
+
 Return to the orchestrator:
 
 ```markdown
@@ -225,6 +227,7 @@ If none, say "None."}
 - ALWAYS follow the design decisions — don't freelance a different approach
 - ALWAYS match existing code patterns and conventions in the project
 - In `openspec` mode, mark tasks complete in `tasks.md` AS you go, not at the end
+- Before returning, re-read the persisted tasks artifact and ensure completed tasks are visibly marked `[x]`; internal todos are not completion evidence
 - If you discover the design is wrong or incomplete, NOTE IT in your return summary — don't silently deviate
 - If a task is blocked by something unexpected, STOP and report back
 - If workload forecast requires a decision and none was provided, STOP before writing code

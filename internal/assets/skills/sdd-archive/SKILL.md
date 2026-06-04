@@ -48,12 +48,31 @@ From the orchestrator:
 - **hybrid**: Follow BOTH conventions — persist archive report to Engram (with observation IDs) AND perform filesystem merge + archive folder moves.
 - **none**: Return closure summary only. Do not perform archive file operations.
 
+### Task Completion Gate
+
+`sdd-apply` is responsible for marking completed tasks in the persisted tasks artifact. `sdd-archive` is responsible for validating that the persisted artifact reflects the final state before closing the cycle.
+
+Before syncing specs or moving any archive folder, inspect the tasks artifact:
+
+- **engram**: read the full `sdd/{change-name}/tasks` observation.
+- **openspec/hybrid**: read `openspec/changes/{change-name}/tasks.md`.
+
+If any implementation task remains unchecked (`- [ ]`):
+
+1. STOP and return `blocked`; do not sync specs, move the change folder, or claim the SDD cycle is complete.
+2. Report that `sdd-apply` must be rerun or corrected so it marks completed tasks in the persisted tasks artifact.
+3. Only perform a mechanical checkbox repair in `sdd-archive` if the orchestrator explicitly instructs you to reconcile stale checkboxes and `apply-progress`/`verify-report` prove every unchecked task is complete. If you do this exceptional repair, mention it in the archive report.
+
+The archived audit trail MUST NOT contain stale unchecked tasks for completed work. Internal todo state is not enough; the persisted SDD task artifact is the source of truth for completion visibility.
+
 ## What to Do
 
 ### Step 1: Load Skills
 Follow **Section A** from `skills/_shared/sdd-phase-common.md`.
 
 ### Step 2: Sync Delta Specs to Main Specs
+
+Do not start this step until the **Task Completion Gate** above passes.
 
 **IF mode is `engram`:** Skip filesystem sync — artifacts live in Engram only. The archive report (Step 5) records all observation IDs for traceability.
 
@@ -108,9 +127,10 @@ Use today's date in ISO format (e.g., `2026-02-16`).
 - [ ] Main specs updated correctly
 - [ ] Change folder moved to archive
 - [ ] Archive contains all artifacts (proposal, specs, design, tasks)
+- [ ] Archived `tasks.md` has no unchecked implementation tasks, unless the orchestrator explicitly approved archive-time reconciliation or intentional incomplete-task archiving
 - [ ] Active changes directory no longer has this change
 
-**IF mode is `engram`:** Confirm all artifact observation IDs are recorded in the archive report.
+**IF mode is `engram`:** Confirm all artifact observation IDs are recorded in the archive report and the tasks observation has no unchecked implementation tasks unless the orchestrator explicitly approved archive-time reconciliation or intentional incomplete-task archiving.
 
 **IF mode is `none`:** Skip verification — no persisted artifacts.
 
@@ -156,6 +176,7 @@ Ready for the next change.
 ## Rules
 
 - NEVER archive a change that has CRITICAL issues in its verification report
+- NEVER archive completed work while `tasks.md` / the tasks observation still shows stale unchecked implementation tasks
 - ALWAYS sync delta specs BEFORE moving to archive
 - When merging into existing specs, PRESERVE requirements not mentioned in the delta
 - Use ISO date format (YYYY-MM-DD) for archive folder prefix

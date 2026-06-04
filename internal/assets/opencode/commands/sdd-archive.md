@@ -17,13 +17,15 @@ HARD GATES:
 2. `sdd-init` must already exist or be run after preflight, per the orchestrator init guard.
 3. The active change must have proposal, spec, design, tasks, apply-progress, and verify-report artifacts in the selected artifact store.
 4. Use the resolved artifact store from session preflight; do not hardcode Engram.
+5. The persisted tasks artifact must reflect completion before the archive is considered successful. Internal todos do not count, and `sdd-apply` is responsible for marking completed tasks.
 
 DEPENDENCY CHECK:
 
 - If the verification report is missing or does not say the change is ready, do NOT archive.
+- If tasks still contains unchecked implementation items (`- [ ]`), do NOT archive by default. Send the change back to `sdd-apply` to correct the persisted tasks artifact, unless the user explicitly requested an archive-time mechanical reconciliation and apply-progress / verify-report prove every unchecked task is complete.
 - Tell the user what is missing and suggest `/sdd-verify <change>` or `/sdd-continue <change>`.
 
 TASK:
-If all gates pass, launch the hidden `sdd-archive` sub-agent with references to all required artifacts and the resolved artifact store.
+If all gates pass, launch the hidden `sdd-archive` sub-agent with references to all required artifacts and the resolved artifact store. Tell it to enforce the task completion gate before syncing specs or moving the archive folder, and to treat checkbox fixes as exceptional reconciliation rather than normal archive work.
 
 Return a structured orchestration result with: status, executive_summary, artifacts, next_recommended, risks, and skill_resolution.
