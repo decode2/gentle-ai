@@ -40,6 +40,13 @@ type InstallState struct {
 	// user's per-phase effort preset instead of falling back to Recommended.
 	CodexModelAssignments map[string]string `json:"codexModelAssignments,omitempty"`
 
+	// CodexCarrilModelAssignments maps the three carril profile names
+	// (sdd-strong|sdd-mid|sdd-cheap) to OpenAI subscription model IDs
+	// (e.g. "gpt-5.5", "gpt-5.4-mini"). Persisted so that `gentle-ai sync`
+	// regenerates profile files with the user's chosen model per tier.
+	// Absent/empty = resolve to DefaultCarrilModels at runtime (backward-compat).
+	CodexCarrilModelAssignments map[string]string `json:"codexCarrilModelAssignments,omitempty"`
+
 	// ModelAssignments maps sub-agent names to provider/model pairs (OpenCode).
 	ModelAssignments map[string]ModelAssignmentState `json:"model_assignments,omitempty"`
 
@@ -98,12 +105,13 @@ func MergeAgents(existing InstallState, newAgents []string) InstallState {
 	}
 
 	return InstallState{
-		InstalledAgents:        merged,
-		ModelAssignments:       existing.ModelAssignments,
-		ClaudeModelAssignments: existing.ClaudeModelAssignments,
-		KiroModelAssignments:   existing.KiroModelAssignments,
-		CodexModelAssignments:  existing.CodexModelAssignments,
-		Persona:                existing.Persona,
+		InstalledAgents:             merged,
+		ModelAssignments:            existing.ModelAssignments,
+		ClaudeModelAssignments:      existing.ClaudeModelAssignments,
+		KiroModelAssignments:        existing.KiroModelAssignments,
+		CodexModelAssignments:       existing.CodexModelAssignments,
+		CodexCarrilModelAssignments: existing.CodexCarrilModelAssignments,
+		Persona:                     existing.Persona,
 	}
 }
 

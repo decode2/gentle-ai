@@ -373,12 +373,13 @@ func tuiExecute(
 		}
 		// Non-fatal: a state write failure must not break an otherwise successful install.
 		_ = state.Write(homeDir, state.InstallState{
-			InstalledAgents:        agentIDs,
-			ClaudeModelAssignments: claudeAliasesToStrings(selection.ClaudeModelAssignments),
-			KiroModelAssignments:   kiroAliasesToStrings(selection.KiroModelAssignments),
-			CodexModelAssignments:  codexEffortsToStrings(selection.CodexModelAssignments),
-			ModelAssignments:       modelAssignmentsToState(selection.ModelAssignments),
-			Persona:                string(selection.Persona),
+			InstalledAgents:             agentIDs,
+			ClaudeModelAssignments:      claudeAliasesToStrings(selection.ClaudeModelAssignments),
+			KiroModelAssignments:        kiroAliasesToStrings(selection.KiroModelAssignments),
+			CodexModelAssignments:       codexEffortsToStrings(selection.CodexModelAssignments),
+			CodexCarrilModelAssignments: selection.CodexCarrilModelAssignments,
+			ModelAssignments:            modelAssignmentsToState(selection.ModelAssignments),
+			Persona:                     string(selection.Persona),
 		})
 	}
 
@@ -488,6 +489,9 @@ func applyOverrides(selection *model.Selection, overrides *model.SyncOverrides) 
 	if overrides.CodexModelAssignments != nil {
 		selection.CodexModelAssignments = overrides.CodexModelAssignments
 	}
+	if overrides.CodexCarrilModelAssignments != nil {
+		selection.CodexCarrilModelAssignments = overrides.CodexCarrilModelAssignments
+	}
 	if overrides.SDDMode != "" {
 		selection.SDDMode = overrides.SDDMode
 	}
@@ -540,6 +544,13 @@ func loadPersistedAssignments(homeDir string, selection *model.Selection) {
 		}
 		selection.CodexModelAssignments = m
 	}
+	if len(selection.CodexCarrilModelAssignments) == 0 && len(s.CodexCarrilModelAssignments) > 0 {
+		m := make(map[string]string, len(s.CodexCarrilModelAssignments))
+		for k, v := range s.CodexCarrilModelAssignments {
+			m[k] = v
+		}
+		selection.CodexCarrilModelAssignments = m
+	}
 	if len(selection.ModelAssignments) == 0 && len(s.ModelAssignments) > 0 {
 		m := make(map[string]model.ModelAssignment, len(s.ModelAssignments))
 		for k, v := range s.ModelAssignments {
@@ -553,7 +564,7 @@ func loadPersistedAssignments(homeDir string, selection *model.Selection) {
 // state.json using a read-merge-write pattern so that other fields
 // (InstalledAgents) are not lost.
 func persistAssignments(homeDir string, selection model.Selection) {
-	if len(selection.ClaudeModelAssignments) == 0 && len(selection.KiroModelAssignments) == 0 && len(selection.ModelAssignments) == 0 && len(selection.CodexModelAssignments) == 0 {
+	if len(selection.ClaudeModelAssignments) == 0 && len(selection.KiroModelAssignments) == 0 && len(selection.ModelAssignments) == 0 && len(selection.CodexModelAssignments) == 0 && len(selection.CodexCarrilModelAssignments) == 0 {
 		return
 	}
 	current, err := state.Read(homeDir)
@@ -569,6 +580,9 @@ func persistAssignments(homeDir string, selection model.Selection) {
 	}
 	if len(selection.CodexModelAssignments) > 0 {
 		current.CodexModelAssignments = codexEffortsToStrings(selection.CodexModelAssignments)
+	}
+	if len(selection.CodexCarrilModelAssignments) > 0 {
+		current.CodexCarrilModelAssignments = selection.CodexCarrilModelAssignments
 	}
 	if len(selection.ModelAssignments) > 0 {
 		current.ModelAssignments = modelAssignmentsToState(selection.ModelAssignments)

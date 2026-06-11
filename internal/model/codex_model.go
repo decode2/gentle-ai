@@ -26,102 +26,148 @@ func (e CodexEffort) Valid() bool {
 	}
 }
 
-// codexPhaseOrder defines the canonical order of phases used in render output.
-// These 13 keys match the claudePhases list (plus "default") from the TUI screens package.
-var codexPhaseOrder = []string{
-	"sdd-explore",
-	"sdd-propose",
-	"sdd-spec",
-	"sdd-design",
-	"sdd-tasks",
-	"sdd-apply",
-	"sdd-verify",
-	"sdd-archive",
-	"sdd-onboard",
-	"jd-judge-a",
-	"jd-judge-b",
-	"jd-fix-agent",
-	"default",
-}
-
 // CodexModelPresetRecommended returns the Recommended (ChatGPT Pro $100/mo) preset.
-// Balanced effort — high for key SDD phases, low for lightweight ones.
+// Carril-aligned effort: Razonamiento=high, Código=medium, Liviano=low.
+// Every phase within a carril carries the same effort so that maxEffort over the
+// carril's phases yields exactly the carril's intended tier.
 func CodexModelPresetRecommended() map[string]CodexEffort {
 	return map[string]CodexEffort{
-		"sdd-explore":  CodexEffortLow,
-		"sdd-propose":  CodexEffortHigh,
-		"sdd-spec":     CodexEffortMedium,
-		"sdd-design":   CodexEffortHigh,
-		"sdd-tasks":    CodexEffortHigh,
-		"sdd-apply":    CodexEffortHigh,
-		"sdd-verify":   CodexEffortHigh,
-		"sdd-archive":  CodexEffortLow,
-		"sdd-onboard":  CodexEffortLow,
-		"jd-judge-a":   CodexEffortHigh,
-		"jd-judge-b":   CodexEffortHigh,
+		// Razonamiento (sdd-strong): high
+		"sdd-propose": CodexEffortHigh,
+		"sdd-design":  CodexEffortHigh,
+		"sdd-verify":  CodexEffortHigh,
+		"jd-judge-a":  CodexEffortHigh,
+		"jd-judge-b":  CodexEffortHigh,
+		"default":     CodexEffortHigh,
+		// Código (sdd-mid): medium
+		"sdd-apply":    CodexEffortMedium,
 		"jd-fix-agent": CodexEffortMedium,
-		"default":      CodexEffortHigh,
+		// Liviano (sdd-cheap): low
+		"sdd-explore": CodexEffortLow,
+		"sdd-spec":    CodexEffortLow,
+		"sdd-tasks":   CodexEffortLow,
+		"sdd-archive": CodexEffortLow,
+		"sdd-onboard": CodexEffortLow,
 	}
 }
 
 // CodexModelPresetPowerful returns the Powerful (ChatGPT Pro $200/mo) preset.
-// xhigh effort for architecture-heavy and review-heavy phases.
+// Carril-aligned effort: Razonamiento=xhigh, Código=high, Liviano=low.
+// Every phase within a carril carries the same effort so that maxEffort over the
+// carril's phases yields exactly the carril's intended tier.
 func CodexModelPresetPowerful() map[string]CodexEffort {
 	return map[string]CodexEffort{
-		"sdd-explore":  CodexEffortMedium,
-		"sdd-propose":  CodexEffortXHigh,
-		"sdd-spec":     CodexEffortHigh,
-		"sdd-design":   CodexEffortXHigh,
-		"sdd-tasks":    CodexEffortHigh,
+		// Razonamiento (sdd-strong): xhigh
+		"sdd-propose": CodexEffortXHigh,
+		"sdd-design":  CodexEffortXHigh,
+		"sdd-verify":  CodexEffortXHigh,
+		"jd-judge-a":  CodexEffortXHigh,
+		"jd-judge-b":  CodexEffortXHigh,
+		"default":     CodexEffortXHigh,
+		// Código (sdd-mid): high
 		"sdd-apply":    CodexEffortHigh,
-		"sdd-verify":   CodexEffortXHigh,
-		"sdd-archive":  CodexEffortLow,
-		"sdd-onboard":  CodexEffortLow,
-		"jd-judge-a":   CodexEffortXHigh,
-		"jd-judge-b":   CodexEffortXHigh,
 		"jd-fix-agent": CodexEffortHigh,
-		"default":      CodexEffortHigh,
+		// Liviano (sdd-cheap): low
+		"sdd-explore": CodexEffortLow,
+		"sdd-spec":    CodexEffortLow,
+		"sdd-tasks":   CodexEffortLow,
+		"sdd-archive": CodexEffortLow,
+		"sdd-onboard": CodexEffortLow,
 	}
 }
 
 // CodexModelPresetLowCost returns the Low-cost (ChatGPT Plus $20/mo) preset.
-// Minimal effort to stay within tight Plus plan limits.
+// Carril-aligned effort: Razonamiento=medium, Código=medium, Liviano=low.
+// Every phase within a carril carries the same effort so that maxEffort over the
+// carril's phases yields exactly the carril's intended tier.
 func CodexModelPresetLowCost() map[string]CodexEffort {
 	return map[string]CodexEffort{
-		"sdd-explore":  CodexEffortLow,
-		"sdd-propose":  CodexEffortMedium,
-		"sdd-spec":     CodexEffortLow,
-		"sdd-design":   CodexEffortMedium,
-		"sdd-tasks":    CodexEffortLow,
+		// Razonamiento (sdd-strong): medium
+		"sdd-propose": CodexEffortMedium,
+		"sdd-design":  CodexEffortMedium,
+		"sdd-verify":  CodexEffortMedium,
+		"jd-judge-a":  CodexEffortMedium,
+		"jd-judge-b":  CodexEffortMedium,
+		"default":     CodexEffortMedium,
+		// Código (sdd-mid): medium
 		"sdd-apply":    CodexEffortMedium,
-		"sdd-verify":   CodexEffortMedium,
-		"sdd-archive":  CodexEffortLow,
-		"sdd-onboard":  CodexEffortLow,
-		"jd-judge-a":   CodexEffortLow,
-		"jd-judge-b":   CodexEffortLow,
-		"jd-fix-agent": CodexEffortLow,
-		"default":      CodexEffortMedium,
+		"jd-fix-agent": CodexEffortMedium,
+		// Liviano (sdd-cheap): low
+		"sdd-explore": CodexEffortLow,
+		"sdd-spec":    CodexEffortLow,
+		"sdd-tasks":   CodexEffortLow,
+		"sdd-archive": CodexEffortLow,
+		"sdd-onboard": CodexEffortLow,
 	}
 }
 
+// CodexTierGroup defines one CLI profile tier: the profile filename (without
+// extension), the canonical default model id for that carril, the default
+// reasoning_effort tier, and the SDD phases covered.
+//
+// Phase groupings (Approach C — orthogonal carril axis):
+//   - sdd-strong (Razonamiento): propose, design, verify, judge-a, judge-b, default
+//   - sdd-mid    (Código):       apply, fix-agent
+//   - sdd-cheap  (Liviano):      explore, spec, tasks, archive, onboard
+type CodexTierGroup struct {
+	Profile       string
+	Model         string
+	DefaultEffort CodexEffort
+	Phases        []string
+}
+
 // codexTierGroups defines the three CLI profile tiers and which phases they cover.
-// The tier effort is derived by taking the maximum effort across phases in the group.
-var codexTierGroups = []struct {
-	profile string
-	phases  []string
-}{
+//
+// Invariant: within each carril, ALL phases carry the same effort value in every
+// preset constructor (CodexModelPresetLowCost, CodexModelPresetRecommended,
+// CodexModelPresetPowerful). This guarantees that maxEffort over a carril's phases
+// always yields the carril's intended effort tier — never an accidental max from a
+// stale per-phase value.
+//
+// DefaultEffort values match CodexModelPresetRecommended so that the nil-input
+// fallback in RenderCodexPhaseEfforts and the nil-input fallback in
+// resolveProfileAssignments agree on the same canonical tier values:
+//
+//	Carril      LowCost(+$20)  Recommended($100)  Powerful($200)
+//	sdd-strong  medium         high               xhigh
+//	sdd-mid     medium         medium             high
+//	sdd-cheap   low            low                low
+var codexTierGroups = []CodexTierGroup{
 	{
-		profile: "sdd-strong",
-		phases:  []string{"sdd-propose", "sdd-design", "sdd-verify", "jd-judge-a", "jd-judge-b"},
+		Profile:       "sdd-strong",
+		Model:         "gpt-5.5",
+		DefaultEffort: CodexEffortHigh,
+		Phases:        []string{"sdd-propose", "sdd-design", "sdd-verify", "jd-judge-a", "jd-judge-b", "default"},
 	},
 	{
-		profile: "sdd-mid",
-		phases:  []string{"sdd-spec", "sdd-tasks", "sdd-apply"},
+		Profile:       "sdd-mid",
+		Model:         "gpt-5.5",
+		DefaultEffort: CodexEffortMedium,
+		Phases:        []string{"sdd-apply", "jd-fix-agent"},
 	},
 	{
-		profile: "sdd-cheap",
-		phases:  []string{"sdd-explore", "sdd-archive", "sdd-onboard"},
+		Profile:       "sdd-cheap",
+		Model:         "gpt-5.4-mini",
+		DefaultEffort: CodexEffortLow,
+		Phases:        []string{"sdd-explore", "sdd-spec", "sdd-tasks", "sdd-archive", "sdd-onboard"},
 	},
+}
+
+// CodexTierGroups returns the canonical tier group definitions used by the
+// three SDD profile carriles. Callers (e.g. the inject layer) should derive
+// profile assignments from this slice rather than maintaining a separate table.
+func CodexTierGroups() []CodexTierGroup {
+	return codexTierGroups
+}
+
+// DefaultCarrilModels returns the canonical default model id for each carril.
+// Used when state.CodexCarrilModelAssignments is absent (old state files).
+func DefaultCarrilModels() map[string]string {
+	m := make(map[string]string, len(codexTierGroups))
+	for _, g := range codexTierGroups {
+		m[g.Profile] = g.Model
+	}
+	return m
 }
 
 // codexEffortRank maps effort levels to a numeric rank for max-derivation.
@@ -147,31 +193,40 @@ func maxEffort(assignments map[string]CodexEffort, phases []string) CodexEffort 
 }
 
 // RenderCodexPhaseEfforts renders the Model Profiles table for the Codex
-// sdd-orchestrator.md asset. The table maps CLI profile names to their
-// reasoning_effort tier and covered SDD phases. The output is deterministic:
+// sdd-orchestrator.md asset. The table maps CLI profile names to their model,
+// reasoning_effort tier, and covered SDD phases. The output is deterministic:
 // tier groups are always rendered in codexTierGroups order.
 //
 // When assignments is nil or empty, falls back to CodexModelPresetRecommended.
-func RenderCodexPhaseEfforts(assignments map[string]CodexEffort) string {
+// When carrilModels is nil or empty, falls back to DefaultCarrilModels.
+func RenderCodexPhaseEfforts(assignments map[string]CodexEffort, carrilModels map[string]string) string {
 	if len(assignments) == 0 {
 		assignments = CodexModelPresetRecommended()
+	}
+	if len(carrilModels) == 0 {
+		carrilModels = DefaultCarrilModels()
 	}
 
 	tierPhaseLabels := map[string]string{
 		"sdd-strong": "propose, design, verify, judge",
-		"sdd-mid":    "spec, tasks, apply",
-		"sdd-cheap":  "explore, archive, onboard",
+		"sdd-mid":    "apply, fix-agent",
+		"sdd-cheap":  "explore, spec, tasks, archive, onboard",
 	}
 
 	var sb strings.Builder
-	sb.WriteString("| Profile (CLI) | `reasoning_effort` (spawn_agent) | SDD phases |\n")
-	sb.WriteString("|---------------|----------------------------------|------------|\n")
+	sb.WriteString("| Profile (CLI) | Model | `reasoning_effort` (spawn_agent) | SDD phases |\n")
+	sb.WriteString("|---------------|-------|----------------------------------|------------|\n")
 
 	for _, tier := range codexTierGroups {
-		effort := maxEffort(assignments, tier.phases)
-		phases := tierPhaseLabels[tier.profile]
-		sb.WriteString(fmt.Sprintf("| `%s` | `%s` | %s |\n",
-			tier.profile,
+		effort := maxEffort(assignments, tier.Phases)
+		phases := tierPhaseLabels[tier.Profile]
+		modelID := carrilModels[tier.Profile]
+		if modelID == "" {
+			modelID = tier.Model
+		}
+		sb.WriteString(fmt.Sprintf("| `%s` | `%s` | `%s` | %s |\n",
+			tier.Profile,
+			modelID,
 			effort,
 			phases,
 		))

@@ -593,12 +593,16 @@ func (s componentApplyStep) Run() error {
 					attemptedSlugs[slug] = struct{}{}
 				}
 			}
+			engramOpts := engram.InjectOptions{
+				CodexCarrilModelAssignments: s.selection.CodexCarrilModelAssignments,
+				CodexModelAssignments:       s.selection.CodexModelAssignments,
+			}
 			var err error
 			if adapter.Agent() == model.AgentOpenClaw {
 				_, err = engram.InjectWithPromptDir(s.homeDir, s.workspaceDir, adapter)
 			} else {
 				targetDir := componentInjectionDirScoped(s.homeDir, s.workspaceDir, s.scope, adapter)
-				_, err = engram.Inject(targetDir, adapter)
+				_, err = engram.InjectWithOptions(targetDir, adapter, engramOpts)
 			}
 			if err != nil {
 				return fmt.Errorf("inject engram for %q: %w", adapter.Agent(), err)
@@ -631,12 +635,13 @@ func (s componentApplyStep) Run() error {
 		for _, adapter := range adapters {
 			targetDir := componentInjectionDirScoped(s.homeDir, s.workspaceDir, s.scope, adapter)
 			opts := sdd.InjectOptions{
-				OpenCodeModelAssignments: s.selection.ModelAssignments,
-				ClaudeModelAssignments:   s.selection.ClaudeModelAssignments,
-				KiroModelAssignments:     s.selection.KiroModelAssignments,
-				CodexModelAssignments:    s.selection.CodexModelAssignments,
-				WorkspaceDir:             s.workspaceDir,
-				StrictTDD:                s.selection.StrictTDD,
+				OpenCodeModelAssignments:    s.selection.ModelAssignments,
+				ClaudeModelAssignments:      s.selection.ClaudeModelAssignments,
+				KiroModelAssignments:        s.selection.KiroModelAssignments,
+				CodexModelAssignments:       s.selection.CodexModelAssignments,
+				CodexCarrilModelAssignments: s.selection.CodexCarrilModelAssignments,
+				WorkspaceDir:                s.workspaceDir,
+				StrictTDD:                   s.selection.StrictTDD,
 			}
 			if _, err := sdd.Inject(targetDir, adapter, s.selection.SDDMode, opts); err != nil {
 				return fmt.Errorf("inject sdd for %q: %w", adapter.Agent(), err)

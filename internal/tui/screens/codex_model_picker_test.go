@@ -154,3 +154,66 @@ func TestRenderCodexModelPicker_ContainsAllLabels(t *testing.T) {
 		}
 	}
 }
+
+// ─── WU-4 RED: self-describing labels ────────────────────────────────────────
+
+// TestCodexPickerLabels_SelfDescribing verifies that each preset label contains
+// the correct model and effort for each carril independently.
+// Each carril is verified separately so a wrong effort in ONE carril is caught
+// even if another carril's effort happens to match.
+func TestCodexPickerLabels_SelfDescribing(t *testing.T) {
+	tests := []struct {
+		preset           screens.CodexModelPreset
+		wantStrongEffort string // Razonamiento/sdd-strong effort
+		wantMidEffort    string // Código/sdd-mid effort
+		wantCheapEffort  string // Liviano/sdd-cheap effort
+	}{
+		{
+			preset:           screens.CodexPresetLowCost,
+			wantStrongEffort: "medium",
+			wantMidEffort:    "medium",
+			wantCheapEffort:  "low",
+		},
+		{
+			preset:           screens.CodexPresetRecommended,
+			wantStrongEffort: "high",
+			wantMidEffort:    "medium",
+			wantCheapEffort:  "low",
+		},
+		{
+			preset:           screens.CodexPresetPowerful,
+			wantStrongEffort: "xhigh",
+			wantMidEffort:    "high",
+			wantCheapEffort:  "low",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.preset), func(t *testing.T) {
+			label := screens.CodexPresetLabel(tc.preset)
+
+			// Model must appear at least once.
+			if !strings.Contains(label, "gpt-5.5") {
+				t.Errorf("CodexPresetLabel(%q) = %q: missing gpt-5.5", tc.preset, label)
+			}
+
+			// Verify each carril by anchoring the model/effort token to its OWN
+			// carril segment. This catches a regression in one carril even when
+			// another carril shares the same model+effort (e.g. LowCost strong
+			// and mid are both gpt-5.5/medium).
+			strongToken := "Razonamiento gpt-5.5/" + tc.wantStrongEffort
+			if !strings.Contains(label, strongToken) {
+				t.Errorf("CodexPresetLabel(%q) = %q: Razonamiento carril missing %q", tc.preset, label, strongToken)
+			}
+
+			midToken := "Código gpt-5.5/" + tc.wantMidEffort
+			if !strings.Contains(label, midToken) {
+				t.Errorf("CodexPresetLabel(%q) = %q: Código carril missing %q", tc.preset, label, midToken)
+			}
+
+			cheapToken := "Liviano gpt-5.4-mini/" + tc.wantCheapEffort
+			if !strings.Contains(label, cheapToken) {
+				t.Errorf("CodexPresetLabel(%q) = %q: Liviano carril missing %q", tc.preset, label, cheapToken)
+			}
+		})
+	}
+}

@@ -567,6 +567,10 @@ func (s componentSyncStep) Run() error {
 	case model.ComponentEngram:
 		// Sync: inject MCP config + system prompt protocol only.
 		// NO binary install. NO engram setup.
+		engramOpts := engram.InjectOptions{
+			CodexCarrilModelAssignments: s.selection.CodexCarrilModelAssignments,
+			CodexModelAssignments:       s.selection.CodexModelAssignments,
+		}
 		for _, adapter := range adapters {
 			var res engram.InjectionResult
 			var err error
@@ -574,7 +578,7 @@ func (s componentSyncStep) Run() error {
 				res, err = engram.InjectWithPromptDir(s.homeDir, s.workspaceDir, adapter)
 			} else {
 				targetDir := componentInjectionDir(s.homeDir, s.workspaceDir, adapter)
-				res, err = engram.Inject(targetDir, adapter)
+				res, err = engram.InjectWithOptions(targetDir, adapter, engramOpts)
 			}
 			if err != nil {
 				return fmt.Errorf("sync engram for %q: %w", adapter.Agent(), err)
@@ -635,6 +639,7 @@ func (s componentSyncStep) Run() error {
 				ClaudeModelAssignments:             s.selection.ClaudeModelAssignments,
 				KiroModelAssignments:               s.selection.KiroModelAssignments,
 				CodexModelAssignments:              s.selection.CodexModelAssignments,
+				CodexCarrilModelAssignments:        s.selection.CodexCarrilModelAssignments,
 				WorkspaceDir:                       s.workspaceDir,
 				StrictTDD:                          s.selection.StrictTDD,
 				PreserveOpenCodeOrchestratorPrompt: profileStrategy == model.SDDProfileStrategyExternalSingleActive,
@@ -923,6 +928,24 @@ func RunSync(args []string) (SyncResult, error) {
 			m[k] = model.ModelAssignment{ProviderID: v.ProviderID, ModelID: v.ModelID, Effort: v.Effort}
 		}
 		selection.ModelAssignments = m
+	}
+	// Restore Codex effort and carril model assignments from state so that
+	// `gentle-ai sync` preserves the user's per-phase effort and per-carril
+	// model choices instead of falling back to canonical defaults every time.
+	// This mirrors the TUI path (loadPersistedAssignments in app.go).
+	if len(selection.CodexModelAssignments) == 0 && len(persistedState.CodexModelAssignments) > 0 {
+		m := make(map[string]model.CodexEffort, len(persistedState.CodexModelAssignments))
+		for k, v := range persistedState.CodexModelAssignments {
+			m[k] = model.CodexEffort(v)
+		}
+		selection.CodexModelAssignments = m
+	}
+	if len(selection.CodexCarrilModelAssignments) == 0 && len(persistedState.CodexCarrilModelAssignments) > 0 {
+		m := make(map[string]string, len(persistedState.CodexCarrilModelAssignments))
+		for k, v := range persistedState.CodexCarrilModelAssignments {
+			m[k] = v
+		}
+		selection.CodexCarrilModelAssignments = m
 	}
 
 	// Resolve persona from the already-read state. This covers both the dry-run

@@ -972,6 +972,83 @@ func TestPersistAssignments_Codex(t *testing.T) {
 	}
 }
 
+// ─── Carril model assignment tests (W-3 fix) ─────────────────────────────────
+
+// TestApplyOverrides_CodexCarrilModelAssignments verifies that a non-nil
+// CodexCarrilModelAssignments override sets the selection.
+func TestApplyOverrides_CodexCarrilModelAssignments(t *testing.T) {
+	sel := model.Selection{}
+	carrilModels := model.DefaultCarrilModels()
+	overrides := &model.SyncOverrides{
+		CodexCarrilModelAssignments: carrilModels,
+	}
+	applyOverrides(&sel, overrides)
+	if len(sel.CodexCarrilModelAssignments) != len(carrilModels) {
+		t.Fatalf("CodexCarrilModelAssignments len = %d, want %d", len(sel.CodexCarrilModelAssignments), len(carrilModels))
+	}
+	if sel.CodexCarrilModelAssignments["sdd-cheap"] != "gpt-5.4-mini" {
+		t.Errorf("CodexCarrilModelAssignments[sdd-cheap] = %q, want gpt-5.4-mini", sel.CodexCarrilModelAssignments["sdd-cheap"])
+	}
+	if sel.CodexCarrilModelAssignments["sdd-strong"] != "gpt-5.5" {
+		t.Errorf("CodexCarrilModelAssignments[sdd-strong] = %q, want gpt-5.5", sel.CodexCarrilModelAssignments["sdd-strong"])
+	}
+}
+
+// TestLoadPersistedAssignments_CodexCarrilModels verifies that state with
+// codexCarrilModelAssignments populates selection.CodexCarrilModelAssignments.
+func TestLoadPersistedAssignments_CodexCarrilModels(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents: []string{"codex"},
+		CodexCarrilModelAssignments: map[string]string{
+			"sdd-strong": "gpt-5.5",
+			"sdd-mid":    "gpt-5.5",
+			"sdd-cheap":  "gpt-5.4-mini",
+		},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	sel := model.Selection{}
+	loadPersistedAssignments(home, &sel)
+
+	if sel.CodexCarrilModelAssignments["sdd-cheap"] != "gpt-5.4-mini" {
+		t.Errorf("CodexCarrilModelAssignments[sdd-cheap] = %q, want gpt-5.4-mini", sel.CodexCarrilModelAssignments["sdd-cheap"])
+	}
+	if sel.CodexCarrilModelAssignments["sdd-strong"] != "gpt-5.5" {
+		t.Errorf("CodexCarrilModelAssignments[sdd-strong] = %q, want gpt-5.5", sel.CodexCarrilModelAssignments["sdd-strong"])
+	}
+}
+
+// TestPersistAssignments_CodexCarrilModels verifies that non-empty
+// CodexCarrilModelAssignments are persisted to state.json.
+func TestPersistAssignments_CodexCarrilModels(t *testing.T) {
+	home := t.TempDir()
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"codex"}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	sel := model.Selection{
+		CodexCarrilModelAssignments: map[string]string{
+			"sdd-strong": "gpt-5.5",
+			"sdd-mid":    "gpt-5.5",
+			"sdd-cheap":  "gpt-5.4-mini",
+		},
+	}
+	persistAssignments(home, sel)
+
+	s, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	if s.CodexCarrilModelAssignments["sdd-cheap"] != "gpt-5.4-mini" {
+		t.Errorf("state.CodexCarrilModelAssignments[sdd-cheap] = %q, want gpt-5.4-mini", s.CodexCarrilModelAssignments["sdd-cheap"])
+	}
+	if s.CodexCarrilModelAssignments["sdd-strong"] != "gpt-5.5" {
+		t.Errorf("state.CodexCarrilModelAssignments[sdd-strong] = %q, want gpt-5.5", s.CodexCarrilModelAssignments["sdd-strong"])
+	}
+}
+
 func writeAppSDDStatusFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

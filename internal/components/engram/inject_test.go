@@ -19,6 +19,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents/pi"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/qwen"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/vscode"
+	"github.com/gentleman-programming/gentle-ai/internal/model"
 )
 
 func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
@@ -975,8 +976,8 @@ func TestInjectCodexWritesProfiles(t *testing.T) {
 		name            string
 		reasoningEffort string
 	}{
-		{"sdd-strong.config.toml", "xhigh"},
-		{"sdd-mid.config.toml", "high"},
+		{"sdd-strong.config.toml", "high"},
+		{"sdd-mid.config.toml", "medium"},
 		{"sdd-cheap.config.toml", "low"},
 	}
 
@@ -1017,6 +1018,60 @@ func TestInjectCodexProfilesIdempotent(t *testing.T) {
 		count := strings.Count(string(content), "model_reasoning_effort")
 		if count != 1 {
 			t.Fatalf("profile %q: expected 1 model_reasoning_effort key after second Inject, got %d; content:\n%s", name, count, string(content))
+		}
+	}
+}
+
+// TestProfileFallbackAgreesWithRenderFallback asserts that resolveProfileAssignments
+// with nil inputs produces the same per-carril effort as RenderCodexPhaseEfforts with
+// nil inputs (both must use the Recommended preset as the canonical nil fallback).
+func TestProfileFallbackAgreesWithRenderFallback(t *testing.T) {
+	// Profile fallback: nil carrilModels + nil phaseEfforts
+	assignments := resolveProfileAssignments(nil, nil)
+
+	// Build a quick carril→effort map from the profile assignments.
+	profileEffort := make(map[string]string, len(assignments))
+	for _, a := range assignments {
+		profileEffort[a.Profile] = a.ReasoningEffort
+	}
+
+	// Render fallback: nil inputs → CodexModelPresetRecommended
+	renderOut := model.RenderCodexPhaseEfforts(nil, nil)
+
+	// For each carril, the render table and the profile files must agree.
+	// The render check is per-row: we find the carril's row and assert the effort
+	// cell appears within that specific row (not just anywhere in the table).
+	cases := []struct {
+		carril     string
+		wantEffort string
+	}{
+		{"sdd-strong", "high"},
+		{"sdd-mid", "medium"},
+		{"sdd-cheap", "low"},
+	}
+	for _, tc := range cases {
+		got := profileEffort[tc.carril]
+		if got != tc.wantEffort {
+			t.Errorf("profile fallback for %q = %q, want %q", tc.carril, got, tc.wantEffort)
+		}
+		// Render-side: find the carril's row and check the effort cell is in THAT row.
+		needle := "| `" + tc.carril + "`"
+		rowStart := strings.Index(renderOut, needle)
+		if rowStart == -1 {
+			t.Errorf("render fallback table missing row for carril %q; table:\n%s", tc.carril, renderOut)
+			continue
+		}
+		rowEnd := len(renderOut)
+		for i := rowStart + 1; i < len(renderOut); i++ {
+			if renderOut[i] == '\n' {
+				rowEnd = i
+				break
+			}
+		}
+		row := renderOut[rowStart:rowEnd]
+		effortCell := "| `" + tc.wantEffort + "` |"
+		if !strings.Contains(row, effortCell) {
+			t.Errorf("render fallback carril %q row = %q: want effort cell %q", tc.carril, row, effortCell)
 		}
 	}
 }

@@ -2756,3 +2756,104 @@ func TestDedupPathsFiltersEmptyStrings(t *testing.T) {
 		}
 	}
 }
+
+// ─── WU-3 RED: RunSync restores CodexCarrilModelAssignments ──────────────────
+
+// setupCodexSyncHome creates a temp home with a state.json containing the codex
+// agent and the provided carril model map, returning the home directory.
+func setupCodexSyncHome(t *testing.T, carrilModels map[string]string, effortAssignments map[string]string) string {
+	t.Helper()
+	home := t.TempDir()
+	s := state.InstallState{
+		InstalledAgents:             []string{"codex"},
+		CodexModelAssignments:       effortAssignments,
+		CodexCarrilModelAssignments: carrilModels,
+	}
+	if err := state.Write(home, s); err != nil {
+		t.Fatalf("state.Write() error = %v", err)
+	}
+	return home
+}
+
+// TestRunSync_RestoresCodexCarrilAssignments verifies that RunSync reads
+// CodexCarrilModelAssignments from state.json and uses them when writing
+// Codex profile files (model key present).
+func TestRunSync_RestoresCodexCarrilAssignments(t *testing.T) {
+	home := setupCodexSyncHome(t,
+		map[string]string{"sdd-strong": "gpt-5.5", "sdd-mid": "gpt-5.5", "sdd-cheap": "gpt-5.4-mini"},
+		nil,
+	)
+
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
+
+	osUserHomeDir = func() (string, error) { return home, nil }
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+
+	_, err := RunSync([]string{"--agents", "codex"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v", err)
+	}
+
+	// The sdd-strong.config.toml profile must have both model and model_reasoning_effort.
+	strongProfile := filepath.Join(home, ".codex", "sdd-strong.config.toml")
+	content, readErr := os.ReadFile(strongProfile)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q) error = %v", strongProfile, readErr)
+	}
+	if !strings.Contains(string(content), `model`) {
+		t.Errorf("sdd-strong.config.toml missing model key; got:\n%s", content)
+	}
+	if !strings.Contains(string(content), "gpt-5.5") {
+		t.Errorf("sdd-strong.config.toml: expected gpt-5.5; got:\n%s", content)
+	}
+}
+
+// TestRunSync_RestoresCodexEffortAssignments verifies that RunSync reads
+// CodexModelAssignments (phase→effort) from state.json and writes them to
+// profile files.
+func TestRunSync_RestoresCodexEffortAssignments(t *testing.T) {
+	efforts := map[string]string{
+		"sdd-propose": "xhigh", "sdd-design": "xhigh", "sdd-verify": "xhigh",
+		"jd-judge-a": "xhigh", "jd-judge-b": "xhigh", "default": "xhigh",
+		"sdd-apply": "high", "jd-fix-agent": "high",
+		"sdd-explore": "low", "sdd-spec": "low", "sdd-tasks": "low",
+		"sdd-archive": "low", "sdd-onboard": "low",
+	}
+	home := setupCodexSyncHome(t, nil, efforts)
+
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
+
+	osUserHomeDir = func() (string, error) { return home, nil }
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+
+	_, err := RunSync([]string{"--agents", "codex"})
+	if err != nil {
+		t.Fatalf("RunSync() error = %v", err)
+	}
+
+	// sdd-strong profile should have xhigh.
+	strongProfile := filepath.Join(home, ".codex", "sdd-strong.config.toml")
+	content, readErr := os.ReadFile(strongProfile)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q) error = %v", strongProfile, readErr)
+	}
+	if !strings.Contains(string(content), "xhigh") {
+		t.Errorf("sdd-strong.config.toml: expected xhigh effort; got:\n%s", content)
+	}
+}

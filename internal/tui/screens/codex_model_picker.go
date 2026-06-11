@@ -141,14 +141,18 @@ func RenderCodexModelPicker(state CodexModelPickerState, cursor int) string {
 }
 
 // CodexPresetLabel returns the human-readable plan label for a preset.
+// Labels are self-describing: they include the model id and effort tier per
+// carril so the user can see what will be written to profile files.
+//
+// Format: "<Plan> — Razonamiento gpt-5.5/<effort> · Código gpt-5.5/<effort> · Liviano gpt-5.4-mini/low"
 func CodexPresetLabel(preset CodexModelPreset) string {
 	switch preset {
 	case CodexPresetLowCost:
-		return "Low-cost (ChatGPT Plus $20/mo)"
+		return "Plus $20 — Razonamiento gpt-5.5/medium · Código gpt-5.5/medium · Liviano gpt-5.4-mini/low"
 	case CodexPresetRecommended:
-		return "Recommended (ChatGPT Pro $100/mo)"
+		return "Pro $100 — Razonamiento gpt-5.5/high · Código gpt-5.5/medium · Liviano gpt-5.4-mini/low"
 	case CodexPresetPowerful:
-		return "Powerful (ChatGPT Pro $200/mo)"
+		return "Pro $200 — Razonamiento gpt-5.5/xhigh · Código gpt-5.5/high · Liviano gpt-5.4-mini/low"
 	default:
 		return string(preset)
 	}

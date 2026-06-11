@@ -4366,3 +4366,50 @@ func TestCodexPicker_EscBackNavToPresetWhenNeitherClaudeNorKiro(t *testing.T) {
 		t.Fatalf("CodexPicker esc (no Claude, no Kiro): screen = %v, want ScreenPreset", state.Screen)
 	}
 }
+
+// TestCodexPresetSelection_PopulatesPendingSyncOverrides verifies that selecting a
+// Codex preset in ModelConfigMode populates PendingSyncOverrides with both
+// CodexModelAssignments and CodexCarrilModelAssignments (and the expected Selection fields).
+func TestCodexPresetSelection_PopulatesPendingSyncOverrides(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenCodexModelPicker
+	m.ModelConfigMode = true
+	m.Selection.Agents = []model.AgentID{model.AgentCodex}
+	m.Selection.Components = []model.ComponentID{model.ComponentEngram, model.ComponentSDD}
+	m.CodexModelPicker = screens.NewCodexModelPickerState()
+	m.Cursor = 1 // Recommended preset (index 1: LowCost=0, Recommended=1, Powerful=2)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	state := updated.(Model)
+
+	// ModelConfigMode must be cleared after selection.
+	if state.ModelConfigMode {
+		t.Fatal("ModelConfigMode should be false after Codex preset selection")
+	}
+
+	// PendingSyncOverrides must be populated.
+	if state.PendingSyncOverrides == nil {
+		t.Fatal("PendingSyncOverrides = nil, want non-nil after Codex preset selection")
+	}
+
+	// CodexCarrilModelAssignments must contain all three carrils.
+	carrilMap := state.PendingSyncOverrides.CodexCarrilModelAssignments
+	if carrilMap == nil {
+		t.Fatal("PendingSyncOverrides.CodexCarrilModelAssignments = nil, want non-nil")
+	}
+	for _, carril := range []string{"sdd-strong", "sdd-mid", "sdd-cheap"} {
+		if _, ok := carrilMap[carril]; !ok {
+			t.Errorf("PendingSyncOverrides.CodexCarrilModelAssignments missing carril %q", carril)
+		}
+	}
+
+	// CodexModelAssignments must be non-nil (phase→effort map).
+	if state.PendingSyncOverrides.CodexModelAssignments == nil {
+		t.Fatal("PendingSyncOverrides.CodexModelAssignments = nil, want non-nil")
+	}
+
+	// Selection must also be updated.
+	if state.Selection.CodexCarrilModelAssignments == nil {
+		t.Fatal("Selection.CodexCarrilModelAssignments = nil, want non-nil after preset selection")
+	}
+}

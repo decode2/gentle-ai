@@ -5514,3 +5514,87 @@ func TestInject_NonCodexAdapterUnaffected(t *testing.T) {
 		})
 	}
 }
+
+// ─── WU-3 RED: InjectOptions.CodexCarrilModelAssignments threading ───────────
+
+// TestInjectCodexWithCarrilModels verifies that InjectOptions.CodexCarrilModelAssignments
+// is threaded into the rendered AGENTS.md Model column.
+func TestInjectCodexWithCarrilModels(t *testing.T) {
+	home := t.TempDir()
+	adapter := codexInjectAdapter()
+
+	carrilModels := map[string]string{
+		"sdd-strong": "gpt-5.5",
+		"sdd-mid":    "gpt-5.5",
+		"sdd-cheap":  "gpt-5.4-mini",
+	}
+
+	_, err := Inject(home, adapter, "", InjectOptions{
+		CodexModelAssignments:       model.CodexModelPresetRecommended(),
+		CodexCarrilModelAssignments: carrilModels,
+	})
+	if err != nil {
+		t.Fatalf("Inject(codex, carrilModels) error = %v", err)
+	}
+
+	agentsMD, readErr := os.ReadFile(filepath.Join(home, ".codex", "AGENTS.md"))
+	if readErr != nil {
+		t.Fatalf("ReadFile(AGENTS.md) error = %v", readErr)
+	}
+	text := string(agentsMD)
+
+	// Table must have a Model column.
+	if !strings.Contains(text, "Model") {
+		t.Error("AGENTS.md missing Model column in phase-efforts table")
+	}
+	// gpt-5.5 and gpt-5.4-mini must appear in the table.
+	if !strings.Contains(text, "gpt-5.5") {
+		t.Error("AGENTS.md missing gpt-5.5 in phase-efforts table")
+	}
+	if !strings.Contains(text, "gpt-5.4-mini") {
+		t.Error("AGENTS.md missing gpt-5.4-mini in phase-efforts table")
+	}
+}
+
+// TestInjectCodexNilCarrilModels verifies that nil CodexCarrilModelAssignments
+// causes the render to use canonical defaults (gpt-5.5 / gpt-5.4-mini).
+func TestInjectCodexNilCarrilModels(t *testing.T) {
+	home := t.TempDir()
+	adapter := codexInjectAdapter()
+
+	_, err := Inject(home, adapter, "", InjectOptions{
+		CodexModelAssignments: model.CodexModelPresetRecommended(),
+		// CodexCarrilModelAssignments intentionally nil
+	})
+	if err != nil {
+		t.Fatalf("Inject(codex, nil carrilModels) error = %v", err)
+	}
+
+	agentsMD, readErr := os.ReadFile(filepath.Join(home, ".codex", "AGENTS.md"))
+	if readErr != nil {
+		t.Fatalf("ReadFile(AGENTS.md) error = %v", readErr)
+	}
+	text := string(agentsMD)
+
+	if !strings.Contains(text, "Model") {
+		t.Error("AGENTS.md missing Model column — nil carrilModels should fall back to defaults")
+	}
+	if !strings.Contains(text, "gpt-5.4-mini") {
+		t.Error("AGENTS.md missing gpt-5.4-mini — nil carrilModels should show sdd-cheap default")
+	}
+}
+
+// TestInjectNonCodexAdapterCarrilUnaffected verifies that non-Codex adapters
+// are completely unaffected by the new CodexCarrilModelAssignments field.
+func TestInjectNonCodexAdapterCarrilUnaffected(t *testing.T) {
+	home := t.TempDir()
+	// Use Claude adapter — it must not attempt to resolve carril models.
+	_, err := Inject(home, claudeAdapter(), "", InjectOptions{
+		CodexCarrilModelAssignments: map[string]string{
+			"sdd-strong": "gpt-5.5",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Inject(claude, carrilModels) should not error; got: %v", err)
+	}
+}

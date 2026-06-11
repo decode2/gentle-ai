@@ -286,7 +286,7 @@ Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommende
 
 ## Model Profiles
 
-gentle-ai writes three SDD model-selection profile files into `~/.codex/` during installation. Each profile sets `model_reasoning_effort` so Codex picks the right tier — no hardcoded model IDs.
+gentle-ai writes three SDD model-selection profile files into `~/.codex/` during installation. Each profile pins both a `model` and a `model_reasoning_effort` so Codex picks the right tier for each carril.
 
 These profile files apply to whole CLI sessions: `codex --profile <name> "<prompt>"`. They do NOT apply to spawned sub-agents. When delegating a phase via `spawn_agent`, pass the tier's effort directly as `reasoning_effort` (with `fork_turns: "none"`), using the same tier values below.
 

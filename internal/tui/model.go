@@ -1037,11 +1037,16 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if handled {
 			if assignments != nil {
 				m.Selection.CodexModelAssignments = assignments
+				// Derive carril model assignments from the selected preset (all
+				// current presets use canonical subscription models).
+				presetCarrilModels := model.DefaultCarrilModels()
+				m.Selection.CodexCarrilModelAssignments = presetCarrilModels
 				if m.ModelConfigMode {
 					m.ModelConfigMode = false
 					m.PendingSyncOverrides = &model.SyncOverrides{
-						TargetAgents:          []model.AgentID{model.AgentCodex},
-						CodexModelAssignments: assignments,
+						TargetAgents:                []model.AgentID{model.AgentCodex},
+						CodexModelAssignments:       assignments,
+						CodexCarrilModelAssignments: presetCarrilModels,
 					}
 					m = m.withResetSyncState()
 					m.setScreen(ScreenSync)

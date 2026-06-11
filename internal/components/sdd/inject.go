@@ -22,10 +22,11 @@ type InjectionResult struct {
 }
 
 type InjectOptions struct {
-	OpenCodeModelAssignments map[string]model.ModelAssignment
-	ClaudeModelAssignments   map[string]model.ClaudeModelAlias
-	KiroModelAssignments     map[string]model.KiroModelAlias
-	CodexModelAssignments    map[string]model.CodexEffort
+	OpenCodeModelAssignments    map[string]model.ModelAssignment
+	ClaudeModelAssignments      map[string]model.ClaudeModelAlias
+	KiroModelAssignments        map[string]model.KiroModelAlias
+	CodexModelAssignments       map[string]model.CodexEffort
+	CodexCarrilModelAssignments map[string]string // carril→model-id; nil = use defaults
 
 	// WorkspaceDir is the root of the current workspace (e.g. os.Getwd()).
 	// When non-empty and the adapter implements workflowInjector, native
@@ -92,13 +93,13 @@ type claudeModelResolver interface {
 
 // codexModelResolver is an optional adapter capability. When implemented,
 // injectFileAppend will replace the {{CODEX_PHASE_EFFORTS}} placeholder in the
-// Codex SDD orchestrator asset with a rendered per-phase effort table derived
-// from the CodexModelAssignments in InjectOptions.
+// Codex SDD orchestrator asset with a rendered per-phase effort+model table
+// derived from CodexModelAssignments and CodexCarrilModelAssignments in InjectOptions.
 //
 // Adapters that do NOT implement this interface are completely unaffected —
 // the substitution only fires when the adapter satisfies this interface.
 type codexModelResolver interface {
-	RenderCodexPhaseEfforts(assignments map[string]model.CodexEffort) string
+	RenderCodexPhaseEfforts(assignments map[string]model.CodexEffort, carrilModels map[string]string) string
 }
 
 // monorepoRootMarkers identify files/dirs that ONLY exist at the true root
@@ -1579,7 +1580,7 @@ func injectFileAppend(homeDir string, adapter agents.Adapter, opts InjectOptions
 	// effort table. Only fires when the adapter implements codexModelResolver.
 	// All other FileReplace adapters (Gemini, Cursor, etc.) are unaffected.
 	if cmr, ok := adapter.(codexModelResolver); ok {
-		rendered := cmr.RenderCodexPhaseEfforts(opts.CodexModelAssignments)
+		rendered := cmr.RenderCodexPhaseEfforts(opts.CodexModelAssignments, opts.CodexCarrilModelAssignments)
 		content = strings.ReplaceAll(content, "{{CODEX_PHASE_EFFORTS}}", rendered)
 		// Post-check: fail loudly if any placeholder token remains unresolved.
 		if strings.Contains(content, "{{") {
