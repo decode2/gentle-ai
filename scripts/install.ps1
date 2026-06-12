@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Gentle-AI — Install Script for Windows
+    Gentle-AI - Install Script for Windows
     Ecosystem, Frameworks, Workflows for AI coding agents.
 
 .DESCRIPTION
@@ -66,7 +66,7 @@ function Show-Banner {
     Write-Host " | |_| |  __/ | | | |_| |  __/_____/ ___ \ | | " -ForegroundColor Cyan
     Write-Host "  \____|\___|_| |_|\__|_|\___|    /_/   \_\___|" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  Gentle-AI — Ecosystem, Frameworks, Workflows" -ForegroundColor DarkGray
+    Write-Host "  Gentle-AI - Ecosystem, Frameworks, Workflows" -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -271,7 +271,7 @@ function Install-ViaBinary {
         # a fully lossless round-trip would require the Win32 Registry class with
         # GetValue(..., DoNotExpandEnvironmentNames). We accept the trade-off here
         # because user PATH entries that rely on unexpanded refs are uncommon and
-        # we only ever append — we never rewrite the whole value.
+        # we only ever append - we never rewrite the whole value.
         $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 
         # Split on ';' and compare entries case-insensitively so wildcard chars
