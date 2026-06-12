@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Gentle-AI — Install Script for Windows
@@ -202,9 +202,9 @@ function Install-ViaBinary {
 
         $fileSize = (Get-Item $archivePath).Length
         if ($fileSize -lt 1000) {
-            Stop-WithError "Downloaded file is suspiciously small ($fileSize bytes). Archive may not exist for this platform."
+            Stop-WithError "Downloaded file is suspiciously small `($fileSize bytes`). Archive may not exist for this platform."
         }
-        Write-Success "Downloaded $archiveName ($fileSize bytes)"
+        Write-Success "Downloaded $archiveName `($fileSize bytes`)"
 
         # Verify checksum
         Write-Info "Verifying checksum..."
@@ -282,7 +282,7 @@ function Install-ViaBinary {
         if (-not $alreadyPresent) {
             $newUserPath = if ($userPath) { "$userPath;$installDir" } else { $installDir }
             [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
-            Write-Success "Added $installDir to your PATH (takes effect in new shells)"
+            Write-Success "Added $installDir to your PATH `(takes effect in new shells`)"
         }
 
         # Also update the current session's PATH so Test-Installation can find the binary.
