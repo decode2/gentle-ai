@@ -14,12 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/system"
-	"github.com/gentleman-programming/gentle-ai/internal/versions"
 )
 
 const (
@@ -37,7 +37,16 @@ var (
 	engramStopProcessesFn = stopEngramProcesses
 )
 
-// DownloadLatestBinary fetches the pinned engram release from GitHub and
+// engramCoreTagPattern matches only plain semver tags (vX.Y.Z) that identify
+// core engram binary releases. The Gentleman-Programming/engram repository also
+// publishes gentle-engram npm and pi releases under tags like
+// "gentle-engram vX.Y.Z" or "pi-vX.Y.Z" in the same release stream. This
+// pattern intentionally excludes those so a gentle-engram/pi tag can never be
+// selected as the core engram binary version. It mirrors the ReleaseTagPattern
+// used by the update-check path in internal/update/registry.go.
+const engramCoreTagPattern = `^v[0-9]+\.[0-9]+\.[0-9]+$`
+
+// DownloadLatestBinary fetches the latest engram release from GitHub and
 // installs it to the appropriate directory for the given platform.
 // It returns the full path to the installed binary.
 //
@@ -49,9 +58,13 @@ var (
 func DownloadLatestBinary(profile system.PlatformProfile) (string, error) {
 	ctx := context.Background()
 
-	// 1. Use the pinned core Engram version. Beta/nightly installs are handled
-	// separately and still install Engram from @main.
-	version := versions.EngramCore
+	// 1. Fetch the latest version tag from GitHub API. Only tags matching the
+	// core engram pattern (vX.Y.Z) are considered; gentle-engram/pi tags are
+	// excluded so the download and update-check paths share the same source of truth.
+	version, err := fetchLatestEngramVersion()
+	if err != nil {
+		return "", fmt.Errorf("fetch latest engram version: %w", err)
+	}
 
 	// 2. Determine binary name and archive URL.
 	goos := profile.OS
@@ -132,8 +145,14 @@ func DownloadLatestBinary(profile system.PlatformProfile) (string, error) {
 	return outPath, nil
 }
 
-// fetchLatestEngramVersion queries the GitHub Releases API for the latest engram
-// release and returns the version string (without leading "v").
+// engramCoreTagRE is the compiled form of engramCoreTagPattern, used to filter
+// GitHub release tags so only core engram binary releases are selected.
+var engramCoreTagRE = regexp.MustCompile(engramCoreTagPattern)
+
+// fetchLatestEngramVersion queries the GitHub Releases API for the latest
+// core engram binary release and returns the version string (without leading "v").
+// Only releases whose tag matches engramCoreTagPattern (vX.Y.Z) are considered,
+// so gentle-engram/pi tags published in the same release stream are ignored.
 func fetchLatestEngramVersion() (string, error) {
 	token := githubToken()
 	version, status, err := fetchLatestEngramVersionRequest(token)
@@ -186,6 +205,22 @@ func fetchLatestEngramVersionRequest(token string) (string, int, error) {
 		return "", resp.StatusCode, fmt.Errorf("decode release JSON: %w", err)
 	}
 
+	// Reject tags that don't match the core engram pattern (e.g. gentle-engram/pi-v* tags).
+	// Fall through to the release-list scan when /latest points at a non-core release.
+	if !engramCoreTagRE.MatchString(release.TagName) {
+		fallbackVersion, fallbackStatus, err := fetchLatestEngramVersionWithAssets(token)
+		if err == nil {
+			return fallbackVersion, resp.StatusCode, nil
+		}
+		if token != "" && (fallbackStatus == http.StatusUnauthorized || fallbackStatus == http.StatusForbidden) {
+			fallbackVersion, _, retryErr := fetchLatestEngramVersionWithAssets("")
+			if retryErr == nil {
+				return fallbackVersion, resp.StatusCode, nil
+			}
+		}
+		return "", resp.StatusCode, err
+	}
+
 	version := strings.TrimPrefix(release.TagName, "v")
 	if version == "" {
 		return "", resp.StatusCode, fmt.Errorf("empty tag_name in GitHub release response")
@@ -225,56 +260,84 @@ func hasEngramBinaryAsset(assets []json.RawMessage) bool {
 	return false
 }
 
+// engramReleasePageSize is the number of releases requested per page when
+// paginating the GitHub Releases list. GitHub's maximum is 100; 20 is
+// sufficient for typical cadence while keeping response payloads small.
+const engramReleasePageSize = 20
+
+// engramReleaseMaxPages caps the pagination loop so it can never run forever.
+// At 20 releases/page this covers 100 releases — enough runway even when the
+// Gentleman-Programming/engram repo publishes many pi-v*/gentle-engram entries
+// between core vX.Y.Z releases.
+const engramReleaseMaxPages = 5
+
 func fetchLatestEngramVersionWithAssets(token string) (string, int, error) {
-	apiURL := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=20",
-		engramAPIBaseURL(), engramOwner, engramRepo)
+	lastStatus := 0
 
-	req, err := http.NewRequest(http.MethodGet, apiURL, nil)
-	if err != nil {
-		return "", 0, fmt.Errorf("build releases request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	for page := 1; page <= engramReleaseMaxPages; page++ {
+		apiURL := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=%d&page=%d",
+			engramAPIBaseURL(), engramOwner, engramRepo, engramReleasePageSize, page)
 
-	resp, err := engramHTTPClient.Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("call GitHub releases API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", resp.StatusCode, fmt.Errorf("GitHub releases API returned HTTP %d", resp.StatusCode)
-	}
-
-	var releases []struct {
-		TagName    string `json:"tag_name"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
-			Name string `json:"name"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return "", resp.StatusCode, fmt.Errorf("decode releases JSON: %w", err)
-	}
-
-	for _, release := range releases {
-		if release.Draft || release.Prerelease || len(release.Assets) == 0 {
-			continue
+		req, err := http.NewRequest(http.MethodGet, apiURL, nil)
+		if err != nil {
+			return "", 0, fmt.Errorf("build releases request: %w", err)
 		}
-		for _, asset := range release.Assets {
-			if strings.HasPrefix(asset.Name, engramRepo+"_") {
-				version := strings.TrimPrefix(release.TagName, "v")
-				if version != "" {
-					return version, resp.StatusCode, nil
+		req.Header.Set("Accept", "application/vnd.github+json")
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := engramHTTPClient.Do(req)
+		if err != nil {
+			return "", lastStatus, fmt.Errorf("call GitHub releases API: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			status := resp.StatusCode
+			resp.Body.Close()
+			return "", status, fmt.Errorf("GitHub releases API returned HTTP %d", status)
+		}
+		lastStatus = resp.StatusCode
+
+		var releases []struct {
+			TagName    string `json:"tag_name"`
+			Draft      bool   `json:"draft"`
+			Prerelease bool   `json:"prerelease"`
+			Assets     []struct {
+				Name string `json:"name"`
+			} `json:"assets"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+			resp.Body.Close()
+			return "", lastStatus, fmt.Errorf("decode releases JSON: %w", err)
+		}
+		resp.Body.Close()
+
+		// An empty page means GitHub has no more releases — stop early.
+		if len(releases) == 0 {
+			break
+		}
+
+		for _, release := range releases {
+			if release.Draft || release.Prerelease || len(release.Assets) == 0 {
+				continue
+			}
+			// Skip tags that don't match the core engram pattern (e.g. gentle-engram/pi-v* tags).
+			if !engramCoreTagRE.MatchString(release.TagName) {
+				continue
+			}
+			for _, asset := range release.Assets {
+				if strings.HasPrefix(asset.Name, engramRepo+"_") {
+					version := strings.TrimPrefix(release.TagName, "v")
+					if version != "" {
+						return version, lastStatus, nil
+					}
 				}
 			}
 		}
 	}
 
-	return "", resp.StatusCode, fmt.Errorf("no engram release with downloadable binary assets found")
+	return "", lastStatus, fmt.Errorf("no engram release with downloadable binary assets found")
 }
 
 // githubToken returns a GitHub API token from the environment, if available.
