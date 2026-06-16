@@ -197,6 +197,7 @@ func TestComponentPathsWithWorkspaceOpenClawSDDUsesWorkspaceScopedSkills(t *test
 
 func TestComponentPathsOpenClawSkillsSkipsSDDPhaseSkills(t *testing.T) {
 	home := t.TempDir()
+	workspace := t.TempDir()
 	adapters := resolveAdapters([]model.AgentID{model.AgentOpenClaw})
 	selection := model.Selection{
 		Skills: []model.SkillID{
@@ -206,19 +207,52 @@ func TestComponentPathsOpenClawSkillsSkipsSDDPhaseSkills(t *testing.T) {
 		},
 	}
 
-	paths := componentPathsWithWorkspace(home, t.TempDir(), selection, adapters, model.ComponentSkills)
+	// OpenClaw always uses workspaceDir when set, independent of scope.
+	paths := componentPathsWithWorkspace(home, workspace, selection, adapters, model.ComponentSkills)
 
-	want := filepath.Join(home, ".openclaw", "skills", "go-testing", "SKILL.md")
+	want := filepath.Join(workspace, ".openclaw", "skills", "go-testing", "SKILL.md")
 	if !containsPath(paths, want) {
 		t.Fatalf("componentPaths(skills,openclaw) missing portable skill path %q\npaths=%v", want, paths)
 	}
 
 	for _, unwanted := range []string{
-		filepath.Join(home, ".openclaw", "skills", "sdd-init", "SKILL.md"),
-		filepath.Join(home, ".openclaw", "skills", "sdd-onboard", "SKILL.md"),
+		filepath.Join(workspace, ".openclaw", "skills", "sdd-init", "SKILL.md"),
+		filepath.Join(workspace, ".openclaw", "skills", "sdd-onboard", "SKILL.md"),
 	} {
 		if containsPath(paths, unwanted) {
 			t.Fatalf("componentPaths(skills,openclaw) must not verify SDD phase skill path %q\npaths=%v", unwanted, paths)
+		}
+	}
+}
+
+func TestComponentPathsWorkspaceScopedSkillsUsesWorkspaceDir(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	adapters := resolveAdapters([]model.AgentID{model.AgentClaudeCode})
+	selection := model.Selection{
+		Skills: []model.SkillID{
+			model.SkillGoTesting,
+			model.SkillBranchPR,
+		},
+	}
+
+	paths := componentPathsWithWorkspaceScoped(home, workspace, ScopeWorkspace, selection, adapters, model.ComponentSkills)
+
+	for _, want := range []string{
+		filepath.Join(workspace, ".claude", "skills", "go-testing", "SKILL.md"),
+		filepath.Join(workspace, ".claude", "skills", "branch-pr", "SKILL.md"),
+	} {
+		if !containsPath(paths, want) {
+			t.Fatalf("componentPathsWithWorkspaceScoped(skills,claude-code,workspace) missing workspace-scoped path %q\npaths=%v", want, paths)
+		}
+	}
+
+	for _, unwanted := range []string{
+		filepath.Join(home, ".claude", "skills", "go-testing", "SKILL.md"),
+		filepath.Join(home, ".claude", "skills", "branch-pr", "SKILL.md"),
+	} {
+		if containsPath(paths, unwanted) {
+			t.Fatalf("componentPathsWithWorkspaceScoped(skills,claude-code,workspace) must not include home-scoped path %q\npaths=%v", unwanted, paths)
 		}
 	}
 }

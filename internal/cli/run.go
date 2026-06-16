@@ -1135,16 +1135,16 @@ func componentPathsWithWorkspaceScoped(homeDir, workspaceDir string, scope Insta
 				}
 			}
 			paths = append(paths, sddSubAgentPaths(targetDir, adapter)...)
-		case model.ComponentSkills:
-			for _, skillID := range selectedSkillIDs(selection) {
-				if skills.IsSDDSkill(skillID) {
-					continue
-				}
-				path := skills.SkillPathForAgent(homeDir, adapter, skillID)
-				if path != "" {
-					paths = append(paths, path)
-				}
+	case model.ComponentSkills:
+		for _, skillID := range selectedSkillIDs(selection) {
+			if skills.IsSDDSkill(skillID) {
+				continue
 			}
+			path := skills.SkillPathForAgent(targetDir, adapter, skillID)
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
 		case model.ComponentContext7:
 			switch adapter.MCPStrategy() {
 			case model.StrategySeparateMCPFiles:
