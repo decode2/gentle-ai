@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
@@ -856,8 +857,9 @@ func TestConfigPathsForBackup_CoversRegistryAgentsNotInOldList(t *testing.T) {
 func TestConfigPathsForBackup_GGAExtrasAreIncluded(t *testing.T) {
 	homeDir := t.TempDir()
 
-	// Create GGA config file at ~/.config/gga/config
-	ggaConfigFile := filepath.Join(homeDir, ".config", "gga", "config")
+	// Use gga package functions to get platform-correct paths
+	// (Windows uses %APPDATA%\gga, Unix uses ~/.config/gga)
+	ggaConfigFile := gga.ConfigPath(homeDir)
 	if err := os.MkdirAll(filepath.Dir(ggaConfigFile), 0o755); err != nil {
 		t.Fatalf("MkdirAll gga config: %v", err)
 	}
@@ -865,8 +867,9 @@ func TestConfigPathsForBackup_GGAExtrasAreIncluded(t *testing.T) {
 		t.Fatalf("WriteFile gga config: %v", err)
 	}
 
-	// Create GGA runtime lib file at ~/.local/share/gga/lib/pr_mode.sh
-	ggaLibFile := filepath.Join(homeDir, ".local", "share", "gga", "lib", "pr_mode.sh")
+	// GGA runtime lib file at ~/.local/share/gga/lib/pr_mode.sh
+	// (same path on all platforms)
+	ggaLibFile := gga.RuntimePRModePath(homeDir)
 	if err := os.MkdirAll(filepath.Dir(ggaLibFile), 0o755); err != nil {
 		t.Fatalf("MkdirAll gga lib: %v", err)
 	}
