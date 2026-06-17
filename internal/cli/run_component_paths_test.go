@@ -257,6 +257,48 @@ func TestComponentPathsWorkspaceScopedSkillsUsesWorkspaceDir(t *testing.T) {
 	}
 }
 
+// TestInstallWorkspaceScopeVerificationWithNoGlobalSkills verifies that
+// post-apply verification succeeds when --scope=workspace is used and no
+// global skill files exist. This is a regression test for issue #785:
+// the verifier used to check home-scoped paths even when workspace scope
+// was active, causing false failures when only workspace skills existed.
+func TestInstallWorkspaceScopeVerificationWithNoGlobalSkills(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	adapters := resolveAdapters([]model.AgentID{model.AgentClaudeCode})
+	selection := model.Selection{
+		Skills: []model.SkillID{
+			model.SkillGoTesting,
+			model.SkillBranchPR,
+		},
+	}
+
+	// Simulate workspace-scoped install: skills are written to workspace only.
+	// The verification should check workspace paths, not home paths.
+	paths := componentPathsWithWorkspaceScoped(home, workspace, ScopeWorkspace, selection, adapters, model.ComponentSkills)
+
+	// Verify that workspace paths are included (these should exist after install).
+	for _, want := range []string{
+		filepath.Join(workspace, ".claude", "skills", "go-testing", "SKILL.md"),
+		filepath.Join(workspace, ".claude", "skills", "branch-pr", "SKILL.md"),
+	} {
+		if !containsPath(paths, want) {
+			t.Fatalf("workspace-scoped verification missing workspace path %q\npaths=%v", want, paths)
+		}
+	}
+
+	// Verify that home paths are NOT included (these would cause false failures
+	// if checked when only workspace skills exist).
+	for _, unwanted := range []string{
+		filepath.Join(home, ".claude", "skills", "go-testing", "SKILL.md"),
+		filepath.Join(home, ".claude", "skills", "branch-pr", "SKILL.md"),
+	} {
+		if containsPath(paths, unwanted) {
+			t.Fatalf("workspace-scoped verification must not check home path %q when scope=workspace\npaths=%v", unwanted, paths)
+		}
+	}
+}
+
 func TestComponentPathsSDDKimiIncludesAgentFilesAndGlobalSkills(t *testing.T) {
 	home := t.TempDir()
 	adapters := resolveAdapters([]model.AgentID{model.AgentKimi})
