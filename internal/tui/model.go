@@ -3312,7 +3312,7 @@ func (m Model) optionCount() int {
 		return 1
 	case ScreenModelPicker:
 		if len(m.ModelPicker.AvailableIDs) == 0 {
-			return 2 // Continue with defaults + Back to SDD mode
+			return 2 // Continue with defaults + Back
 		}
 		return len(screens.ModelPickerRows()) + 2 // rows + Continue + Back
 	case ScreenDependencyTree:

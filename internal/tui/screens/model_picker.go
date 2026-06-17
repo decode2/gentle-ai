@@ -684,7 +684,11 @@ func renderPhaseList(
 		b.WriteString("\n")
 		b.WriteString(styles.SubtextStyle.Render("Using default model assignments for now."))
 		b.WriteString("\n\n")
-		b.WriteString(renderOptions([]string{"Continue with defaults", "← Back to SDD mode"}, cursor))
+		backLabel := "← Back to SDD mode"
+		if state.ForProfile {
+			backLabel = "← Back"
+		}
+		b.WriteString(renderOptions([]string{"Continue with defaults", backLabel}, cursor))
 		b.WriteString("\n")
 		b.WriteString(styles.HelpStyle.Render("enter: confirm • esc: back"))
 		return b.String()
