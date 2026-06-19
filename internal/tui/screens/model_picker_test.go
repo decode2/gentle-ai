@@ -31,8 +31,8 @@ func makeTestState(phaseIdx int) *ModelPickerState {
 
 func TestModelPickerRows_Count(t *testing.T) {
 	rows := ModelPickerRows()
-	// 1 orchestrator + 1 "Set all" + 10 sub-agents + 1 separator + 3 JD agents = 16
-	want := 16
+	// 1 orchestrator + 1 "Set all" + 10 sub-agents + 1 JD separator + 3 JD agents + 1 4R separator + 4 4R agents = 21
+	want := 21
 	if len(rows) != want {
 		t.Fatalf("ModelPickerRows() len = %d, want %d; rows = %v", len(rows), want, rows)
 	}
@@ -1243,6 +1243,119 @@ func TestHandleModelNav_JDLastRow(t *testing.T) {
 	}
 }
 
+// ─── handleModelNav: 4R review agent rows ─────────────────────────────────
+
+func TestHandleModelNav_RRAgentRows_AssignCorrectly(t *testing.T) {
+	rrPhases := opencode.RRPhases()
+	rrSepIdx := RRSeparatorRowIdx()
+
+	for i, expectedPhase := range rrPhases {
+		t.Run(expectedPhase, func(t *testing.T) {
+			state := makeTestState(rrSepIdx + 1 + i) // 4R rows start after 4R separator
+			assignments := make(map[string]model.ModelAssignment)
+
+			handled, updated := handleModelNav("enter", state, assignments)
+
+			if !handled {
+				t.Fatal("handleModelNav should return handled=true on enter")
+			}
+
+			// The target 4R phase must be assigned.
+			a, ok := updated[expectedPhase]
+			if !ok || a.ProviderID == "" {
+				t.Errorf("4R phase %q should be assigned; assignments: %v", expectedPhase, updated)
+			}
+			if a.ProviderID != "test-provider" {
+				t.Errorf("4R phase %q ProviderID = %q, want %q", expectedPhase, a.ProviderID, "test-provider")
+			}
+			if a.ModelID != "model-alpha" {
+				t.Errorf("4R phase %q ModelID = %q, want %q", expectedPhase, a.ModelID, "model-alpha")
+			}
+
+			// No other 4R phase must be assigned.
+			for _, other := range rrPhases {
+				if other == expectedPhase {
+					continue
+				}
+				if _, exists := updated[other]; exists {
+					t.Errorf("unrelated 4R phase %q should not be assigned; assignments: %v", other, updated)
+				}
+			}
+
+			// No SDD phase, JD agent, or orchestrator must be assigned.
+			for _, sdd := range opencode.SDDPhases() {
+				if _, exists := updated[sdd]; exists {
+					t.Errorf("SDD phase %q should not be assigned by 4R row; assignments: %v", sdd, updated)
+				}
+			}
+			for _, jd := range opencode.JDPhases() {
+				if _, exists := updated[jd]; exists {
+					t.Errorf("JD agent %q should not be assigned by 4R row; assignments: %v", jd, updated)
+				}
+			}
+			if _, exists := updated[SDDOrchestratorPhase]; exists {
+				t.Errorf("orchestrator should not be assigned by 4R row; assignments: %v", updated)
+			}
+		})
+	}
+}
+
+func TestHandleModelNav_RRFirstRow(t *testing.T) {
+	// Verify the FIRST 4R row (right after 4R separator) maps to review-risk.
+	rrPhases := opencode.RRPhases()
+	if len(rrPhases) == 0 {
+		t.Skip("no 4R phases defined")
+	}
+	rrSepIdx := RRSeparatorRowIdx()
+	state := makeTestState(rrSepIdx + 1)
+	assignments := make(map[string]model.ModelAssignment)
+
+	_, updated := handleModelNav("enter", state, assignments)
+
+	if _, ok := updated[rrPhases[0]]; !ok {
+		t.Fatalf("first 4R row should assign %q; got: %v", rrPhases[0], updated)
+	}
+}
+
+func TestHandleModelNav_RRLastRow(t *testing.T) {
+	// Verify the LAST 4R row maps to the last 4R phase.
+	rrPhases := opencode.RRPhases()
+	if len(rrPhases) == 0 {
+		t.Skip("no 4R phases defined")
+	}
+	rrSepIdx := RRSeparatorRowIdx()
+	state := makeTestState(rrSepIdx + len(rrPhases))
+	assignments := make(map[string]model.ModelAssignment)
+
+	_, updated := handleModelNav("enter", state, assignments)
+
+	lastPhase := rrPhases[len(rrPhases)-1]
+	if _, ok := updated[lastPhase]; !ok {
+		t.Fatalf("last 4R row should assign %q; got: %v", lastPhase, updated)
+	}
+}
+
+func TestHandleModelNav_RRSeparatorRow_NoAssignment(t *testing.T) {
+	// Verify that selecting the 4R separator row does not assign any phase.
+	rrSepIdx := RRSeparatorRowIdx()
+	if rrSepIdx < 0 {
+		t.Skip("no 4R separator defined")
+	}
+	state := makeTestState(rrSepIdx)
+	assignments := make(map[string]model.ModelAssignment)
+
+	handled, updated := handleModelNav("enter", state, assignments)
+
+	if !handled {
+		t.Fatal("handleModelNav should return handled=true on separator enter")
+	}
+
+	// No phase should be assigned when separator is selected.
+	if len(updated) != 0 {
+		t.Errorf("separator row should not assign any phase; got: %v", updated)
+	}
+}
+
 // ─── ModelPickerRowsForProfile ──────────────────────────────────────────
 
 func TestModelPickerRowsForProfile_Count(t *testing.T) {
@@ -1270,6 +1383,18 @@ func TestModelPickerRowsForProfile_NoJDAgents(t *testing.T) {
 		for _, row := range rows {
 			if row == jd {
 				t.Fatalf("ModelPickerRowsForProfile() should not contain JD agent %q; got: %v", jd, rows)
+			}
+		}
+	}
+}
+
+func TestModelPickerRowsForProfile_NoRRAgents(t *testing.T) {
+	rows := ModelPickerRowsForProfile()
+	rrPhases := opencode.RRPhases()
+	for _, rr := range rrPhases {
+		for _, row := range rows {
+			if row == rr {
+				t.Fatalf("ModelPickerRowsForProfile() should not contain 4R agent %q; got: %v", rr, rows)
 			}
 		}
 	}

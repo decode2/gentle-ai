@@ -426,13 +426,27 @@ func JDPhases() []string {
 	}
 }
 
+// RRPhases returns the ordered list of 4R review sub-agent names.
+// These are workflow-level agents (not SDD phases) used for multi-dimensional
+// PR review: risk assessment, readability, reliability, and resilience.
+// They support independent model configuration for diversity of perspective.
+func RRPhases() []string {
+	return []string{
+		"review-risk",
+		"review-readability",
+		"review-reliability",
+		"review-resilience",
+	}
+}
+
 // ConfigurableAgentPhases returns all agent names that support per-agent
-// model configuration. This includes SDD phases + JD agents.
+// model configuration. This includes SDD phases + JD agents + 4R reviewers.
 // Used by the inject model assignment table builder and the configurable agent set
-// in ReadCurrentModelAssignments. The TUI model picker uses SDDPhases() and
-// JDPhases() separately for row layout control.
+// in ReadCurrentModelAssignments. The TUI model picker uses SDDPhases(), JDPhases(),
+// and RRPhases() separately for row layout control.
 func ConfigurableAgentPhases() []string {
 	phases := SDDPhases()
 	phases = append(phases, JDPhases()...)
+	phases = append(phases, RRPhases()...)
 	return phases
 }

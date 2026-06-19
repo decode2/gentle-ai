@@ -123,9 +123,10 @@ const SDDOrchestratorPhase = "gentle-orchestrator"
 
 // ModelPickerRows returns the row labels for the model picker screen.
 // Row 0 is "gentle-orchestrator" (coordinator), row 1 is "Set all phases",
-// rows 2-11 are the 10 SDD sub-agent phases, then a separator and JD agents.
+// rows 2-11 are the 10 SDD sub-agent phases, then a separator and JD agents,
+// then another separator and 4R review agents.
 func ModelPickerRows() []string {
-	rows := make([]string, 0, 2+len(opencode.SDDPhases())+1+len(opencode.JDPhases()))
+	rows := make([]string, 0, 2+len(opencode.SDDPhases())+1+len(opencode.JDPhases())+1+len(opencode.RRPhases()))
 	rows = append(rows, SDDOrchestratorPhase)
 	rows = append(rows, "Set all SDD phases")
 	rows = append(rows, opencode.SDDPhases()...)
@@ -133,11 +134,15 @@ func ModelPickerRows() []string {
 		rows = append(rows, "--- Judgment Day ---")
 		rows = append(rows, opencode.JDPhases()...)
 	}
+	if len(opencode.RRPhases()) > 0 {
+		rows = append(rows, "--- 4R Review ---")
+		rows = append(rows, opencode.RRPhases()...)
+	}
 	return rows
 }
 
 // ModelPickerRowsForProfile returns model picker rows for profile creation.
-// JD agents are excluded because they are global (not profile-scoped).
+// JD agents and 4R reviewers are excluded because they are global (not profile-scoped).
 func ModelPickerRowsForProfile() []string {
 	rows := make([]string, 0, 2+len(opencode.SDDPhases()))
 	rows = append(rows, SDDOrchestratorPhase)
@@ -156,6 +161,19 @@ func SeparatorRowIdx() int {
 		return -1
 	}
 	return 2 + len(opencode.SDDPhases())
+}
+
+// RRSeparatorRowIdx returns the index of the "--- 4R Review ---" separator
+// row in ModelPickerRows(). Returns -1 if there are no 4R phases (and thus
+// no separator). This is used by the TUI to skip the separator during
+// cursor navigation and model selection.
+func RRSeparatorRowIdx() int {
+	rr := opencode.RRPhases()
+	if len(rr) == 0 {
+		return -1
+	}
+	// After orchestrator + "Set all" + SDD phases + JD separator + JD phases
+	return 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases())
 }
 
 // ProviderEntries returns sorted provider entries with display names and model counts.
@@ -424,7 +442,9 @@ func compareVersionKeys(left, right []int) int {
 func applyAssignmentPreservingMatchingEffort(state ModelPickerState, assignments map[string]model.ModelAssignment, assignment model.ModelAssignment, preserveEffort bool) map[string]model.ModelAssignment {
 	phases := opencode.SDDPhases()
 	jdPhases := opencode.JDPhases()
+	rrPhases := opencode.RRPhases()
 	separatorIdx := SeparatorRowIdx()
+	rrSeparatorIdx := RRSeparatorRowIdx()
 	switch {
 	case state.SelectedPhaseIdx == 0:
 		assignments[SDDOrchestratorPhase] = preserveMatchingEffort(assignments[SDDOrchestratorPhase], assignment, preserveEffort)
@@ -434,6 +454,14 @@ func applyAssignmentPreservingMatchingEffort(state ModelPickerState, assignments
 		}
 	case state.SelectedPhaseIdx == separatorIdx:
 		// Separator row ("--- Judgment Day ---") — no action, skip.
+	case state.SelectedPhaseIdx == rrSeparatorIdx:
+		// 4R separator row ("--- 4R Review ---") — no action, skip.
+	case state.SelectedPhaseIdx > rrSeparatorIdx:
+		// 4R agent rows: map to RRPhases() after separator.
+		rrIdx := state.SelectedPhaseIdx - rrSeparatorIdx - 1
+		if rrIdx < len(rrPhases) {
+			assignments[rrPhases[rrIdx]] = preserveMatchingEffort(assignments[rrPhases[rrIdx]], assignment, preserveEffort)
+		}
 	case state.SelectedPhaseIdx > separatorIdx:
 		// JD agent rows: map to JDPhases() after separator.
 		jdIdx := state.SelectedPhaseIdx - separatorIdx - 1
@@ -473,7 +501,9 @@ func formatAssignmentLabel(row, provName, modelName, effort string) string {
 func applyAssignment(state ModelPickerState, assignments map[string]model.ModelAssignment, assignment model.ModelAssignment) map[string]model.ModelAssignment {
 	phases := opencode.SDDPhases()
 	jdPhases := opencode.JDPhases()
+	rrPhases := opencode.RRPhases()
 	separatorIdx := SeparatorRowIdx()
+	rrSeparatorIdx := RRSeparatorRowIdx()
 	switch {
 	case state.SelectedPhaseIdx == 0:
 		assignments[SDDOrchestratorPhase] = assignment
@@ -483,6 +513,14 @@ func applyAssignment(state ModelPickerState, assignments map[string]model.ModelA
 		}
 	case state.SelectedPhaseIdx == separatorIdx:
 		// Separator row ("--- Judgment Day ---") — no action, skip.
+	case state.SelectedPhaseIdx == rrSeparatorIdx:
+		// 4R separator row ("--- 4R Review ---") — no action, skip.
+	case state.SelectedPhaseIdx > rrSeparatorIdx:
+		// 4R agent rows: map to RRPhases() after separator.
+		rrIdx := state.SelectedPhaseIdx - rrSeparatorIdx - 1
+		if rrIdx < len(rrPhases) {
+			assignments[rrPhases[rrIdx]] = assignment
+		}
 	case state.SelectedPhaseIdx > separatorIdx:
 		// JD agent rows: map to JDPhases() after separator.
 		jdIdx := state.SelectedPhaseIdx - separatorIdx - 1
@@ -633,7 +671,7 @@ func renderPhaseList(
 ) string {
 	var b strings.Builder
 
-	title := "Assign Models to SDD Phases & JD Agents"
+	title := "Assign Models to SDD Phases, JD Agents & 4R Reviewers"
 	if state.ForProfile {
 		title = "Assign Models to SDD Phases"
 	}
@@ -668,7 +706,9 @@ func renderPhaseList(
 	}
 	phases := opencode.SDDPhases()
 	jdPhases := opencode.JDPhases()
+	rrPhases := opencode.RRPhases()
 	separatorIdx := SeparatorRowIdx()
+	rrSeparatorIdx := RRSeparatorRowIdx()
 
 	for idx, row := range rows {
 		focused := idx == cursor
@@ -702,6 +742,27 @@ func renderPhaseList(
 				b.WriteString(styles.SubtextStyle.Render("  " + row) + "\n")
 			}
 			continue
+		case idx == rrSeparatorIdx:
+			// 4R separator row — render as a visual divider with subtle indicator when focused.
+			if focused {
+				b.WriteString(styles.SubtextStyle.Render("▸ " + row) + "\n")
+			} else {
+				b.WriteString(styles.SubtextStyle.Render("  " + row) + "\n")
+			}
+			continue
+		case idx > rrSeparatorIdx:
+			// 4R agent rows
+			rrIdx := idx - rrSeparatorIdx - 1
+			if rrIdx < len(rrPhases) {
+				phase := rrPhases[rrIdx]
+				assignment, ok := assignments[phase]
+				if ok && assignment.ProviderID != "" {
+					provName, modelName := resolveNames(assignment, state)
+					label = fmt.Sprintf("%-20s %s / %s", row, provName, modelName)
+				} else {
+					label = fmt.Sprintf("%-20s (default)", row)
+				}
+			}
 		case idx > separatorIdx:
 			// JD agent rows
 			jdIdx := idx - separatorIdx - 1
