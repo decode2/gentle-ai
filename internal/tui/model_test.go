@@ -5758,7 +5758,7 @@ func TestUpdatePromptScreen_UpdateNow_NoDuplicateUpgrade(t *testing.T) {
 	}
 }
 
-// ─── Unit 1: pickerFlowSlice ────────────────────────────────────────────────
+// ─── Unit 1+2: pickerFlowSlice, pickerNextScreen, pickerPreviousScreen ──────
 
 // withModelCache returns a cleanup function that installs a fake osStatModelCache
 // override pointing to a freshly written temporary cache file. It restores the
@@ -5926,6 +5926,253 @@ func TestPickerFlowSlice(t *testing.T) {
 				if got[i] != want {
 					t.Fatalf("pickerFlowSlice()[%d] = %v, want %v\ngot:  %v\nwant: %v", i, got[i], want, got, tt.wantSlice)
 				}
+			}
+		})
+	}
+}
+
+func TestPickerNextScreen(t *testing.T) {
+	// Full non-custom chain with all agents + SDD single (no ModelPicker).
+	newFullChainModel := func(t *testing.T) Model {
+		t.Helper()
+		m := NewModel(system.DetectionResult{}, "dev")
+		m.Selection.Preset = model.PresetFullGentleman
+		m.Selection.Agents = []model.AgentID{
+			model.AgentClaudeCode,
+			model.AgentKiroIDE,
+			model.AgentCodex,
+			model.AgentOpenCode,
+		}
+		m.Selection.Components = []model.ComponentID{model.ComponentEngram, model.ComponentSDD}
+		m.Selection.SDDMode = model.SDDModeSingle
+		return m
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T) Model
+		screen     Screen
+		wantScreen Screen
+		wantOK     bool
+	}{
+		{
+			name:       "Preset to ClaudeModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenPreset,
+			wantScreen: ScreenClaudeModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "ClaudeModelPicker to KiroModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenClaudeModelPicker,
+			wantScreen: ScreenKiroModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "KiroModelPicker to CodexModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenKiroModelPicker,
+			wantScreen: ScreenCodexModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "CodexModelPicker to SDDMode",
+			setup:      newFullChainModel,
+			screen:     ScreenCodexModelPicker,
+			wantScreen: ScreenSDDMode,
+			wantOK:     true,
+		},
+		{
+			name:       "SDDMode to StrictTDD",
+			setup:      newFullChainModel,
+			screen:     ScreenSDDMode,
+			wantScreen: ScreenStrictTDD,
+			wantOK:     true,
+		},
+		{
+			name:       "StrictTDD to DependencyTree",
+			setup:      newFullChainModel,
+			screen:     ScreenStrictTDD,
+			wantScreen: ScreenDependencyTree,
+			wantOK:     true,
+		},
+		{
+			name:       "DependencyTree is last anchor returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenDependencyTree,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name: "StrictTDD is last in custom chain returns ok=false",
+			setup: func(t *testing.T) Model {
+				m := NewModel(system.DetectionResult{}, "dev")
+				m.Selection.Preset = model.PresetCustom
+				m.Selection.Agents = []model.AgentID{model.AgentClaudeCode}
+				m.Selection.Components = []model.ComponentID{model.ComponentEngram, model.ComponentSDD}
+				return m
+			},
+			screen:     ScreenStrictTDD,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenModelConfig returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenModelConfig,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenSkillPicker returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenSkillPicker,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenReview returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenReview,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.setup(t)
+			m.Screen = tt.screen
+			got, ok := m.pickerNextScreen()
+			if ok != tt.wantOK {
+				t.Fatalf("pickerNextScreen() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && got != tt.wantScreen {
+				t.Fatalf("pickerNextScreen() = %v, want %v", got, tt.wantScreen)
+			}
+		})
+	}
+}
+
+func TestPickerPreviousScreen(t *testing.T) {
+	newFullChainModel := func(t *testing.T) Model {
+		t.Helper()
+		m := NewModel(system.DetectionResult{}, "dev")
+		m.Selection.Preset = model.PresetFullGentleman
+		m.Selection.Agents = []model.AgentID{
+			model.AgentClaudeCode,
+			model.AgentKiroIDE,
+			model.AgentCodex,
+			model.AgentOpenCode,
+		}
+		m.Selection.Components = []model.ComponentID{model.ComponentEngram, model.ComponentSDD}
+		m.Selection.SDDMode = model.SDDModeSingle
+		return m
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T) Model
+		screen     Screen
+		wantScreen Screen
+		wantOK     bool
+	}{
+		{
+			name:       "DependencyTree to StrictTDD",
+			setup:      newFullChainModel,
+			screen:     ScreenDependencyTree,
+			wantScreen: ScreenStrictTDD,
+			wantOK:     true,
+		},
+		{
+			name:       "StrictTDD to SDDMode",
+			setup:      newFullChainModel,
+			screen:     ScreenStrictTDD,
+			wantScreen: ScreenSDDMode,
+			wantOK:     true,
+		},
+		{
+			name:       "SDDMode to CodexModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenSDDMode,
+			wantScreen: ScreenCodexModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "CodexModelPicker to KiroModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenCodexModelPicker,
+			wantScreen: ScreenKiroModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "KiroModelPicker to ClaudeModelPicker",
+			setup:      newFullChainModel,
+			screen:     ScreenKiroModelPicker,
+			wantScreen: ScreenClaudeModelPicker,
+			wantOK:     true,
+		},
+		{
+			name:       "ClaudeModelPicker to Preset",
+			setup:      newFullChainModel,
+			screen:     ScreenClaudeModelPicker,
+			wantScreen: ScreenPreset,
+			wantOK:     true,
+		},
+		{
+			name:       "Preset is first anchor returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenPreset,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenModelConfig returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenModelConfig,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenSkillPicker returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenSkillPicker,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name:       "non-member ScreenReview returns ok=false",
+			setup:      newFullChainModel,
+			screen:     ScreenReview,
+			wantScreen: 0,
+			wantOK:     false,
+		},
+		{
+			name: "custom slice ClaudeModelPicker prev returns DependencyTree",
+			setup: func(t *testing.T) Model {
+				m := NewModel(system.DetectionResult{}, "dev")
+				m.Selection.Preset = model.PresetCustom
+				m.Selection.Agents = []model.AgentID{model.AgentClaudeCode}
+				m.Selection.Components = []model.ComponentID{model.ComponentEngram, model.ComponentSDD}
+				return m
+			},
+			screen:     ScreenClaudeModelPicker,
+			wantScreen: ScreenDependencyTree,
+			wantOK:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.setup(t)
+			m.Screen = tt.screen
+			got, ok := m.pickerPreviousScreen()
+			if ok != tt.wantOK {
+				t.Fatalf("pickerPreviousScreen() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && got != tt.wantScreen {
+				t.Fatalf("pickerPreviousScreen() = %v, want %v", got, tt.wantScreen)
 			}
 		})
 	}
