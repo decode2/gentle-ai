@@ -255,7 +255,23 @@ function Install-ViaBinary {
             $expectedLine = $checksums | Where-Object { $_ -match $archiveName }
             if ($expectedLine) {
                 $expectedChecksum = ($expectedLine -split "\s+")[0]
-                $actualChecksum = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLower()
+
+                # Compute SHA256 hash - use Get-FileHash if available (PS 7+),
+                # otherwise fall back to .NET cryptography for PS 5.1 compatibility
+                if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+                    $actualChecksum = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLower()
+                } else {
+                    # PowerShell 5.1 fallback using .NET
+                    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+                    $fileStream = [System.IO.File]::OpenRead($archivePath)
+                    try {
+                        $hashBytes = $sha256.ComputeHash($fileStream)
+                        $actualChecksum = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLower()
+                    } finally {
+                        $fileStream.Close()
+                        $sha256.Dispose()
+                    }
+                }
 
                 if ($actualChecksum -ne $expectedChecksum) {
                     Stop-WithError "Checksum mismatch!`n  Expected: $expectedChecksum`n  Got:      $actualChecksum"
