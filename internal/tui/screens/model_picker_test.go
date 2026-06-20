@@ -1398,4 +1398,9 @@ func TestModelPickerRowsForProfile_NoRRAgents(t *testing.T) {
 			}
 		}
 	}
+	for _, row := range rows {
+		if row == "--- 4R Review ---" {
+			t.Fatalf("ModelPickerRowsForProfile() should not contain 4R separator; got: %v", rows)
+		}
+	}
 }

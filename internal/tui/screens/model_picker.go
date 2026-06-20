@@ -172,8 +172,12 @@ func RRSeparatorRowIdx() int {
 	if len(rr) == 0 {
 		return -1
 	}
-	// After orchestrator + "Set all" + SDD phases + JD separator + JD phases
-	return 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases())
+	// After orchestrator + "Set all" + SDD phases + (optional JD separator + JD phases)
+	base := 2 + len(opencode.SDDPhases())
+	if jd := opencode.JDPhases(); len(jd) > 0 {
+		base += 1 + len(jd)
+	}
+	return base
 }
 
 // ProviderEntries returns sorted provider entries with display names and model counts.
