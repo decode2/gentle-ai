@@ -256,12 +256,13 @@ function Install-ViaBinary {
             if ($expectedLine) {
                 $expectedChecksum = ($expectedLine -split "\s+")[0]
 
-                # Compute SHA256 hash - use Get-FileHash if available (PS 7+),
-                # otherwise fall back to .NET cryptography for PS 5.1 compatibility
+                # Compute SHA256 hash - use Get-FileHash if available (PS 4.0+),
+                # otherwise fall back to .NET cryptography for edge cases where
+                # the cmdlet is unavailable (corrupted install, restricted context, etc.)
                 if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
                     $actualChecksum = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLower()
                 } else {
-                    # PowerShell 5.1 fallback using .NET
+                    # Fallback using .NET for environments where Get-FileHash is unavailable
                     $sha256 = [System.Security.Cryptography.SHA256]::Create()
                     $fileStream = [System.IO.File]::OpenRead($archivePath)
                     try {
