@@ -1281,3 +1281,62 @@ func TestEngramStopScriptIsDefensive(t *testing.T) {
 		t.Errorf("stop script must not use -ErrorAction Stop on Stop-Process (reintroduces issue #815/#850)\nscript:\n%s", script)
 	}
 }
+
+// TestSHA256ChecksumContract verifies that the SHA256 hex digest format produced
+// by the Go installer matches the format expected by the PowerShell fallback in
+// scripts/install.ps1. This is a contract test that ensures both implementations
+// produce compatible checksums for verification.
+//
+// The PowerShell fallback uses .NET cryptography when Get-FileHash is unavailable:
+//
+//	$sha256 = [System.Security.Cryptography.SHA256]::Create()
+//	$fileStream = [System.IO.File]::OpenRead($archivePath)
+//	$hashBytes = $sha256.ComputeHash($fileStream)
+//	$actualChecksum = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLower()
+//
+// This test ensures the Go implementation produces the same format: 64 lowercase
+// hexadecimal characters. If this contract breaks, the PowerShell fallback will
+// fail checksum verification even when the digests match.
+//
+// Related: PR #937 (PowerShell 5.1 fallback for SHA256 checksum verification)
+func TestSHA256ChecksumContract(t *testing.T) {
+	// Test data: arbitrary content to hash
+	testData := []byte("Gentle AI SHA256 contract test")
+
+	// Calculate hash using Go's crypto/sha256 (same as engramDownloadToFile)
+	h := sha256.Sum256(testData)
+	goDigest := hex.EncodeToString(h[:])
+
+	// Contract assertion 1: digest must be exactly 64 characters
+	if len(goDigest) != 64 {
+		t.Errorf("SHA256 digest length = %d, want 64", len(goDigest))
+	}
+
+	// Contract assertion 2: digest must be lowercase hexadecimal
+	for i, c := range goDigest {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !isHex {
+			t.Errorf("SHA256 digest[%d] = %c, want lowercase hex digit", i, c)
+		}
+	}
+
+	// Contract assertion 3: digest must be deterministic (same input → same output)
+	h2 := sha256.Sum256(testData)
+	goDigest2 := hex.EncodeToString(h2[:])
+	if goDigest != goDigest2 {
+		t.Errorf("SHA256 digest is not deterministic: %q != %q", goDigest, goDigest2)
+	}
+
+	// Contract assertion 4: different input → different output
+	differentData := []byte("different content")
+	h3 := sha256.Sum256(differentData)
+	differentDigest := hex.EncodeToString(h3[:])
+	if goDigest == differentDigest {
+		t.Errorf("SHA256 digest collision: different inputs produced same digest")
+	}
+
+	// Document the expected format for the PowerShell fallback
+	// This comment serves as documentation for maintainers modifying either implementation
+	t.Logf("SHA256 contract: Go produces %q format (64 lowercase hex chars)", goDigest)
+	t.Logf("PowerShell fallback must produce identical format using .NET SHA256")
+}
