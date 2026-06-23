@@ -14,7 +14,7 @@ try {
     $fileStream = [System.IO.File]::OpenRead($testFile)
     try {
         $hashBytes = $sha256.ComputeHash($fileStream)
-        $fallbackHash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLower()
+        $fallbackHash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
     } finally {
         $fileStream.Close()
         $sha256.Dispose()
@@ -27,7 +27,7 @@ try {
         
         # If Get-FileHash is available, verify both methods match
         if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
-            $standardHash = (Get-FileHash -Path $testFile -Algorithm SHA256).Hash.ToLower()
+            $standardHash = (Get-FileHash -Path $testFile -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($standardHash -eq $fallbackHash) {
                 Write-Host "PASS: .NET fallback matches Get-FileHash" -ForegroundColor Green
             } else {

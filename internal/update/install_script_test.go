@@ -228,3 +228,31 @@ func TestWindowsInstallScriptChecksumCatchSurfacesRealError(t *testing.T) {
 		t.Error("scripts/install.ps1 catch block must call Stop-WithError when not -Insecure; secure-by-default behavior must not be changed")
 	}
 }
+
+// TestWindowsInstallScriptFallbackChecksumExecution wires the PowerShell
+// fallback test (scripts/test-hash-fallback.ps1) into the CI validation
+// suite. If pwsh or powershell is available on the machine, it executes
+// the script to ensure the .NET fallback path computes correct SHA256
+// hashes and matches Get-FileHash when both are available.
+func TestWindowsInstallScriptFallbackChecksumExecution(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "scripts", "test-hash-fallback.ps1")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("test-hash-fallback.ps1 script not found at %s: %v", scriptPath, err)
+	}
+
+	var shell string
+	if _, err := exec.LookPath("pwsh"); err == nil {
+		shell = "pwsh"
+	} else if _, err := exec.LookPath("powershell"); err == nil {
+		shell = "powershell"
+	} else {
+		t.Skip("PowerShell (pwsh or powershell) not available; skipping fallback execution test")
+	}
+
+	cmd := exec.Command(shell, "-NoProfile", "-NonInteractive", "-File", scriptPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PowerShell fallback test failed: %v\nOutput:\n%s", err, string(out))
+	}
+	t.Logf("PowerShell fallback test output:\n%s", string(out))
+}
