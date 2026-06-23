@@ -856,6 +856,7 @@ func TestConfigPathsForBackup_CoversRegistryAgentsNotInOldList(t *testing.T) {
 // non-agent extras that must be preserved outside the canonical managed set.
 func TestConfigPathsForBackup_GGAExtrasAreIncluded(t *testing.T) {
 	homeDir := t.TempDir()
+	t.Setenv("APPDATA", filepath.Join(homeDir, "AppData", "Roaming"))
 
 	// Use gga package functions to get platform-correct paths
 	// (Windows uses %APPDATA%\gga, Unix uses ~/.config/gga)
