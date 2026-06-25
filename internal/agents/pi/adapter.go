@@ -74,7 +74,7 @@ func (a *Adapter) InstallCommand(system.PlatformProfile) ([][]string, error) {
 		{"pi", "install", "npm:gentle-engram"},
 		{"pi", "install", "npm:pi-mcp-adapter"},
 		a.engramInitCommand(),
-		{"pi", "install", "npm:pi-subagents"},
+		{"pi", "install", "npm:@tintinweb/pi-subagents"},
 		{"pi", "install", "npm:pi-intercom"},
 		{"pi", "install", "npm:@juicesharp/rpiv-ask-user-question"},
 		{"pi", "install", "npm:pi-web-access"},
