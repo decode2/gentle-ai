@@ -70,7 +70,7 @@ func TestInstallScriptBetaGoInstallBypassesPublicGoProxy(t *testing.T) {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
 	}
 
-	script := string(content)
+	script := strings.ReplaceAll(string(content), "\r\n", "\n")
 	for _, want := range []string{
 		"prepend_go_env_pattern GONOSUMDB github.com/gentleman-programming/gentle-ai",
 		"prepend_go_env_pattern GOPRIVATE github.com/gentleman-programming/gentle-ai",
@@ -103,7 +103,7 @@ func TestInstallScriptBetaGoInstallBypassesPublicGoProxy(t *testing.T) {
 	}
 	function := script[start : start+end+3]
 
-	cmd := exec.Command("bash", "-c", function+`
+	cmdStr := function + `
 GONOSUMDB=example.com/private
 GOPRIVATE=github.com/acme/*
 GONOPROXY=github.com/gentleman-programming/gentle-ai
@@ -111,13 +111,32 @@ prepend_go_env_pattern GONOSUMDB github.com/gentleman-programming/gentle-ai
 prepend_go_env_pattern GOPRIVATE github.com/gentleman-programming/gentle-ai
 prepend_go_env_pattern GONOPROXY github.com/gentleman-programming/gentle-ai
 printf '%s\n%s\n%s\n' "$GONOSUMDB" "$GOPRIVATE" "$GONOPROXY"
-`)
+`
+	cmdStr = strings.ReplaceAll(cmdStr, "\r", "")
+	tmpFile := "script_test.sh"
+	if err := os.WriteFile(tmpFile, []byte(cmdStr), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile)
+	cmd := exec.Command("bash", tmpFile)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run prepend_go_env_pattern fixture: %v\noutput: %s", err, out)
 	}
 
-	got := strings.TrimSpace(string(out))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var cleanLines []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "wsl:") {
+			continue
+		}
+		if l == "" {
+			continue
+		}
+		cleanLines = append(cleanLines, l)
+	}
+	got := strings.Join(cleanLines, "\n")
 	want := strings.Join([]string{
 		"github.com/gentleman-programming/gentle-ai,example.com/private",
 		"github.com/gentleman-programming/gentle-ai,github.com/acme/*",
