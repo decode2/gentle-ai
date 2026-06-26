@@ -113,7 +113,7 @@ prepend_go_env_pattern GONOPROXY github.com/gentleman-programming/gentle-ai
 printf '%s\n%s\n%s\n' "$GONOSUMDB" "$GOPRIVATE" "$GONOPROXY"
 `
 	cmdStr = strings.ReplaceAll(cmdStr, "\r", "")
-	tmpFile := "script_test.sh"
+	tmpFile := "script_test_" + t.Name() + ".sh"
 	if err := os.WriteFile(tmpFile, []byte(cmdStr), 0o755); err != nil {
 		t.Fatal(err)
 	}
