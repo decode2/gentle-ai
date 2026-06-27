@@ -150,7 +150,21 @@ func opencodePluginUpgrade(ctx context.Context, r update.UpdateResult) error {
 	cmd.Stdin = nil
 	cmd.Env = openCodePluginUpgradeEnv(cmd.Env)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s upgrade %s in %s: %w (output: %s)", pm, pkg, opencodeDir, err, string(out))
+		outStr := string(out)
+		if pm == "npm" && (strings.Contains(outStr, "ERESOLVE") || strings.Contains(outStr, "--legacy-peer-deps")) {
+			retryCmd := execCommand("npm", append([]string{"install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps"}, targets...)...)
+			retryCmd.Dir = opencodeDir
+			retryCmd.Stdin = nil
+			retryCmd.Env = openCodePluginUpgradeEnv(retryCmd.Env)
+			if retryOut, retryErr := retryCmd.CombinedOutput(); retryErr == nil {
+				out = retryOut
+				err = nil
+			} else {
+				return fmt.Errorf("%s upgrade %s in %s: %w (output: %s)", pm, pkg, opencodeDir, retryErr, string(retryOut))
+			}
+		} else {
+			return fmt.Errorf("%s upgrade %s in %s: %w (output: %s)", pm, pkg, opencodeDir, err, outStr)
+		}
 	}
 	if err := clearOpenCodePluginPackageCache(homeDir, pkg); err != nil {
 		return fmt.Errorf("clear OpenCode package cache for %s: %w", pkg, err)

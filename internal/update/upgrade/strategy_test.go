@@ -624,6 +624,66 @@ func TestRunStrategyOpenCodePluginRegisteredPendingRunsPackageManager(t *testing
 	}
 }
 
+func TestRunStrategyOpenCodePluginNpmERESOLVERetriesWithLegacyPeerDeps(t *testing.T) {
+	origHomeDir := openCodeHomeDir
+	origLookPath := lookPathCommand
+	origExecCommand := execCommand
+	t.Cleanup(func() {
+		openCodeHomeDir = origHomeDir
+		lookPathCommand = origLookPath
+		execCommand = origExecCommand
+	})
+
+	home := t.TempDir()
+	opencodeDir := filepath.Join(home, ".config", "opencode")
+	pkg := "opencode-sdd-engram-manage"
+	if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(opencodeDir, "tui.json"), []byte(`{"plugin":["opencode-sdd-engram-manage"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	openCodeHomeDir = func() (string, error) { return home, nil }
+	lookPathCommand = func(file string) (string, error) {
+		if file == "npm" {
+			return "/usr/bin/npm", nil
+		}
+		return "", errors.New("not found")
+	}
+
+	var callHistory [][]string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		callHistory = append(callHistory, append([]string{name}, args...))
+		if len(callHistory) == 1 {
+			// First call fails with npm ERESOLVE
+			return mockCmd("sh", "-c", "echo 'npm error code ERESOLVE\nnpm error ERESOLVE could not resolve' && exit 1")
+		}
+		// Retry succeeds
+		return mockCmd("true")
+	}
+
+	_, err := runStrategy(context.Background(), update.UpdateResult{
+		Tool: update.ToolInfo{
+			Name:          pkg,
+			InstallMethod: update.InstallOpenCodePlugin,
+			NpmPackage:    pkg,
+		},
+		Status: update.RegisteredNotMaterialized,
+	}, system.PlatformProfile{})
+	if err != nil {
+		t.Fatalf("unexpected error on retry: %v", err)
+	}
+	if len(callHistory) != 2 {
+		t.Fatalf("expected 2 exec calls (initial + retry), got %d", len(callHistory))
+	}
+	retryArgs := callHistory[1][1:]
+	wantRetryArgs := []string{"install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", pkg + "@latest", "@opencode-ai/plugin@latest"}
+	if strings.Join(retryArgs, " ") != strings.Join(wantRetryArgs, " ") {
+		t.Fatalf("retry args = %v, want %v", retryArgs, wantRetryArgs)
+	}
+}
+
 func TestRunStrategyOpenCodePluginFallsBackWithoutPackageManager(t *testing.T) {
 	origHomeDir := openCodeHomeDir
 	origLookPath := lookPathCommand
