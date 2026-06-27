@@ -152,6 +152,11 @@ func opencodePluginUpgrade(ctx context.Context, r update.UpdateResult) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(out)
 		if pm == "npm" && (strings.Contains(outStr, "ERESOLVE") || strings.Contains(outStr, "--legacy-peer-deps")) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			retryCmd := execCommand("npm", append([]string{"install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps"}, targets...)...)
 			retryCmd.Dir = opencodeDir
 			retryCmd.Stdin = nil
