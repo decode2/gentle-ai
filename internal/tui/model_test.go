@@ -976,7 +976,7 @@ func sddMultiCursor(t *testing.T) int {
 // opencode.json and otherwise shows its explicit empty state instead of silently
 // skipping model assignment.
 func TestSDDModeMultiShowsModelPickerWhenCacheMissing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	withoutModelCacheOverride(t)
 
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenSDDMode
@@ -996,7 +996,7 @@ func TestSDDModeMultiShowsModelPickerWhenCacheMissing(t *testing.T) {
 }
 
 func TestSDDModeMultiEmptyModelPickerCanContinueWithDefaults(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	withoutModelCacheOverride(t)
 
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenSDDMode
@@ -1516,20 +1516,19 @@ func TestWelcomeMenu_UninstallNavigation_WithProfiles(t *testing.T) {
 	}
 }
 
-// TestWelcomeMenu_OptionCount verifies the welcome menu has 12 items without OpenCode
-// and 13 items when OpenCode is detected (adds "OpenCode SDD Profiles" option).
+// TestWelcomeMenu_OptionCount verifies the welcome menu has 13 items without OpenCode
+// and 14 items when OpenCode is detected (adds "OpenCode SDD Profiles" option).
 func TestWelcomeMenu_OptionCount(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
-	// Without OpenCode detected: 12 options (includes dedicated OpenCode community plugins,
-	// the slice-3b "Uninstall OpenCode Plugin" shortcut, managed uninstall, and community tools).
+	// Without OpenCode detected: 13 options.
 	opts := screens.WelcomeOptions(m.UpdateResults, m.UpdateCheckDone, false, 0, true)
-	if len(opts) != 12 {
-		t.Fatalf("WelcomeOptions(showProfiles=false) len = %d, want 12; got %v", len(opts), opts)
+	if len(opts) != 13 {
+		t.Fatalf("WelcomeOptions(showProfiles=false) len = %d, want 13; got %v", len(opts), opts)
 	}
-	// With OpenCode detected: 13 options (adds "OpenCode SDD Profiles").
+	// With OpenCode detected: 14 options.
 	optsWithProfiles := screens.WelcomeOptions(m.UpdateResults, m.UpdateCheckDone, true, 0, true)
-	if len(optsWithProfiles) != 13 {
-		t.Fatalf("WelcomeOptions(showProfiles=true) len = %d, want 13; got %v", len(optsWithProfiles), optsWithProfiles)
+	if len(optsWithProfiles) != 14 {
+		t.Fatalf("WelcomeOptions(showProfiles=true) len = %d, want 14; got %v", len(optsWithProfiles), optsWithProfiles)
 	}
 }
 
@@ -6592,6 +6591,16 @@ func withModelCacheOverride(t *testing.T) {
 	t.Cleanup(func() { osStatModelCache = orig })
 }
 
+func withoutModelCacheOverride(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	orig := osStatModelCache
+	osStatModelCache = func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	t.Cleanup(func() { osStatModelCache = orig })
+}
+
 func TestPickerFlowSlice(t *testing.T) {
 	allPickerAgents := []model.AgentID{
 		model.AgentClaudeCode,
@@ -6651,7 +6660,7 @@ func TestPickerFlowSlice(t *testing.T) {
 		{
 			name: "non-custom all agents SDDMode Multi cache absent excludes ModelPicker",
 			setup: func(t *testing.T) Model {
-				t.Setenv("HOME", t.TempDir()) // guarantees cache path resolves to missing file
+				withoutModelCacheOverride(t)
 				m := NewModel(system.DetectionResult{}, "dev")
 				m.Selection.Preset = model.PresetFullGentleman
 				m.Selection.Agents = allPickerAgents

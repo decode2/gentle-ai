@@ -527,7 +527,8 @@ type Model struct {
 	// EditAgentsMode is true when the agent checklist was reached via the
 	// "Edit installed agents" Welcome shortcut. On confirmation it syncs
 	// only the affected agents and returns to ScreenWelcome.
-	EditAgentsMode bool
+	EditAgentsMode      bool
+	EditAgentsSelection []model.AgentID
 
 	// PendingSyncOverrides holds model assignments selected via the
 	// "Configure Models" shortcut. When non-nil, the next sync run merges
@@ -1150,8 +1151,10 @@ func (m Model) View() string {
 		return screens.RenderUninstallResult(m.UninstallResult, m.UninstallErr, m.UninstallMode, m.UninstallProfilesToRemove, m.UninstallEngramScope, m.UninstallEngramProjectScopeAvailable, m.SyncCleanInstallFiles, m.SyncCleanInstallErr)
 	case ScreenDetection:
 		return screens.RenderDetection(m.Detection, m.Cursor)
-	case ScreenAgents, ScreenEditAgents:
+	case ScreenAgents:
 		return screens.RenderAgents(m.Selection.Agents, m.Cursor)
+	case ScreenEditAgents:
+		return screens.RenderAgents(m.EditAgentsSelection, m.Cursor)
 	case ScreenPersona:
 		return screens.RenderPersona(m.Selection.Persona, m.Cursor)
 	case ScreenPreset:
@@ -1533,8 +1536,10 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.goBack(), nil
 	case " ":
 		switch m.Screen {
-		case ScreenAgents, ScreenEditAgents:
+		case ScreenAgents:
 			m.toggleCurrentAgent()
+		case ScreenEditAgents:
+			m.toggleCurrentEditAgent()
 		case ScreenUninstall:
 			m.toggleCurrentUninstallAgent()
 		case ScreenUninstallComponents:
@@ -1723,6 +1728,8 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			if m.Cursor == next {
 				// "Edit installed agents" — launch the agent checklist in edit mode.
 				m.EditAgentsMode = true
+				m.EditAgentsSelection = make([]model.AgentID, len(m.Selection.Agents))
+				copy(m.EditAgentsSelection, m.Selection.Agents)
 				m.setScreen(ScreenEditAgents)
 				return m, nil
 			}
@@ -2068,13 +2075,14 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 		agentCount := len(screens.AgentOptions())
 		switch {
 		case m.Cursor < agentCount:
-			m.toggleCurrentAgent()
-		case m.Cursor == agentCount && len(m.Selection.Agents) > 0:
-			// User confirmed — persist via a sync run scoped to the new selection.
-			// Save agents before reset (reset clears PendingSyncOverrides).
-			selectedAgents := make([]model.AgentID, len(m.Selection.Agents))
-			copy(selectedAgents, m.Selection.Agents)
+			m.toggleCurrentEditAgent()
+		case m.Cursor == agentCount && len(m.EditAgentsSelection) > 0:
+			// User confirmed — commit draft selection and persist via a sync run.
+			selectedAgents := make([]model.AgentID, len(m.EditAgentsSelection))
+			copy(selectedAgents, m.EditAgentsSelection)
+			m.Selection.Agents = selectedAgents
 			m.EditAgentsMode = false
+			m.EditAgentsSelection = nil
 			m = m.withResetOperationState()
 			m.PendingSyncOverrides = &model.SyncOverrides{
 				TargetAgents: selectedAgents,
@@ -2082,6 +2090,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenSync)
 		case m.Cursor == agentCount+1:
 			m.EditAgentsMode = false
+			m.EditAgentsSelection = nil
 			m.setScreen(ScreenWelcome)
 		}
 	case ScreenPersona:
@@ -3330,6 +3339,13 @@ func (m Model) goBack() Model {
 		return m
 	}
 
+	if m.EditAgentsMode && m.Screen == ScreenEditAgents {
+		m.EditAgentsMode = false
+		m.EditAgentsSelection = nil
+		m.setScreen(ScreenWelcome)
+		return m
+	}
+
 	// From SkillPicker, go back to the preceding screen.
 	// In custom preset: StrictTDD precedes SkillPicker; SDDMode/ModelPicker/ClaudeModelPicker precede StrictTDD.
 	if m.Screen == ScreenSkillPicker {
@@ -3753,6 +3769,23 @@ func (m *Model) toggleCurrentAgent() {
 	}
 
 	m.Selection.Agents = append(m.Selection.Agents, agent)
+}
+
+func (m *Model) toggleCurrentEditAgent() {
+	options := screens.AgentOptions()
+	if m.Cursor >= len(options) {
+		return
+	}
+
+	agent := options[m.Cursor]
+	for idx, selected := range m.EditAgentsSelection {
+		if selected == agent {
+			m.EditAgentsSelection = append(m.EditAgentsSelection[:idx], m.EditAgentsSelection[idx+1:]...)
+			return
+		}
+	}
+
+	m.EditAgentsSelection = append(m.EditAgentsSelection, agent)
 }
 
 func (m *Model) toggleCurrentComponent() {

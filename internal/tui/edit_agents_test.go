@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/tui/screens"
 )
@@ -33,20 +34,21 @@ func TestEditAgents_WelcomeDispatchesScreenEditAgents(t *testing.T) {
 }
 
 // TestEditAgents_SpaceTogglesAgent verifies that pressing space on ScreenEditAgents
-// toggles the agent at the cursor position.
+// toggles the agent at the cursor position in EditAgentsSelection.
 func TestEditAgents_SpaceTogglesAgent(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
 	m.EditAgentsMode = true
+	m.EditAgentsSelection = append([]model.AgentID(nil), m.Selection.Agents...)
 	m.Cursor = 0
 
-	before := len(m.Selection.Agents)
+	before := len(m.EditAgentsSelection)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	got := updated.(Model)
-	after := len(got.Selection.Agents)
+	after := len(got.EditAgentsSelection)
 
 	if after == before {
-		t.Fatalf("spacebar on ScreenEditAgents should toggle agent; selection unchanged at %d agents", before)
+		t.Fatalf("spacebar on ScreenEditAgents should toggle agent in draft selection; selection unchanged at %d agents", before)
 	}
 }
 
@@ -57,7 +59,7 @@ func TestEditAgents_ConfirmTransitionsToSync(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
 	m.EditAgentsMode = true
-	m.Selection.Agents = screens.AgentOptions()[:1]
+	m.EditAgentsSelection = screens.AgentOptions()[:1]
 	m.Cursor = len(screens.AgentOptions()) // "Next" button
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})

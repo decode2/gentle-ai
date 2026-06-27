@@ -125,6 +125,7 @@ func TestWelcomeOptions_ProfilesInsertedBeforeManageBackups(t *testing.T) {
 	pluginsIdx := -1
 	uninstallIdx := -1
 	profilesIdx := -1
+	editAgentsIdx := -1
 	manageBackupsIdx := -1
 	for i, opt := range opts {
 		if strings.HasPrefix(opt, "Create your own Agent") {
@@ -138,6 +139,9 @@ func TestWelcomeOptions_ProfilesInsertedBeforeManageBackups(t *testing.T) {
 		}
 		if strings.HasPrefix(opt, "OpenCode SDD Profiles") {
 			profilesIdx = i
+		}
+		if opt == "Edit installed agents" {
+			editAgentsIdx = i
 		}
 		if opt == "Manage backups" {
 			manageBackupsIdx = i
@@ -156,6 +160,9 @@ func TestWelcomeOptions_ProfilesInsertedBeforeManageBackups(t *testing.T) {
 	if profilesIdx < 0 {
 		t.Fatal("option 'OpenCode SDD Profiles' not found")
 	}
+	if editAgentsIdx < 0 {
+		t.Fatal("option 'Edit installed agents' not found")
+	}
 	if manageBackupsIdx < 0 {
 		t.Fatal("option 'Manage backups' not found")
 	}
@@ -172,9 +179,13 @@ func TestWelcomeOptions_ProfilesInsertedBeforeManageBackups(t *testing.T) {
 		t.Errorf("profiles option at index %d, expected %d (right after uninstall at %d)",
 			profilesIdx, uninstallIdx+1, uninstallIdx)
 	}
-	if manageBackupsIdx != profilesIdx+1 {
-		t.Errorf("'Manage backups' at index %d, expected %d (right after profiles at %d)",
-			manageBackupsIdx, profilesIdx+1, profilesIdx)
+	if editAgentsIdx != profilesIdx+1 {
+		t.Errorf("'Edit installed agents' at index %d, expected %d (right after profiles at %d)",
+			editAgentsIdx, profilesIdx+1, profilesIdx)
+	}
+	if manageBackupsIdx != editAgentsIdx+1 {
+		t.Errorf("'Manage backups' at index %d, expected %d (right after edit installed agents at %d)",
+			manageBackupsIdx, editAgentsIdx+1, editAgentsIdx)
 	}
 }
 
