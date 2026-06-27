@@ -410,6 +410,10 @@ const (
 	// ScreenOpenCodePluginUninstallResult reports the success/failure
 	// summary of the uninstall and returns to Welcome on Enter.
 	ScreenOpenCodePluginUninstallResult
+	// ScreenEditAgents is reached from the Welcome menu to let the user add or
+	// remove installed agents without going through the full install wizard.
+	// It reuses ScreenAgents (same checklist) but is driven by EditAgentsMode.
+	ScreenEditAgents
 )
 
 type Model struct {
@@ -519,6 +523,11 @@ type Model struct {
 	// Model Config shortcut, so they return to ScreenWelcome instead of
 	// continuing the install flow.
 	ModelConfigMode bool
+
+	// EditAgentsMode is true when the agent checklist was reached via the
+	// "Edit installed agents" Welcome shortcut. On confirmation it syncs
+	// only the affected agents and returns to ScreenWelcome.
+	EditAgentsMode bool
 
 	// PendingSyncOverrides holds model assignments selected via the
 	// "Configure Models" shortcut. When non-nil, the next sync run merges
@@ -1141,7 +1150,7 @@ func (m Model) View() string {
 		return screens.RenderUninstallResult(m.UninstallResult, m.UninstallErr, m.UninstallMode, m.UninstallProfilesToRemove, m.UninstallEngramScope, m.UninstallEngramProjectScopeAvailable, m.SyncCleanInstallFiles, m.SyncCleanInstallErr)
 	case ScreenDetection:
 		return screens.RenderDetection(m.Detection, m.Cursor)
-	case ScreenAgents:
+	case ScreenAgents, ScreenEditAgents:
 		return screens.RenderAgents(m.Selection.Agents, m.Cursor)
 	case ScreenPersona:
 		return screens.RenderPersona(m.Selection.Persona, m.Cursor)
@@ -1524,7 +1533,7 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.goBack(), nil
 	case " ":
 		switch m.Screen {
-		case ScreenAgents:
+		case ScreenAgents, ScreenEditAgents:
 			m.toggleCurrentAgent()
 		case ScreenUninstall:
 			m.toggleCurrentUninstallAgent()
@@ -1710,6 +1719,14 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 				}
 				next++
 			}
+
+			if m.Cursor == next {
+				// "Edit installed agents" — launch the agent checklist in edit mode.
+				m.EditAgentsMode = true
+				m.setScreen(ScreenEditAgents)
+				return m, nil
+			}
+			next++
 
 			if m.Cursor == next {
 				m.setScreen(ScreenBackups)
@@ -2045,6 +2062,27 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenPersona)
 		case m.Cursor == agentCount+1:
 			m.setScreen(ScreenDetection)
+		}
+	case ScreenEditAgents:
+		// "Edit installed agents" shortcut: confirm runs a targeted sync.
+		agentCount := len(screens.AgentOptions())
+		switch {
+		case m.Cursor < agentCount:
+			m.toggleCurrentAgent()
+		case m.Cursor == agentCount && len(m.Selection.Agents) > 0:
+			// User confirmed — persist via a sync run scoped to the new selection.
+			// Save agents before reset (reset clears PendingSyncOverrides).
+			selectedAgents := make([]model.AgentID, len(m.Selection.Agents))
+			copy(selectedAgents, m.Selection.Agents)
+			m.EditAgentsMode = false
+			m = m.withResetOperationState()
+			m.PendingSyncOverrides = &model.SyncOverrides{
+				TargetAgents: selectedAgents,
+			}
+			m.setScreen(ScreenSync)
+		case m.Cursor == agentCount+1:
+			m.EditAgentsMode = false
+			m.setScreen(ScreenWelcome)
 		}
 	case ScreenPersona:
 		options := screens.PersonaOptions()
