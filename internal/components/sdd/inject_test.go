@@ -2106,10 +2106,15 @@ func TestInjectOpenCodeSubagentPromptsStayExecutorScoped(t *testing.T) {
 
 		// After the shared-prompt-files refactor, the prompt field is a {file:...}
 		// reference. The executor-scoped content lives in the prompt file on disk.
+		// The reference is relative to settingsPath's directory (not an absolute
+		// path baked with the current $HOME) — see issue #723.
 		prompt, _ := agentDef["prompt"].(string)
-		expectedRef := "{file:" + filepath.ToSlash(filepath.Join(promptDir, phase+".md")) + "}"
+		expectedRef := "{file:./prompts/sdd/" + phase + ".md}"
 		if prompt != expectedRef {
 			t.Fatalf("%s prompt = %q, want {file:...} reference %q", phase, prompt, expectedRef)
+		}
+		if strings.Contains(prompt, home) {
+			t.Fatalf("%s prompt = %q leaks absolute home dir %q", phase, prompt, home)
 		}
 
 		// Also verify the prompt file contains the executor-scoped content

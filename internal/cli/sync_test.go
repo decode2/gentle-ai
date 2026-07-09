@@ -1502,24 +1502,23 @@ func TestRunSyncWithProfilesIntegration(t *testing.T) {
 	// profile sub-agents use {file:...} references that rely on prompts being written
 	// during a prior multi-mode sync. Check that the profile overlay is written correctly
 	// by verifying the agent keys themselves are present (already done above).
-	// The prompt directory is populated by the profile generator which calls
-	// SharedPromptDir internally — verify the directory path is referenced correctly.
-	promptDir := filepath.Join(home, ".config", "opencode", "prompts", "sdd")
+	//
+	// The reference is RELATIVE to settingsPath's own directory
+	// (~/.config/opencode/), not an absolute path baked with the current
+	// $HOME — an absolute reference breaks the moment this opencode.json is
+	// synced to a different machine or account (issue #723).
 	promptPhases := []string{
 		"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-onboard",
 	}
-	// Verify the opencode.json file references mention the correct prompt directory.
-	slashPromptDir := filepath.ToSlash(promptDir)
-	if !strings.Contains(settingsStr, slashPromptDir) {
-		t.Errorf("opencode.json should reference prompt directory %q", slashPromptDir)
-	}
-	// Verify all phase prompt file references appear in the settings.
 	for _, phase := range promptPhases {
-		promptRef := filepath.ToSlash(filepath.Join(promptDir, phase+".md"))
+		promptRef := "{file:./prompts/sdd/" + phase + ".md}"
 		if !strings.Contains(settingsStr, promptRef) {
-			t.Errorf("opencode.json should contain prompt file reference for %q", promptRef)
+			t.Errorf("opencode.json should contain relative prompt file reference %q", promptRef)
 		}
+	}
+	if strings.Contains(settingsStr, filepath.ToSlash(home)) {
+		t.Errorf("opencode.json must not contain an absolute home-directory path (breaks portability across machines): %s", home)
 	}
 
 	// Run 2: same selection → all assets already current → filesChanged=0.

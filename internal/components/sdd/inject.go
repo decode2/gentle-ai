@@ -528,7 +528,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, fmt.Errorf("clean stale profile JD agents %q: %w", profile.Name, cleanupErr)
 				}
 				changed = changed || cleanupResult.Changed
-				profileOverlay, profileErr := GenerateProfileOverlay(profile, homeDir, opts.CodeGraphGuidanceMarkdown)
+				profileOverlay, profileErr := GenerateProfileOverlay(profile, homeDir, settingsPath, opts.CodeGraphGuidanceMarkdown)
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("generate profile overlay %q: %w", profile.Name, profileErr)
 				}
@@ -892,10 +892,12 @@ func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string,
 		}
 	}
 
-	// Replace sub-agent prompt placeholders with {file:<absolutePath>} references.
+	// Replace sub-agent prompt placeholders with {file:<relativePath>} references.
 	// The placeholder format is __PROMPT_FILE_{phase}__ where {phase} is the agent name.
+	// The reference is relative to settingsPath's directory (see
+	// SharedPromptFileRef) so the generated opencode.json stays portable
+	// across machines/accounts instead of baking in the current $HOME.
 	if homeDir != "" {
-		promptDir := SharedPromptDir(homeDir)
 		for _, phase := range subAgentPhaseOrder {
 			agentRaw, exists := agentsMap[phase]
 			if !exists {
@@ -907,7 +909,7 @@ func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string,
 			}
 			placeholder := "__PROMPT_FILE_" + phase + "__"
 			if prompt, _ := agentMap["prompt"].(string); prompt == placeholder {
-				agentMap["prompt"] = "{file:" + filepath.ToSlash(filepath.Join(promptDir, phase+".md")) + "}"
+				agentMap["prompt"] = SharedPromptFileRef(settingsPath, homeDir, phase)
 			}
 		}
 	}

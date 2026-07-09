@@ -259,8 +259,12 @@ func extractModelFromAgent(agentMap map[string]any) model.ModelAssignment {
 //   - sdd-orchestrator-{name}: primary mode, inlined orchestrator prompt (with suffixed
 //     sub-agent references and model assignments table), permissions scoped to *-{name}
 //   - sdd-{phase}-{name} (10 agents): subagent mode, hidden, file reference to
-//     the shared prompt at SharedPromptDir(homeDir)/sdd-{phase}.md
-func GenerateProfileOverlay(profile model.Profile, homeDir string, codeGraphGuidance ...string) ([]byte, error) {
+//     the shared prompt at SharedPromptDir(homeDir)/sdd-{phase}.md, expressed
+//     relative to settingsPath's directory (see SharedPromptFileRef) so the
+//     reference stays portable across machines/accounts and still resolves
+//     correctly when settingsPath belongs to an adapter (e.g. Kilocode) whose
+//     config directory differs from the shared prompt directory's parent.
+func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string, codeGraphGuidance ...string) ([]byte, error) {
 	if profile.Name == "" || profile.Name == "default" {
 		return nil, fmt.Errorf("GenerateProfileOverlay: profile name must be non-empty and not 'default'")
 	}
@@ -340,7 +344,6 @@ func GenerateProfileOverlay(profile model.Profile, homeDir string, codeGraphGuid
 	agentMap[orchestratorKey] = orchEntry
 
 	// Sub-agent entries
-	promptDir := SharedPromptDir(homeDir)
 	phaseDescriptions := map[string]string{
 		"sdd-init":    "Bootstrap SDD context and project configuration",
 		"sdd-explore": "Investigate codebase and think through ideas",
@@ -356,7 +359,7 @@ func GenerateProfileOverlay(profile model.Profile, homeDir string, codeGraphGuid
 
 	for _, phase := range profilePhaseOrder {
 		key := phase + suffix
-		prompt := "{file:" + filepath.ToSlash(filepath.Join(promptDir, phase+".md")) + "}"
+		prompt := SharedPromptFileRef(settingsPath, homeDir, phase)
 		entry := map[string]any{
 			"mode":        "subagent",
 			"hidden":      true,

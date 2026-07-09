@@ -1195,7 +1195,7 @@ func TestOpenCodeSDDOverlaySubagentsAreExplicitExecutors(t *testing.T) {
 			}
 
 			// multi overlay uses __PROMPT_FILE_{phase}__ placeholders that are
-			// replaced at runtime with absolute {file:...} references by
+			// replaced at runtime with relative {file:...} references by
 			// inlineOpenCodeSDDPrompts. Verify the placeholder format.
 			// single overlay still uses inline prompt strings.
 			isMulti := assetPath == "opencode/sdd-overlay-multi.json"

@@ -19,6 +19,49 @@ func SharedPromptDir(homeDir string) string {
 	return filepath.Join(homeDir, ".config", "opencode", "prompts", "sdd")
 }
 
+// SharedPromptFileRef returns the OpenCode `{file:...}` reference for the
+// given phase's shared SDD prompt, expressed as a path RELATIVE to the
+// directory that contains settingsPath (the opencode.json/kilo opencode.json
+// being written).
+//
+// Why relative: an absolute reference bakes in the current machine's home
+// directory (e.g. "/Users/alice/..."), so the generated settings file breaks
+// the moment it is synced to a different machine or account (issue #723).
+// This mirrors the persona component's own convention — it writes the
+// `gentleman` agent's prompt as "{file:./AGENTS.md}" into the very same
+// OpenCode settings schema (see internal/components/persona/inject.go) — and
+// that convention resolves correctly because OpenCode expands `{file:...}`
+// relative to the directory holding the settings file that references it.
+//
+// filepath.Rel is used instead of a hardcoded "./prompts/sdd/..." literal
+// because the shared prompt directory is NOT always a sibling of
+// settingsPath's directory: OpenCode's opencode.json lives alongside it
+// (~/.config/opencode/opencode.json + ~/.config/opencode/prompts/sdd/), but
+// Kilocode's opencode.json lives in a different config dir
+// (~/.config/kilo/opencode.json) while still sharing the same physical
+// prompt files under ~/.config/opencode/prompts/sdd/. filepath.Rel produces
+// the correct "../opencode/prompts/sdd/..." form for that case instead of an
+// incorrect "./prompts/sdd/..." reference that would silently 404 for
+// Kilocode.
+func SharedPromptFileRef(settingsPath, homeDir, phase string) string {
+	promptFile := filepath.Join(SharedPromptDir(homeDir), phase+".md")
+
+	rel, err := filepath.Rel(filepath.Dir(settingsPath), promptFile)
+	if err != nil {
+		// filepath.Rel only fails when the two paths are on different
+		// volumes (Windows-only edge case). Fall back to an absolute path
+		// rather than emit a broken reference — still correct, just not
+		// portable in that rare scenario.
+		return "{file:" + filepath.ToSlash(promptFile) + "}"
+	}
+
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, "..") {
+		rel = "./" + rel
+	}
+	return "{file:" + rel + "}"
+}
+
 // subAgentPhaseOrder is an alias for profilePhaseOrder (defined in profiles.go),
 // kept for backward compatibility with any code in this file that references it.
 // Both variables are in the same package and represent the same canonical list.

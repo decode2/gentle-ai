@@ -20,6 +20,54 @@ func TestSharedPromptDir(t *testing.T) {
 	}
 }
 
+// TestSharedPromptFileRef verifies SharedPromptFileRef emits a path relative
+// to settingsPath's directory. The Kilocode case is a regression guard: the
+// shared prompt files always live under
+// {homeDir}/.config/opencode/prompts/sdd/, but Kilocode's opencode.json lives
+// under {homeDir}/.config/kilo/, one directory over from opencode's config
+// dir. filepath.Rel must therefore produce a "../opencode/..." reference
+// there, not a same-directory "./prompts/sdd/..." reference. If the helper
+// is ever regressed to a hardcoded "./prompts/sdd/..." literal, this case
+// fails (see issue #723).
+func TestSharedPromptFileRef(t *testing.T) {
+	homeDir := "/home/tester"
+
+	tests := []struct {
+		name         string
+		settingsPath string
+		phase        string
+		want         string
+	}{
+		{
+			name:         "opencode settings alongside prompts dir",
+			settingsPath: filepath.Join(homeDir, ".config", "opencode", "opencode.json"),
+			phase:        "sdd-apply",
+			want:         "{file:./prompts/sdd/sdd-apply.md}",
+		},
+		{
+			name:         "kilocode settings in a sibling config dir",
+			settingsPath: filepath.Join(homeDir, ".config", "kilo", "opencode.json"),
+			phase:        "sdd-apply",
+			want:         "{file:../opencode/prompts/sdd/sdd-apply.md}",
+		},
+		{
+			name:         "kilocode settings with a different phase",
+			settingsPath: filepath.Join(homeDir, ".config", "kilo", "opencode.json"),
+			phase:        "sdd-verify",
+			want:         "{file:../opencode/prompts/sdd/sdd-verify.md}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SharedPromptFileRef(tt.settingsPath, homeDir, tt.phase)
+			if got != tt.want {
+				t.Fatalf("SharedPromptFileRef(%q, %q, %q) = %q, want %q", tt.settingsPath, homeDir, tt.phase, got, tt.want)
+			}
+		})
+	}
+}
+
 func readOpenCodeAgents(t *testing.T, settingsPath string) map[string]any {
 	t.Helper()
 	content, err := os.ReadFile(settingsPath)
@@ -329,15 +377,17 @@ func TestInjectOpenCodeMultiModeSubagentPromptsUseFilePaths(t *testing.T) {
 		t.Fatalf("ReadFile(opencode.json) error = %v", err)
 	}
 
-	promptDir := SharedPromptDir(home)
-
 	text := strings.ReplaceAll(string(content), `\\`, `/`)
 	for _, phase := range []string{"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-onboard"} {
-		expectedRef := "{file:" + filepath.Join(promptDir, phase+".md") + "}"
-		expectedRef = strings.ReplaceAll(expectedRef, `\`, `/`)
+		// Relative to settingsPath's directory (~/.config/opencode/), not an
+		// absolute path baked with the current $HOME — see issue #723.
+		expectedRef := "{file:./prompts/sdd/" + phase + ".md}"
 		if !strings.Contains(text, expectedRef) {
 			t.Errorf("opencode.json sub-agent %q missing {file:...} reference %q", phase, expectedRef)
 		}
+	}
+	if strings.Contains(text, filepath.ToSlash(home)) {
+		t.Errorf("opencode.json must not contain an absolute home-directory path (breaks portability across machines): %s", home)
 	}
 }
 

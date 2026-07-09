@@ -175,7 +175,10 @@ func TestGoldenSDD_OpenCode_Multi(t *testing.T) {
 	}
 	// Normalize the absolute home path in the settings JSON so the golden
 	// file remains stable across test runs (temp dirs change each run).
-	// Sub-agent prompts now use {file:/abs/path/...} references.
+	// Sub-agent prompts use relative {file:./prompts/sdd/...} references
+	// (issue #723) — this normalization is now a no-op for those references
+	// but is kept for any other absolute-home-path content the overlay may
+	// still contain.
 	jsonStr := string(settingsJSON)
 	jsonStr = strings.ReplaceAll(jsonStr, home, "{{HOME}}")
 	jsonStr = strings.ReplaceAll(jsonStr, filepath.ToSlash(home), "{{HOME}}")
