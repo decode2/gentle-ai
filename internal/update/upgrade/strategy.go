@@ -302,7 +302,11 @@ func openCodePluginRegisteredPendingHint(pkg string) string {
 	return fmt.Sprintf("OpenCode plugin %s is registered in ~/.config/opencode/tui.json but is not materialized in node_modules yet. Restart or reload OpenCode to materialize it; if it remains pending, check OpenCode logs for package or peer dependency errors before retrying upgrade.", pkg)
 }
 
-// brewUpgrade runs `brew update` (non-fatal) then `brew upgrade <toolName>`.
+// brewUpgrade runs `brew update` (non-fatal) then `brew upgrade <toolName>`,
+// adding `--cask` before the tool name when isCaskTool(toolName) reports the
+// tool is distributed as a Homebrew cask rather than a formula (see issue
+// #727) — casks and formulae are separate Homebrew namespaces, so `brew
+// upgrade <name>` alone resolves against formulae only.
 //
 // brew update refreshes the local formula cache so that Homebrew is aware of
 // new versions published since the user last ran it. If update fails (e.g. no
@@ -333,7 +337,15 @@ func brewUpgrade(ctx context.Context, toolName string) error {
 	updateCmd.Stdin = nil
 	_ = updateCmd.Run() // ignore error intentionally
 
-	upgradeCmd := execCommand("brew", "upgrade", toolName)
+	upgradeArgs := []string{"upgrade"}
+	if isCaskTool(toolName) {
+		// Homebrew casks and formulae live in separate namespaces; `brew upgrade
+		// <name>` alone resolves against formulae only, so a cask upgrade fails
+		// or silently no-ops without --cask. See issue #727.
+		upgradeArgs = append(upgradeArgs, "--cask")
+	}
+	upgradeArgs = append(upgradeArgs, toolName)
+	upgradeCmd := execCommand("brew", upgradeArgs...)
 	upgradeCmd.Stdin = nil
 	if out, err := upgradeCmd.CombinedOutput(); err != nil {
 		return formatBrewUpgradeError(toolName, err, string(out))
@@ -345,8 +357,17 @@ func gentlemanProgrammingTapRef(toolName string) string {
 	return "gentleman-programming/tap/" + strings.TrimSpace(toolName)
 }
 
+// isCaskTool reports whether toolName is distributed as a Homebrew cask
+// rather than a formula. This is the single source of truth for cask
+// detection — homebrewTrustFlag (brew trust) and brewUpgrade (brew upgrade)
+// both call it so the two commands can never diverge (issue #727: upgrade
+// omitted --cask while trust already had it).
+func isCaskTool(toolName string) bool {
+	return strings.TrimSpace(toolName) == "engram"
+}
+
 func homebrewTrustFlag(toolName string) string {
-	if strings.TrimSpace(toolName) == "engram" {
+	if isCaskTool(toolName) {
 		return "--cask"
 	}
 	return "--formula"
@@ -374,7 +395,14 @@ func homebrewFailureAdvice(toolName string, output string) string {
 			flag = "--formula"
 			artifact = "formula"
 		}
-		return fmt.Sprintf("Homebrew requires explicit trust for external taps. Trust only this Gentle AI %s, then retry:\n  brew trust %s %s\n  brew upgrade %s", artifact, flag, ref, toolName)
+		upgradeHint := "brew upgrade " + toolName
+		if isCaskTool(toolName) {
+			// Route through the same single source of truth as brewUpgrade()
+			// and homebrewTrustFlag() so this manual retry hint can never
+			// drift from the command actually executed. See issue #727.
+			upgradeHint = "brew upgrade --cask " + toolName
+		}
+		return fmt.Sprintf("Homebrew requires explicit trust for external taps. Trust only this Gentle AI %s, then retry:\n  brew trust %s %s\n  %s", artifact, flag, ref, upgradeHint)
 	}
 
 	if strings.Contains(lower, "bubblewrap is installed but cannot create a rootless sandbox") ||

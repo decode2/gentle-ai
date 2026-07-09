@@ -47,7 +47,13 @@ func gentleAIHint(profile system.PlatformProfile) string {
 func engramHint(profile system.PlatformProfile) string {
 	switch profile.PackageManager {
 	case "brew":
-		return "brew upgrade engram"
+		// engram is distributed as a Homebrew cask, not a formula — `brew
+		// upgrade engram` alone resolves against formulae only and fails/
+		// no-ops. See issue #727 and the matching --cask handling in
+		// internal/update/upgrade/strategy.go's brewUpgrade. Canonical arg
+		// order (--cask before the name) matches what brewUpgrade actually
+		// executes, so this hint and the real command never diverge.
+		return "brew upgrade --cask engram"
 	default:
 		return "gentle-ai upgrade (downloads pre-built binary)"
 	}

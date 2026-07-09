@@ -46,8 +46,9 @@ func TestRunStrategy_BrewUpgrade(t *testing.T) {
 	if gotName != "brew" {
 		t.Errorf("exec name = %q, want %q", gotName, "brew")
 	}
-	if len(gotArgs) < 2 || gotArgs[0] != "upgrade" || gotArgs[1] != "engram" {
-		t.Errorf("exec args = %v, want [upgrade engram]", gotArgs)
+	// engram is a Homebrew cask, so the upgrade call must include --cask (issue #727).
+	if len(gotArgs) < 3 || gotArgs[0] != "upgrade" || gotArgs[1] != "--cask" || gotArgs[2] != "engram" {
+		t.Errorf("exec args = %v, want [upgrade --cask engram]", gotArgs)
 	}
 }
 
@@ -881,6 +882,58 @@ func TestBrewUpgrade_FormulaToolUsesFormulaTrust(t *testing.T) {
 	}
 }
 
+// --- TestBrewUpgrade_UpgradeArgsCaskFlag ---
+
+// TestBrewUpgrade_UpgradeArgsCaskFlag verifies that `brew upgrade` includes
+// --cask for cask-distributed tools (engram) and omits it for formula tools
+// (gentle-ai). This mirrors homebrewTrustFlag's cask detection so trust and
+// upgrade can never diverge. Regression test for issue #727: `brew upgrade
+// engram` without --cask fails/no-ops because brew cannot resolve a cask
+// name against its formula namespace.
+func TestBrewUpgrade_UpgradeArgsCaskFlag(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		wantCask bool
+	}{
+		{name: "cask tool includes --cask", toolName: "engram", wantCask: true},
+		{name: "formula tool excludes --cask", toolName: "gentle-ai", wantCask: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			origExecCommand := execCommand
+			t.Cleanup(func() { execCommand = origExecCommand })
+
+			var upgradeArgs []string
+			execCommand = func(name string, args ...string) *exec.Cmd {
+				if name == "brew" && len(args) > 0 && args[0] == "upgrade" {
+					upgradeArgs = append([]string(nil), args[1:]...)
+				}
+				return mockCmd("echo", "ok")
+			}
+
+			if err := brewUpgrade(context.Background(), tc.toolName); err != nil {
+				t.Fatalf("brewUpgrade: unexpected error: %v", err)
+			}
+
+			hasCask := len(upgradeArgs) > 0 && upgradeArgs[0] == "--cask"
+			if hasCask != tc.wantCask {
+				t.Fatalf("brew upgrade args = %v, want --cask present=%v", upgradeArgs, tc.wantCask)
+			}
+			if !hasCask {
+				if len(upgradeArgs) == 0 || upgradeArgs[0] != tc.toolName {
+					t.Fatalf("brew upgrade args = %v, want [%q]", upgradeArgs, tc.toolName)
+				}
+			} else {
+				if len(upgradeArgs) < 2 || upgradeArgs[1] != tc.toolName {
+					t.Fatalf("brew upgrade args = %v, want [--cask %q]", upgradeArgs, tc.toolName)
+				}
+			}
+		})
+	}
+}
+
 func TestHomebrewFailureAdviceTapTrust(t *testing.T) {
 	output := `Error: Refusing to load formula gentleman-programming/tap/gentle-ai from untrusted tap.
 Run brew trust --formula gentleman-programming/tap/gentle-ai to trust it.`
@@ -901,7 +954,7 @@ Run brew trust --cask gentleman-programming/tap/engram to trust it.`
 	advice := homebrewFailureAdvice("engram", output)
 	for _, want := range []string{
 		"brew trust --cask gentleman-programming/tap/engram",
-		"brew upgrade engram",
+		"brew upgrade --cask engram",
 	} {
 		if !strings.Contains(advice, want) {
 			t.Fatalf("cask tap trust advice missing %q:\n%s", want, advice)

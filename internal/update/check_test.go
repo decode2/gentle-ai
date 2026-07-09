@@ -1005,7 +1005,7 @@ func TestUpdateHint(t *testing.T) {
 			name:    "engram macOS brew",
 			tool:    ToolInfo{Name: "engram"},
 			profile: system.PlatformProfile{OS: "darwin", PackageManager: "brew"},
-			want:    "brew upgrade engram",
+			want:    "brew upgrade --cask engram",
 		},
 		{
 			name:    "engram linux",
