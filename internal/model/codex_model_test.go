@@ -246,7 +246,7 @@ func TestPresetLowCost_ModelEffortPerCarril(t *testing.T) {
 	}
 
 	// Verify Low-cost preset carril models
-	carrilModels := model.CodexCarrilModelsForPreset("low-cost")
+	carrilModels := model.CodexCarrilModelsForPreset(string(model.CodexPresetLowCost))
 	if carrilModels["sdd-strong"] != "gpt-5.6-terra" {
 		t.Errorf("Low-cost preset sdd-strong model = %q, want gpt-5.6-terra", carrilModels["sdd-strong"])
 	}
@@ -269,7 +269,7 @@ func TestPresetRecommended_ModelEffortPerCarril(t *testing.T) {
 		t.Errorf("Recommended preset sdd-apply = %q, want medium (Código carril)", m["sdd-apply"])
 	}
 
-	carrilModels := model.CodexCarrilModelsForPreset("recommended")
+	carrilModels := model.CodexCarrilModelsForPreset(string(model.CodexPresetRecommended))
 	if carrilModels["sdd-strong"] != "gpt-5.6-sol" {
 		t.Errorf("Recommended preset sdd-strong model = %q, want gpt-5.6-sol", carrilModels["sdd-strong"])
 	}
@@ -291,7 +291,7 @@ func TestPresetPowerful_ModelEffortPerCarril(t *testing.T) {
 		t.Errorf("Powerful preset sdd-apply = %q, want high", m["sdd-apply"])
 	}
 
-	carrilModels := model.CodexCarrilModelsForPreset("powerful")
+	carrilModels := model.CodexCarrilModelsForPreset(string(model.CodexPresetPowerful))
 	if carrilModels["sdd-strong"] != "gpt-5.6-sol" {
 		t.Errorf("Powerful preset sdd-strong model = %q, want gpt-5.6-sol", carrilModels["sdd-strong"])
 	}
@@ -300,6 +300,40 @@ func TestPresetPowerful_ModelEffortPerCarril(t *testing.T) {
 	}
 	if carrilModels["sdd-cheap"] != "gpt-5.6-luna" {
 		t.Errorf("Powerful preset sdd-cheap model = %q, want gpt-5.6-luna", carrilModels["sdd-cheap"])
+	}
+}
+
+func TestCodexPresetCarrilDefaults_UnknownPresetFallsBackToRecommended(t *testing.T) {
+	got := model.CodexPresetCarrilDefaults("unknown-preset")
+	want := model.CodexPresetCarrilDefaults(string(model.CodexPresetRecommended))
+
+	for carril, wantDefault := range want {
+		if got[carril] != wantDefault {
+			t.Errorf("CodexPresetCarrilDefaults(unknown)[%q] = %+v, want recommended %+v", carril, got[carril], wantDefault)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("CodexPresetCarrilDefaults(unknown) len = %d, want %d", len(got), len(want))
+	}
+}
+
+func TestCodexPresetConstantsRemainStringCompatible(t *testing.T) {
+	tests := []struct {
+		name string
+		key  model.CodexPresetKey
+		want string
+	}{
+		{"low cost", model.CodexPresetLowCost, "low-cost"},
+		{"recommended", model.CodexPresetRecommended, "recommended"},
+		{"powerful", model.CodexPresetPowerful, "powerful"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if string(tc.key) != tc.want {
+				t.Errorf("string(%s) = %q, want %q", tc.name, tc.key, tc.want)
+			}
+		})
 	}
 }
 

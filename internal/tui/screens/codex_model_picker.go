@@ -17,15 +17,15 @@ type CodexModelPreset string
 const (
 	// CodexPresetLowCost targets ChatGPT Plus ($20/mo) — minimal effort to
 	// stay within the plan's tight usage limits.
-	CodexPresetLowCost CodexModelPreset = "low-cost"
+	CodexPresetLowCost CodexModelPreset = CodexModelPreset(model.CodexPresetLowCost)
 
 	// CodexPresetRecommended targets ChatGPT Pro ($100/mo) — balanced effort
 	// for most SDD work. This is the default preset.
-	CodexPresetRecommended CodexModelPreset = "recommended"
+	CodexPresetRecommended CodexModelPreset = CodexModelPreset(model.CodexPresetRecommended)
 
 	// CodexPresetPowerful targets ChatGPT Pro ($200/mo) — xhigh effort for
 	// architecture-heavy and review-heavy phases.
-	CodexPresetPowerful CodexModelPreset = "powerful"
+	CodexPresetPowerful CodexModelPreset = CodexModelPreset(model.CodexPresetPowerful)
 )
 
 var codexPresetOrder = []CodexModelPreset{

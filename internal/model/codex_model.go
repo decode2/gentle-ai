@@ -5,9 +5,11 @@ import (
 	"strings"
 )
 
-// codexAvailableModels is the curated list of Codex model IDs available for
-// per-phase custom assignments. Order is intentional: newest/most-capable first.
-var codexAvailableModels = []string{
+// codexModelCatalog is Gentle AI's curated selectable Codex model catalog for
+// per-phase custom assignments. It is a UI/configuration catalog, not a runtime
+// availability probe; the Codex CLI remains the source of truth at execution
+// time. Order is intentional: newest/most-capable first.
+var codexModelCatalog = []string{
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -18,12 +20,12 @@ var codexAvailableModels = []string{
 	"gpt-5.3-codex",
 }
 
-// CodexAvailableModels returns the curated list of Codex model IDs that can be
-// assigned per-phase in the Custom picker. The slice is a copy — mutations do
-// not affect the canonical list.
+// CodexAvailableModels returns Gentle AI's curated selectable Codex model
+// catalog for per-phase Custom picker assignments. The slice is a copy —
+// mutations do not affect the canonical catalog.
 func CodexAvailableModels() []string {
-	out := make([]string, len(codexAvailableModels))
-	copy(out, codexAvailableModels)
+	out := make([]string, len(codexModelCatalog))
+	copy(out, codexModelCatalog)
 	return out
 }
 
@@ -70,18 +72,26 @@ type CodexCarrilDefault struct {
 	Effort CodexEffort
 }
 
-var codexPresetMatrix = map[string]map[string]CodexCarrilDefault{
-	"low-cost": {
+type CodexPresetKey string
+
+const (
+	CodexPresetLowCost     CodexPresetKey = "low-cost"
+	CodexPresetRecommended CodexPresetKey = "recommended"
+	CodexPresetPowerful    CodexPresetKey = "powerful"
+)
+
+var codexPresetMatrix = map[CodexPresetKey]map[string]CodexCarrilDefault{
+	CodexPresetLowCost: {
 		"sdd-strong": {Model: "gpt-5.6-terra", Effort: CodexEffortMedium},
 		"sdd-mid":    {Model: "gpt-5.6-terra", Effort: CodexEffortMedium},
 		"sdd-cheap":  {Model: "gpt-5.6-luna", Effort: CodexEffortLow},
 	},
-	"recommended": {
+	CodexPresetRecommended: {
 		"sdd-strong": {Model: "gpt-5.6-sol", Effort: CodexEffortHigh},
 		"sdd-mid":    {Model: "gpt-5.6-terra", Effort: CodexEffortMedium},
 		"sdd-cheap":  {Model: "gpt-5.6-luna", Effort: CodexEffortLow},
 	},
-	"powerful": {
+	CodexPresetPowerful: {
 		"sdd-strong": {Model: "gpt-5.6-sol", Effort: CodexEffortXHigh},
 		"sdd-mid":    {Model: "gpt-5.6-sol", Effort: CodexEffortHigh},
 		"sdd-cheap":  {Model: "gpt-5.6-luna", Effort: CodexEffortLow},
@@ -89,9 +99,9 @@ var codexPresetMatrix = map[string]map[string]CodexCarrilDefault{
 }
 
 func CodexPresetCarrilDefaults(preset string) map[string]CodexCarrilDefault {
-	defaults, ok := codexPresetMatrix[preset]
+	defaults, ok := codexPresetMatrix[CodexPresetKey(preset)]
 	if !ok {
-		defaults = codexPresetMatrix["recommended"]
+		defaults = codexPresetMatrix[CodexPresetRecommended]
 	}
 	out := make(map[string]CodexCarrilDefault, len(defaults))
 	for carril, value := range defaults {
@@ -123,17 +133,17 @@ func codexPresetEfforts(preset string) map[string]CodexEffort {
 
 // CodexModelPresetRecommended returns the Recommended preset.
 func CodexModelPresetRecommended() map[string]CodexEffort {
-	return codexPresetEfforts("recommended")
+	return codexPresetEfforts(string(CodexPresetRecommended))
 }
 
 // CodexModelPresetPowerful returns the Powerful preset.
 func CodexModelPresetPowerful() map[string]CodexEffort {
-	return codexPresetEfforts("powerful")
+	return codexPresetEfforts(string(CodexPresetPowerful))
 }
 
 // CodexModelPresetLowCost returns the Low-cost preset.
 func CodexModelPresetLowCost() map[string]CodexEffort {
-	return codexPresetEfforts("low-cost")
+	return codexPresetEfforts(string(CodexPresetLowCost))
 }
 
 // CodexTierGroup defines one CLI profile tier: the profile filename (without
@@ -170,20 +180,20 @@ type CodexTierGroup struct {
 var codexTierGroups = []CodexTierGroup{
 	{
 		Profile:       "sdd-strong",
-		Model:         codexPresetMatrix["recommended"]["sdd-strong"].Model,
-		DefaultEffort: codexPresetMatrix["recommended"]["sdd-strong"].Effort,
+		Model:         codexPresetMatrix[CodexPresetRecommended]["sdd-strong"].Model,
+		DefaultEffort: codexPresetMatrix[CodexPresetRecommended]["sdd-strong"].Effort,
 		Phases:        []string{"sdd-propose", "sdd-design", "sdd-verify", "jd-judge-a", "jd-judge-b", "default"},
 	},
 	{
 		Profile:       "sdd-mid",
-		Model:         codexPresetMatrix["recommended"]["sdd-mid"].Model,
-		DefaultEffort: codexPresetMatrix["recommended"]["sdd-mid"].Effort,
+		Model:         codexPresetMatrix[CodexPresetRecommended]["sdd-mid"].Model,
+		DefaultEffort: codexPresetMatrix[CodexPresetRecommended]["sdd-mid"].Effort,
 		Phases:        []string{"sdd-apply", "jd-fix-agent"},
 	},
 	{
 		Profile:       "sdd-cheap",
-		Model:         codexPresetMatrix["recommended"]["sdd-cheap"].Model,
-		DefaultEffort: codexPresetMatrix["recommended"]["sdd-cheap"].Effort,
+		Model:         codexPresetMatrix[CodexPresetRecommended]["sdd-cheap"].Model,
+		DefaultEffort: codexPresetMatrix[CodexPresetRecommended]["sdd-cheap"].Effort,
 		Phases:        []string{"sdd-explore", "sdd-spec", "sdd-tasks", "sdd-archive", "sdd-onboard"},
 	},
 }
@@ -291,7 +301,7 @@ func phaseToCarrilModel(phase string, carrilModels map[string]string) string {
 			}
 		}
 	}
-	return "gpt-5.6-sol" // ultimate fallback
+	return codexPresetMatrix[CodexPresetRecommended]["sdd-strong"].Model // ultimate fallback
 }
 
 // RenderCodexPhaseEffortsByPhase renders a per-phase Markdown table for the
