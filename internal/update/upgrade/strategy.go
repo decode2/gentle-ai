@@ -151,7 +151,7 @@ func opencodePluginUpgrade(ctx context.Context, r update.UpdateResult) error {
 	cmd.Env = openCodePluginUpgradeEnv(cmd.Env)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(out)
-		if pm == "npm" && (strings.Contains(outStr, "ERESOLVE") || strings.Contains(outStr, "--legacy-peer-deps")) {
+		if pm == "npm" && strings.Contains(outStr, "code ERESOLVE") {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
