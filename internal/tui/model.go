@@ -1154,7 +1154,7 @@ func (m Model) View() string {
 	case ScreenAgents:
 		return screens.RenderAgents(m.Selection.Agents, m.Cursor)
 	case ScreenEditAgents:
-		return screens.RenderAgents(m.EditAgentsSelection, m.Cursor)
+		return screens.RenderEditAgents(m.EditAgentsSelection, m.Cursor)
 	case ScreenPersona:
 		return screens.RenderPersona(m.Selection.Persona, m.Cursor)
 	case ScreenPreset:
@@ -2080,12 +2080,29 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			// User confirmed — commit draft selection and persist via a sync run.
 			selectedAgents := make([]model.AgentID, len(m.EditAgentsSelection))
 			copy(selectedAgents, m.EditAgentsSelection)
+
+			// Find deselected agents for config cleanup
+			var deselected []model.AgentID
+			for _, oldAgent := range m.Selection.Agents {
+				found := false
+				for _, newAgent := range selectedAgents {
+					if oldAgent == newAgent {
+						found = true
+						break
+					}
+				}
+				if !found {
+					deselected = append(deselected, oldAgent)
+				}
+			}
+
 			m.Selection.Agents = selectedAgents
 			m.EditAgentsMode = false
 			m.EditAgentsSelection = nil
 			m = m.withResetOperationState()
 			m.PendingSyncOverrides = &model.SyncOverrides{
-				TargetAgents: selectedAgents,
+				TargetAgents:     selectedAgents,
+				DeselectedAgents: deselected,
 			}
 			m.setScreen(ScreenSync)
 		case m.Cursor == agentCount+1:

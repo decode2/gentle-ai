@@ -587,6 +587,28 @@ func tuiUpgrade(profile system.PlatformProfile, homeDir string) tui.UpgradeFunc 
 // so that the "Configure Models" TUI flow persists its choices to disk.
 func tuiSync(homeDir string) tui.SyncFunc {
 	return func(overrides *model.SyncOverrides) ([]string, error) {
+		if overrides != nil && len(overrides.DeselectedAgents) > 0 {
+			workspaceDir, err := os.Getwd()
+			if err == nil {
+				allComponents := []model.ComponentID{
+					model.ComponentEngram,
+					model.ComponentSDD,
+					model.ComponentSkills,
+					model.ComponentContext7,
+					model.ComponentPermission,
+					model.ComponentGGA,
+					model.ComponentPersona,
+					model.ComponentTheme,
+					model.ComponentClaudeTheme,
+					model.ComponentOpenCodeGentleLogo,
+				}
+				_, uninstallErr := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, allComponents)
+				if uninstallErr != nil {
+					return nil, fmt.Errorf("uninstall deselected agents: %w", uninstallErr)
+				}
+			}
+		}
+
 		agentIDs := syncAgentIDs(homeDir, overrides)
 		syncFlags := cli.SyncFlags{IncludePermissions: syncShouldIncludePermissions(agentIDs)}
 		selection := cli.BuildSyncSelection(syncFlags, agentIDs)

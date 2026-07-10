@@ -2225,3 +2225,66 @@ func TestCustomClearRoundTripLeavesFutureSyncInPreserveMode(t *testing.T) {
 		t.Fatalf("future sync did not return to preserve mode: assignment=%#v clear=%v", future.CodexOrchestratorAssignment, future.ClearCodexOrchestratorAssignment)
 	}
 }
+
+// TestTuiSync_CleansUpDeselectedAgents verifies that tuiSync calls the uninstall logic
+// and deletes the config files of deselected agents.
+func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+
+	// Seed state.json with installed agents
+	if err := state.Write(home, state.InstallState{
+		InstalledAgents: []string{"claude-code", "opencode"},
+	}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	// Create a dummy config file for opencode settings with some gentle agent configurations
+	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(opencodeConfigDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	opencodeConfigPath := filepath.Join(opencodeConfigDir, "opencode.json")
+	initialConfig := `{
+  "agent": {
+    "gentle-orchestrator": {
+      "mode": "primary"
+    }
+  }
+}`
+	if err := os.WriteFile(opencodeConfigPath, []byte(initialConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Run tuiSync with overrides deselecting opencode
+	syncFn := tuiSync(home)
+	overrides := &model.SyncOverrides{
+		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
+		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
+	}
+	_, err := syncFn(overrides)
+	if err != nil {
+		t.Fatalf("syncFn error = %v", err)
+	}
+
+	// Verify that state.json no longer contains opencode
+	s, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	for _, agent := range s.InstalledAgents {
+		if agent == "opencode" {
+			t.Errorf("expected opencode to be removed from InstalledAgents in state.json")
+		}
+	}
+
+	// Verify that opencode settings file is cleaned of our agent configurations
+	content, err := os.ReadFile(opencodeConfigPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("ReadFile: %v", err)
+		}
+	} else if strings.Contains(string(content), "gentle-orchestrator") {
+		t.Errorf("expected opencode config file to have agent configurations removed, got: %s", string(content))
+	}
+}
