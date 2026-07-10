@@ -235,6 +235,187 @@ func TestAtomicReplace(t *testing.T) {
 	}
 }
 
+// --- TestReplaceAndVerify ---
+//
+// TestReplaceAndVerify covers issue #230: the TUI showed a false ✗ failure
+// for the gentle-ai self-binary upgrade even though the binary was correctly
+// downloaded and replaced. replaceAndVerify performs a single atomic rename
+// and, only when that rename reports an error, positively verifies dst's
+// on-disk content against the extracted binary's SHA256. A benign/environment-
+// specific rename error (overlayfs, immutable distro, SELinux/AppArmor, etc.)
+// therefore does not surface as a failure when the correct binary provably
+// landed on disk — while a genuine failure (content mismatch, old binary
+// remains) must still return an error and leave the previous binary intact.
+//
+// The renameFn seam lets these run cross-platform (including Windows).
+func TestReplaceAndVerify(t *testing.T) {
+	sha256Hex := func(b []byte) string {
+		h := sha256.New()
+		h.Write(b)
+		return hex.EncodeToString(h.Sum(nil))
+	}
+
+	t.Run("rename succeeds → success, dst is the new binary", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "new-binary")
+		dst := filepath.Join(dir, "existing-binary")
+
+		newContent := []byte("new content")
+		if err := os.WriteFile(src, newContent, 0o755); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+		if err := os.WriteFile(dst, []byte("old content"), 0o755); err != nil {
+			t.Fatalf("write dst: %v", err)
+		}
+
+		orig := renameFn
+		t.Cleanup(func() { renameFn = orig })
+		renameFn = os.Rename
+
+		if err := replaceAndVerify(src, dst, sha256Hex(newContent)); err != nil {
+			t.Fatalf("replaceAndVerify: expected nil, got %v", err)
+		}
+
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatalf("read dst: %v", err)
+		}
+		if string(got) != string(newContent) {
+			t.Errorf("dst content = %q, want %q", got, newContent)
+		}
+	})
+
+	t.Run("benign rename error but the correct binary lands → success", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "new-binary")
+		dst := filepath.Join(dir, "existing-binary")
+
+		newContent := []byte("new content")
+		if err := os.WriteFile(src, newContent, 0o755); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+		if err := os.WriteFile(dst, []byte("old content"), 0o755); err != nil {
+			t.Fatalf("write dst: %v", err)
+		}
+
+		orig := renameFn
+		t.Cleanup(func() { renameFn = orig })
+		renameFn = func(oldname, newname string) error {
+			// Perform the real rename, then report a benign error AFTER it
+			// actually completed on disk — the issue #230 case.
+			if err := os.Rename(oldname, newname); err != nil {
+				return err
+			}
+			return fmt.Errorf("simulated benign rename error")
+		}
+
+		if err := replaceAndVerify(src, dst, sha256Hex(newContent)); err != nil {
+			t.Fatalf("replaceAndVerify: expected nil (content verified correct despite reported error), got %v", err)
+		}
+
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatalf("read dst: %v", err)
+		}
+		if string(got) != string(newContent) {
+			t.Errorf("dst content = %q, want %q", got, newContent)
+		}
+	})
+
+	t.Run("content mismatch on the error path → error (non-masking)", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "new-binary")
+		dst := filepath.Join(dir, "existing-binary")
+
+		newContent := []byte("new content")
+		oldContent := []byte("old content")
+		if err := os.WriteFile(src, newContent, 0o755); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+		if err := os.WriteFile(dst, oldContent, 0o755); err != nil {
+			t.Fatalf("write dst: %v", err)
+		}
+
+		orig := renameFn
+		t.Cleanup(func() { renameFn = orig })
+		renameFn = func(oldname, newname string) error {
+			// Genuine failure: report an error WITHOUT moving src, so dst keeps
+			// its old content.
+			return fmt.Errorf("simulated real rename failure")
+		}
+
+		err := replaceAndVerify(src, dst, sha256Hex(newContent))
+		if err == nil {
+			t.Fatal("expected error when dst does not match wantHash, got nil (mismatch was masked as success)")
+		}
+
+		// The previous binary must be preserved — never a false success.
+		got, readErr := os.ReadFile(dst)
+		if readErr != nil {
+			t.Fatalf("read dst after failed replace: %v", readErr)
+		}
+		if string(got) != string(oldContent) {
+			t.Errorf("dst content after failed replace = %q, want original %q (previous binary preserved)", got, oldContent)
+		}
+	})
+
+	t.Run("first install: dst absent, rename succeeds → success", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "new-binary")
+		dst := filepath.Join(dir, "existing-binary")
+
+		newContent := []byte("new content")
+		if err := os.WriteFile(src, newContent, 0o755); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+		// No dst file created (first install).
+
+		orig := renameFn
+		t.Cleanup(func() { renameFn = orig })
+		renameFn = os.Rename
+
+		if err := replaceAndVerify(src, dst, sha256Hex(newContent)); err != nil {
+			t.Fatalf("replaceAndVerify: expected nil, got %v", err)
+		}
+
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatalf("read dst: %v", err)
+		}
+		if string(got) != string(newContent) {
+			t.Errorf("dst content = %q, want %q", got, newContent)
+		}
+	})
+
+	t.Run("concurrent self-update race: another process updated dst first → success", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "new-binary")
+		dst := filepath.Join(dir, "existing-binary")
+
+		newContent := []byte("new content")
+		if err := os.WriteFile(src, newContent, 0o755); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+
+		// Simulate another process winning the race and writing the new content to dst
+		if err := os.WriteFile(dst, newContent, 0o755); err != nil {
+			t.Fatalf("write dst: %v", err)
+		}
+
+		orig := renameFn
+		t.Cleanup(func() { renameFn = orig })
+		renameFn = func(oldname, newname string) error {
+			// Simulate rename failing because dst is locked/busy by the other process
+			return fmt.Errorf("text file busy")
+		}
+
+		// This should succeed because dst already has the correct content (wantHash matches)
+		if err := replaceAndVerify(src, dst, sha256Hex(newContent)); err != nil {
+			t.Fatalf("replaceAndVerify: expected nil (race absorbed safely because dst content is correct), got %v", err)
+		}
+	})
+}
+
 // --- TestDownload_WindowsSkipped ---
 
 // TestDownload_WindowsSkipped is a build-constraint smoke test:
@@ -321,11 +502,11 @@ func TestExpectedChecksumFor(t *testing.T) {
 	content := "abc123  gentle-ai_1.0.0_darwin_arm64.tar.gz\ndef456  gentle-ai_1.0.0_linux_amd64.tar.gz\n"
 
 	tests := []struct {
-		name      string
-		content   string
-		filename  string
-		want      string
-		wantErr   bool
+		name     string
+		content  string
+		filename string
+		want     string
+		wantErr  bool
 	}{
 		{
 			name:     "found first entry",

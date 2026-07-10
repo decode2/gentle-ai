@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -600,6 +601,9 @@ func TestRunInstallBetaEngramUsesMainGoInstallAndInstalledBinary(t *testing.T) {
 	home := t.TempDir()
 	gobin := filepath.Join(home, "go-bin")
 	betaEngram := filepath.Join(gobin, "engram")
+	if runtime.GOOS == "windows" {
+		betaEngram += ".exe"
+	}
 
 	restoreCommand := runCommand
 	restoreLookPath := cmdLookPath

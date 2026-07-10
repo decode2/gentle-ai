@@ -377,7 +377,6 @@ func TestInjectCodexWritesGentleDevPermissionsProfile(t *testing.T) {
 		`"~/.gitconfig" = "read"`,
 		`"~/.local/state/nix/profiles/home-manager/home-path" = "read"`,
 		`"~/.nix-profile" = "read"`,
-		`"/nix/store" = "read"`,
 		`":tmpdir" = "write"`,
 		`":slash_tmp" = "write"`,
 		`glob_scan_max_depth = 6`,
@@ -395,6 +394,9 @@ func TestInjectCodexWritesGentleDevPermissionsProfile(t *testing.T) {
 		`"**/.config/gh/hosts.yml" = "deny"`,
 		`[permissions.gentle-dev.workspace_roots]`,
 		`"~" = true`,
+	}
+	if codexPermissionsGOOS != "windows" {
+		wantSubstrings = append(wantSubstrings, `"/nix/store" = "read"`)
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(text, want) {

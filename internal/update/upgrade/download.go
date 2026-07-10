@@ -27,6 +27,12 @@ var httpClient = &http.Client{Timeout: 5 * time.Minute}
 // lookPathFn resolves the binary path. Package-level var for testability.
 var lookPathFn = exec.LookPath
 
+// renameFn performs a filesystem rename. Package-level var for testability —
+// it lets tests simulate rename outcomes (including a rename that reports an
+// error despite actually completing on disk) without touching the real
+// filesystem semantics of os.Rename.
+var renameFn = os.Rename
+
 // resolveAssetURLFn and resolveChecksumURLFn build download URLs.
 // Package-level vars for testability.
 var resolveAssetURLFn = resolveAssetURL
@@ -100,8 +106,16 @@ func Download(ctx context.Context, r update.UpdateResult, profile system.Platfor
 		return fmt.Errorf("extract %s: %w", r.Tool.Name, err)
 	}
 
-	// Atomic replace.
-	if err := atomicReplace(tmpBinaryPath, binaryPath); err != nil {
+	// Hash the extracted binary BEFORE replacing so we know exactly what
+	// "correct" means once the replace step runs (see replaceAndVerify).
+	wantHash, err := hashFile(tmpBinaryPath)
+	if err != nil {
+		_ = os.Remove(tmpBinaryPath)
+		return fmt.Errorf("hash extracted %s binary: %w", r.Tool.Name, err)
+	}
+
+	// Replace the installed binary and positively verify the result.
+	if err := replaceAndVerify(tmpBinaryPath, binaryPath, wantHash); err != nil {
 		_ = os.Remove(tmpBinaryPath)
 		return fmt.Errorf("replace %q: %w", binaryPath, err)
 	}
@@ -278,12 +292,74 @@ func writeExecutable(r io.Reader, outPath string) error {
 	return nil
 }
 
-// atomicReplace moves src to dst atomically using os.Rename.
-// This is safe on Unix (same-filesystem rename) but NOT safe on Windows
-// when the binary is running. The caller must guard against Windows before calling.
+// atomicReplace moves src to dst via a single atomic rename.
+// On Unix this is atomic: on success dst is the new binary; on a failure dst
+// is left untouched (the previous binary, or absent on first install). The
+// caller guards against Windows before calling (a running binary cannot be
+// renamed over on Windows).
 func atomicReplace(src, dst string) error {
-	if err := os.Rename(src, dst); err != nil {
+	if err := renameFn(src, dst); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", src, dst, err)
 	}
+	return nil
+}
+
+// hashFile returns the SHA256 hex digest of the file at path.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("hash %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// replaceAndVerify replaces dst with src, then guards against issue #230.
+// In some hardened or restricted environments (potentially involving overlayfs,
+// immutable distros, or SELinux/AppArmor profiles), a rename error might be
+// reported during a running binary's self-replace even if the replacement actually
+// completed on disk. When the rename reports success we trust it (the rename
+// is atomic). When it reports an error we positively verify dst's on-disk content
+// against wantHash — the SHA256 of the extracted binary — and only treat it
+// as success if the content provably matches.
+//
+// Analysis of self-update race:
+// A concurrent self-update race occurs if two processes attempt to upgrade the
+// same binary to wantHash concurrently. Because renameFn (os.Rename) is atomic,
+// if one process succeeds in renaming, the binary on disk is updated fully.
+// The other process's rename will fail (e.g., due to file locks or busy text file).
+// By verifying the hash, the second process confirms that the correct binary
+// is indeed present on disk, ensuring a consistent final state without reporting
+// a false failure to the user. Since the check only succeeds if the hash matches
+// wantHash exactly, it is impossible to mask a failure to write a different version,
+// nor can it result in a half-written or corrupt binary.
+//
+// Non-masking guarantee: a reported error is converted to success ONLY when
+// dst's bytes equal wantHash exactly. On a genuine failure the atomic rename
+// leaves dst as the previous binary (never missing/half-written), and the real
+// error is returned — a real failure is never reported as success.
+//
+// Invariant: the success path (nil error from atomicReplace) is trusted
+// without re-hashing, because renameFn is os.Rename — a metadata-only
+// operation that cannot report nil unless the rename actually completed, so
+// dst then holds src's bytes (== wantHash, computed just before). Do NOT wire
+// a retrying/best-effort rename into renameFn that could report nil on a
+// rename that did not complete; that would reopen a masking hole here.
+func replaceAndVerify(src, dst, wantHash string) error {
+	if err := atomicReplace(src, dst); err != nil {
+		// The rename reported an error, but it may still have landed. Verify.
+		gotHash, hashErr := hashFile(dst)
+		if hashErr == nil && gotHash == wantHash {
+			return nil
+		}
+		return err
+	}
+	// Rename reported success: os.Rename is atomic, so dst now holds the
+	// extracted binary (== wantHash by construction) — no re-hash needed.
 	return nil
 }

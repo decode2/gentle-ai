@@ -1261,12 +1261,12 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 						phaseOverride = map[string]string{} // explicit clear signal for the preset path
 					}
 					m.PendingSyncOverrides = &model.SyncOverrides{
-						TargetAgents:                []model.AgentID{model.AgentCodex},
-						CodexModelAssignments:       assignments,
-						CodexOrchestratorAssignment: m.Selection.CodexOrchestratorAssignment,
+						TargetAgents:                     []model.AgentID{model.AgentCodex},
+						CodexModelAssignments:            assignments,
+						CodexOrchestratorAssignment:      m.Selection.CodexOrchestratorAssignment,
 						ClearCodexOrchestratorAssignment: m.Selection.ClearCodexOrchestratorAssignment,
-						CodexCarrilModelAssignments: presetCarrilModels,
-						CodexPhaseModelAssignments:  phaseOverride,
+						CodexCarrilModelAssignments:      presetCarrilModels,
+						CodexPhaseModelAssignments:       phaseOverride,
 					}
 					m = m.withResetSyncState()
 					m.setScreen(ScreenSync)
