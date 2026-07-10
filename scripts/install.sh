@@ -311,7 +311,7 @@ install_go() {
 prepend_go_env_pattern() {
     local name="$1"
     local pattern="$2"
-    local current="${!name:-}"
+    eval "current=\${$name:-}"
 
     if [ -z "$current" ]; then
         printf -v "$name" '%s' "$pattern"

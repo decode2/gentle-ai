@@ -923,7 +923,9 @@ func sddMultiCursor(t *testing.T) int {
 // opencode.json and otherwise shows its explicit empty state instead of silently
 // skipping model assignment.
 func TestSDDModeMultiShowsModelPickerWhenCacheMissing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenSDDMode
@@ -943,7 +945,9 @@ func TestSDDModeMultiShowsModelPickerWhenCacheMissing(t *testing.T) {
 }
 
 func TestSDDModeMultiEmptyModelPickerCanContinueWithDefaults(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
 
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenSDDMode
@@ -6243,7 +6247,9 @@ func TestPickerFlowSlice(t *testing.T) {
 		{
 			name: "non-custom all agents SDDMode Multi cache absent excludes ModelPicker",
 			setup: func(t *testing.T) Model {
-				t.Setenv("HOME", t.TempDir()) // guarantees cache path resolves to missing file
+				tmp := t.TempDir()
+				t.Setenv("HOME", tmp)
+				t.Setenv("USERPROFILE", tmp)
 				m := NewModel(system.DetectionResult{}, "dev")
 				m.Selection.Preset = model.PresetFullGentleman
 				m.Selection.Agents = allPickerAgents
