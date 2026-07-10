@@ -262,7 +262,6 @@ func resolveGGAInstall(profile system.PlatformProfile) (CommandSequence, error) 
 		}, nil
 	case "apt", "pacman", "dnf":
 		const tmpDir = "/tmp/gentleman-guardian-angel"
-		_ = os.RemoveAll(tmpDir)
 		return CommandSequence{
 			{"rm", "-rf", tmpDir},
 			{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", tmpDir},
@@ -275,10 +274,9 @@ func resolveGGAInstall(profile system.PlatformProfile) (CommandSequence, error) 
 		// PowerShell is used for cleanup to avoid cmd.exe quoting issues with
 		// embedded double quotes in the "if exist ... rmdir" approach.
 		cloneDst := filepath.Join(os.TempDir(), "gentleman-guardian-angel")
-		_ = os.RemoveAll(cloneDst)
 		bash := gitBashPath()
 		return CommandSequence{
-			{"powershell", "-NoProfile", "-Command", fmt.Sprintf("Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '%s'; exit 0", cloneDst)},
+			{"powershell", "-NoProfile", "-Command", fmt.Sprintf("$ErrorActionPreference = 'Stop'; if (Test-Path -LiteralPath '%s') { Remove-Item -Recurse -Force -LiteralPath '%s' }", cloneDst, cloneDst)},
 			{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", cloneDst},
 			{bash, bashScriptPath(profile, filepath.Join(cloneDst, "install.sh"))},
 		}, nil
