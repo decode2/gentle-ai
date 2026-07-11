@@ -37,7 +37,13 @@ var (
 	selfUpdateFn              = selfUpdate
 	ensureCurrentOSSupported  = system.EnsureCurrentOSSupported
 	detectSystem              = system.Detect
-	runTUI                    = func(m tea.Model, opts ...tea.ProgramOption) (tea.Model, error) {
+	osGetwd                   = os.Getwd
+	runUninstallWithSelection = cli.RunUninstallWithSelection
+	runSyncWithSelection      = cli.RunSyncWithSelection
+	restoreBackup             = func(manifest backup.Manifest) error {
+		return backup.RestoreService{}.Restore(manifest)
+	}
+	runTUI = func(m tea.Model, opts ...tea.ProgramOption) (tea.Model, error) {
 		p := tea.NewProgram(m, opts...)
 		return p.Run()
 	}
@@ -572,7 +578,34 @@ func tuiUpgrade(profile system.PlatformProfile, homeDir string) tui.UpgradeFunc 
 // When overrides is non-nil, model assignments are merged into the selection
 // so that the "Configure Models" TUI flow persists its choices to disk.
 func tuiSync(homeDir string) tui.SyncFunc {
-	return func(overrides *model.SyncOverrides) ([]string, error) {
+	return func(overrides *model.SyncOverrides) (changedFiles []string, err error) {
+		if overrides != nil && len(overrides.DeselectedAgents) > 0 {
+			workspaceDir, getwdErr := osGetwd()
+			if getwdErr != nil {
+				return nil, fmt.Errorf("resolve workspace directory: %w", getwdErr)
+			}
+			uninstallResult, uninstallErr := runUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, nil)
+			if uninstallErr != nil {
+				err = fmt.Errorf("uninstall deselected agents: %w", uninstallErr)
+				if uninstallResult.Manifest.ID != "" {
+					if restoreErr := restoreBackup(uninstallResult.Manifest); restoreErr != nil {
+						err = errors.Join(err, fmt.Errorf("restore deselection cleanup: %w", restoreErr))
+					}
+				}
+				return nil, err
+			}
+			if uninstallResult.Manifest.ID != "" {
+				defer func() {
+					if err == nil {
+						return
+					}
+					if restoreErr := restoreBackup(uninstallResult.Manifest); restoreErr != nil {
+						err = errors.Join(err, fmt.Errorf("restore deselection cleanup: %w", restoreErr))
+					}
+				}()
+			}
+		}
+
 		agentIDs := syncAgentIDs(homeDir, overrides)
 		syncFlags := cli.SyncFlags{IncludePermissions: syncShouldIncludePermissions(agentIDs)}
 		selection := cli.BuildSyncSelection(syncFlags, agentIDs)
@@ -584,7 +617,7 @@ func tuiSync(homeDir string) tui.SyncFunc {
 
 		applyOverrides(&selection, overrides)
 
-		result, err := cli.RunSyncWithSelection(homeDir, selection)
+		result, err := runSyncWithSelection(homeDir, selection)
 		if err != nil {
 			return nil, err
 		}

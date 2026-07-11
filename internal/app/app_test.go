@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/cli"
+	componentuninstall "github.com/gentleman-programming/gentle-ai/internal/components/uninstall"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
@@ -2077,5 +2080,295 @@ func TestCustomClearRoundTripLeavesFutureSyncInPreserveMode(t *testing.T) {
 	loadPersistedAssignments(home, &future)
 	if future.CodexOrchestratorAssignment != nil || future.ClearCodexOrchestratorAssignment {
 		t.Fatalf("future sync did not return to preserve mode: assignment=%#v clear=%v", future.CodexOrchestratorAssignment, future.ClearCodexOrchestratorAssignment)
+	}
+}
+
+func TestTuiSyncCleansDeselectedAgentAndRetainsSelectedAgent(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	originalGetwd := osGetwd
+	osGetwd = func() (string, error) { return workspace, nil }
+	t.Cleanup(func() { osGetwd = originalGetwd })
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"claude-code", "opencode"}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	claudeConfig := filepath.Join(home, ".claude", "settings.local.json")
+	claudeConfigContent := `{"permissions":{"allow":["Read"]}}`
+	if err := os.MkdirAll(filepath.Dir(claudeConfig), 0o755); err != nil {
+		t.Fatalf("MkdirAll Claude config: %v", err)
+	}
+	if err := os.WriteFile(claudeConfig, []byte(claudeConfigContent), 0o644); err != nil {
+		t.Fatalf("WriteFile Claude config: %v", err)
+	}
+
+	opencodeConfig := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(opencodeConfig), 0o755); err != nil {
+		t.Fatalf("MkdirAll OpenCode config: %v", err)
+	}
+	if err := os.WriteFile(opencodeConfig, []byte(`{"agent":{"gentle-orchestrator":{"mode":"primary"}}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile OpenCode config: %v", err)
+	}
+
+	_, err := tuiSync(home)(&model.SyncOverrides{
+		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
+		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
+	})
+	if err != nil {
+		t.Fatalf("tuiSync: %v", err)
+	}
+
+	gotState, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	if want := []string{"claude-code"}; !reflect.DeepEqual(gotState.InstalledAgents, want) {
+		t.Fatalf("InstalledAgents = %v, want %v", gotState.InstalledAgents, want)
+	}
+	gotClaudeConfig, err := os.ReadFile(claudeConfig)
+	if err != nil {
+		t.Fatalf("ReadFile Claude config: %v", err)
+	}
+	if string(gotClaudeConfig) != claudeConfigContent {
+		t.Fatalf("selected Claude config = %q, want %q", gotClaudeConfig, claudeConfigContent)
+	}
+	if content, err := os.ReadFile(opencodeConfig); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadFile OpenCode config: %v", err)
+	} else if strings.Contains(string(content), "gentle-orchestrator") {
+		t.Fatalf("deselected OpenCode config retained managed agent: %s", content)
+	}
+}
+
+func TestTuiSyncReturnsGetwdErrorBeforeDeselectionCleanup(t *testing.T) {
+	wantErr := errors.New("getwd failed")
+	originalGetwd := osGetwd
+	osGetwd = func() (string, error) { return "", wantErr }
+	t.Cleanup(func() { osGetwd = originalGetwd })
+
+	_, err := tuiSync(t.TempDir())(&model.SyncOverrides{DeselectedAgents: []model.AgentID{model.AgentOpenCode}})
+	if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "resolve workspace directory") {
+		t.Fatalf("tuiSync error = %v, want wrapped getwd error", err)
+	}
+}
+
+func TestTuiSyncRestoresDeselectionSnapshotAfterPartialUninstallFailure(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	originalGetwd := osGetwd
+	originalUninstall := runUninstallWithSelection
+	originalRestore := restoreBackup
+	osGetwd = func() (string, error) { return workspace, nil }
+
+	beforeState := state.InstallState{InstalledAgents: []string{string(model.AgentOpenCode)}}
+	if err := state.Write(home, beforeState); err != nil {
+		t.Fatalf("state.Write (before): %v", err)
+	}
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	beforeConfig := []byte(`{"agent":{"gentle-orchestrator":{"mode":"primary"}}}`)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, beforeConfig, 0o644); err != nil {
+		t.Fatalf("WriteFile (before): %v", err)
+	}
+
+	uninstallErr := errors.New("partial uninstall failed")
+	runUninstallWithSelection = func(string, string, []model.AgentID, []model.ComponentID) (componentuninstall.Result, error) {
+		if err := state.Write(home, state.InstallState{}); err != nil {
+			t.Fatalf("state.Write (partial uninstall): %v", err)
+		}
+		if err := os.WriteFile(configPath, []byte(`{}`), 0o644); err != nil {
+			t.Fatalf("WriteFile (partial uninstall): %v", err)
+		}
+		return componentuninstall.Result{Manifest: backup.Manifest{ID: "partial-uninstall"}}, uninstallErr
+	}
+	restoreBackup = func(manifest backup.Manifest) error {
+		if manifest.ID != "partial-uninstall" {
+			t.Fatalf("restore manifest ID = %q, want partial-uninstall", manifest.ID)
+		}
+		if err := state.Write(home, beforeState); err != nil {
+			t.Fatalf("state.Write (restore): %v", err)
+		}
+		return os.WriteFile(configPath, beforeConfig, 0o644)
+	}
+	t.Cleanup(func() {
+		osGetwd = originalGetwd
+		runUninstallWithSelection = originalUninstall
+		restoreBackup = originalRestore
+	})
+
+	_, err := tuiSync(home)(&model.SyncOverrides{DeselectedAgents: []model.AgentID{model.AgentOpenCode}})
+	if !errors.Is(err, uninstallErr) {
+		t.Fatalf("tuiSync error = %v, want original uninstall failure", err)
+	}
+
+	gotConfig, readErr := os.ReadFile(configPath)
+	if readErr != nil || !bytes.Equal(gotConfig, beforeConfig) {
+		t.Fatalf("restored config = %q, want %q (err=%v)", gotConfig, beforeConfig, readErr)
+	}
+	gotState, readErr := state.Read(home)
+	if readErr != nil || !reflect.DeepEqual(gotState, beforeState) {
+		t.Fatalf("restored state = %#v, want %#v (err=%v)", gotState, beforeState, readErr)
+	}
+}
+
+func TestTuiSyncCleansClaudeWithoutChangingRetainedOpenCode(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	originalGetwd := osGetwd
+	osGetwd = func() (string, error) { return workspace, nil }
+	t.Cleanup(func() { osGetwd = originalGetwd })
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"claude-code", "opencode"}}); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+	if _, err := tuiSync(home)(&model.SyncOverrides{TargetAgents: []model.AgentID{model.AgentOpenCode}}); err != nil {
+		t.Fatalf("seed OpenCode sync: %v", err)
+	}
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	logoPath := filepath.Join(home, ".config", "opencode", "tui-plugins", "gentle-logo.tsx")
+	if err := os.MkdirAll(filepath.Dir(logoPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll logo: %v", err)
+	}
+	if err := os.WriteFile(logoPath, []byte("// retained OpenCode logo"), 0o644); err != nil {
+		t.Fatalf("WriteFile logo: %v", err)
+	}
+	wantConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	wantState, err := state.Read(home)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	wantState.InstalledAgents = []string{"opencode"}
+
+	if _, err := tuiSync(home)(&model.SyncOverrides{TargetAgents: []model.AgentID{model.AgentOpenCode}, DeselectedAgents: []model.AgentID{model.AgentClaudeCode}}); err != nil {
+		t.Fatalf("tuiSync: %v", err)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(gotConfig, wantConfig) {
+		t.Fatalf("retained OpenCode config changed: err=%v", err)
+	}
+	gotLogo, err := os.ReadFile(logoPath)
+	if err != nil || string(gotLogo) != "// retained OpenCode logo" {
+		t.Fatalf("retained OpenCode logo changed: content=%q err=%v", gotLogo, err)
+	}
+	gotState, err := state.Read(home)
+	if err != nil || !reflect.DeepEqual(gotState, wantState) {
+		t.Fatalf("retained OpenCode state = %#v, want %#v (err=%v)", gotState, wantState, err)
+	}
+}
+
+func TestTuiSyncRestoresDeselectionSnapshotWhenSyncFails(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	originalGetwd := osGetwd
+	originalSync := runSyncWithSelection
+	osGetwd = func() (string, error) { return workspace, nil }
+	runSyncWithSelection = func(string, model.Selection) (cli.SyncResult, error) {
+		return cli.SyncResult{}, errors.New("sync failed")
+	}
+	t.Cleanup(func() {
+		osGetwd = originalGetwd
+		runSyncWithSelection = originalSync
+	})
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	beforeState := state.InstallState{InstalledAgents: []string{string(model.AgentClaudeCode), string(model.AgentOpenCode)}}
+	if err := state.Write(home, beforeState); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+	configPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	beforeConfig := []byte(`{"agent":{"gentle-orchestrator":{"mode":"primary"}}}`)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, beforeConfig, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := tuiSync(home)(&model.SyncOverrides{
+		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
+		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sync failed") {
+		t.Fatalf("tuiSync error = %v, want original sync failure", err)
+	}
+
+	gotConfig, readErr := os.ReadFile(configPath)
+	if readErr != nil || !bytes.Equal(gotConfig, beforeConfig) {
+		t.Fatalf("restored config = %q, want %q (err=%v)", gotConfig, beforeConfig, readErr)
+	}
+	gotState, readErr := state.Read(home)
+	if readErr != nil || !reflect.DeepEqual(gotState.InstalledAgents, beforeState.InstalledAgents) {
+		t.Fatalf("restored InstalledAgents = %v, want %v (err=%v)", gotState.InstalledAgents, beforeState.InstalledAgents, readErr)
+	}
+}
+
+func TestTuiSyncReportsRollbackFailureWithOriginalSyncFailure(t *testing.T) {
+	originalGetwd := osGetwd
+	originalUninstall := runUninstallWithSelection
+	originalSync := runSyncWithSelection
+	originalRestore := restoreBackup
+	osGetwd = func() (string, error) { return t.TempDir(), nil }
+	runUninstallWithSelection = func(string, string, []model.AgentID, []model.ComponentID) (componentuninstall.Result, error) {
+		return componentuninstall.Result{Manifest: backup.Manifest{ID: "pre-uninstall"}}, nil
+	}
+	syncErr := errors.New("sync failed")
+	runSyncWithSelection = func(string, model.Selection) (cli.SyncResult, error) {
+		return cli.SyncResult{}, syncErr
+	}
+	restoreErr := errors.New("restore failed")
+	restoreBackup = func(manifest backup.Manifest) error {
+		if manifest.ID != "pre-uninstall" {
+			t.Fatalf("restore manifest ID = %q, want pre-uninstall", manifest.ID)
+		}
+		return restoreErr
+	}
+	t.Cleanup(func() {
+		osGetwd = originalGetwd
+		runUninstallWithSelection = originalUninstall
+		runSyncWithSelection = originalSync
+		restoreBackup = originalRestore
+	})
+
+	_, err := tuiSync(t.TempDir())(&model.SyncOverrides{DeselectedAgents: []model.AgentID{model.AgentOpenCode}})
+	if !errors.Is(err, syncErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("tuiSync error = %v, want sync and restore failures", err)
+	}
+}
+
+func TestTuiSyncReportsRollbackFailureWithPartialUninstallFailure(t *testing.T) {
+	originalGetwd := osGetwd
+	originalUninstall := runUninstallWithSelection
+	originalRestore := restoreBackup
+	osGetwd = func() (string, error) { return t.TempDir(), nil }
+	uninstallErr := errors.New("partial uninstall failed")
+	runUninstallWithSelection = func(string, string, []model.AgentID, []model.ComponentID) (componentuninstall.Result, error) {
+		return componentuninstall.Result{Manifest: backup.Manifest{ID: "partial-uninstall"}}, uninstallErr
+	}
+	restoreErr := errors.New("restore failed")
+	restoreBackup = func(manifest backup.Manifest) error {
+		if manifest.ID != "partial-uninstall" {
+			t.Fatalf("restore manifest ID = %q, want partial-uninstall", manifest.ID)
+		}
+		return restoreErr
+	}
+	t.Cleanup(func() {
+		osGetwd = originalGetwd
+		runUninstallWithSelection = originalUninstall
+		restoreBackup = originalRestore
+	})
+
+	_, err := tuiSync(t.TempDir())(&model.SyncOverrides{DeselectedAgents: []model.AgentID{model.AgentOpenCode}})
+	if !errors.Is(err, uninstallErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("tuiSync error = %v, want uninstall and restore failures", err)
 	}
 }

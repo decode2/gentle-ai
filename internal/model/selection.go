@@ -64,6 +64,7 @@ type SyncOverrides struct {
 	// override, even when persisted install state omits them. This is used by
 	// model/profile configurators, where the user picked a concrete target agent.
 	TargetAgents                []AgentID
+	DeselectedAgents            []AgentID
 	ModelAssignments            map[string]ModelAssignment       // nil = no override; empty map = reset to defaults
 	ClaudeModelAssignments      map[string]ClaudeModelAlias      // nil = no override; empty map = reset to defaults
 	ClaudePhaseAssignments      map[string]ClaudePhaseAssignment // nil = no override; empty map = reset to defaults
