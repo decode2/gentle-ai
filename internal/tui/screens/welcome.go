@@ -10,6 +10,17 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+const (
+	welcomeAdvisoryMaxRegionHeight = 7
+	welcomePrimaryContentHeight    = 44
+)
+
+type WelcomeAdvisory struct {
+	Message string
+	URL     string
+	Scroll  int
+}
+
 // WelcomeOptions returns the welcome menu options.
 // When showProfiles is true, an "OpenCode SDD Profiles" option is inserted
 // between "Configure models" and "Manage backups".
@@ -60,6 +71,10 @@ func RenderWelcome(cursor int, version string, updateBanner string, updateResult
 }
 
 func RenderWelcomeWithWidth(cursor int, version string, updateBanner string, updateResults []update.UpdateResult, updateCheckDone bool, showProfiles bool, profileCount int, hasEngines bool, width int) string {
+	return RenderWelcomeWithAdvisory(cursor, version, updateBanner, updateResults, updateCheckDone, showProfiles, profileCount, hasEngines, width, 0, WelcomeAdvisory{})
+}
+
+func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, updateResults []update.UpdateResult, updateCheckDone bool, showProfiles bool, profileCount int, hasEngines bool, width int, height int, advisory WelcomeAdvisory) string {
 	var b strings.Builder
 
 	b.WriteString(styles.RenderLogo())
@@ -69,6 +84,10 @@ func RenderWelcomeWithWidth(cursor int, version string, updateBanner string, upd
 
 	if updateBanner != "" {
 		b.WriteString(styles.WarningStyle.Render(wrapWelcomeBanner(updateBanner, welcomeContentWidth(width))))
+		b.WriteString("\n")
+	}
+	if rendered := renderWelcomeAdvisory(advisory, width, height); rendered != "" {
+		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
 
@@ -83,6 +102,64 @@ func RenderWelcomeWithWidth(cursor int, version string, updateBanner string, upd
 		return styles.FrameStyle.Width(width - 4).Render(b.String())
 	}
 	return styles.FrameStyle.Render(b.String())
+}
+
+func WelcomeAdvisoryScrollBounds(message string, releaseURL string, width int, height int) (int, int) {
+	lines := welcomeAdvisoryLines(message, releaseURL, welcomeContentWidth(width))
+	regionHeight := welcomeAdvisoryRegionHeight(height)
+	if len(lines) == 0 || regionHeight == 0 {
+		return 0, 0
+	}
+	if len(lines) <= regionHeight {
+		return len(lines), 0
+	}
+	if regionHeight < 2 {
+		return 0, 0
+	}
+	pageSize := regionHeight - 1
+	return pageSize, len(lines) - pageSize
+}
+
+func renderWelcomeAdvisory(advisory WelcomeAdvisory, width int, height int) string {
+	lines := welcomeAdvisoryLines(advisory.Message, advisory.URL, welcomeContentWidth(width))
+	pageSize, maxScroll := WelcomeAdvisoryScrollBounds(advisory.Message, advisory.URL, width, height)
+	if pageSize == 0 {
+		return ""
+	}
+	scroll := min(max(0, advisory.Scroll), maxScroll)
+	end := min(scroll+pageSize, len(lines))
+	rendered := styles.WarningStyle.Render(strings.Join(lines[scroll:end], "\n"))
+	if maxScroll > 0 {
+		hint := fmt.Sprintf("PgUp/PgDn: scroll  •  lines %d-%d/%d", scroll+1, end, len(lines))
+		rendered += "\n" + styles.HelpStyle.Render(hint)
+	}
+	return rendered
+}
+
+func welcomeAdvisoryLines(message string, releaseURL string, width int) []string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	if !strings.HasPrefix(message, "Advisory:") {
+		message = "Advisory: " + message
+	}
+	messageLines := strings.Split(wrapWelcomeBanner(message, width), "\n")
+	if releaseURL == "" {
+		return messageLines
+	}
+	link := "Latest release: " + releaseURL
+	if width <= 0 {
+		return append([]string{link}, messageLines...)
+	}
+	return append(wrapPlainLine(link, width), messageLines...)
+}
+
+func welcomeAdvisoryRegionHeight(height int) int {
+	if height <= 0 {
+		return welcomeAdvisoryMaxRegionHeight
+	}
+	return min(welcomeAdvisoryMaxRegionHeight, max(0, height-welcomePrimaryContentHeight))
 }
 
 func welcomeContentWidth(width int) int {

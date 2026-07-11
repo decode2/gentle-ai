@@ -5459,6 +5459,122 @@ func TestWelcomeView_LongAdvisoryStaysWithinWindowWidth(t *testing.T) {
 	}
 }
 
+func TestWelcomeAdvisory_BoundsAndScrollsOverflow(t *testing.T) {
+	const releaseURL = "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.49.0"
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Width = 60
+	m.Height = 50
+	updated, _ := m.Update(AdvisoryMsg{Advisory: update.Advisory{
+		Message: strings.Repeat("release detail ", 80),
+		URL:     releaseURL,
+	}})
+	state := updated.(Model)
+	initial := state.View()
+
+	if got := lipgloss.Height(initial); got > state.Height {
+		t.Fatalf("welcome height = %d, want <= terminal height %d", got, state.Height)
+	}
+	if !strings.Contains(initial, "PgUp/PgDn: scroll") {
+		t.Fatalf("overflowing advisory missing scroll affordance\nview:\n%s", initial)
+	}
+	if !strings.Contains(initial, "Latest release:") || !strings.Contains(initial, "v1.49.0") {
+		t.Fatalf("overflowing advisory did not keep release link visible\nview:\n%s", initial)
+	}
+	if !strings.Contains(initial, "Start installation") {
+		t.Fatalf("overflowing advisory crowded out primary action\nview:\n%s", initial)
+	}
+
+	updated, _ = state.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	state = updated.(Model)
+	if state.AdvisoryScroll == 0 {
+		t.Fatal("Page Down did not advance advisory scroll")
+	}
+	if state.Cursor != 0 {
+		t.Fatalf("Page Down changed menu cursor to %d", state.Cursor)
+	}
+	if got := state.View(); got == initial {
+		t.Fatal("Page Down did not change visible advisory content")
+	}
+
+	updated, _ = state.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if got := updated.(Model).AdvisoryScroll; got != 0 {
+		t.Fatalf("Page Up scroll = %d, want 0", got)
+	}
+}
+
+func TestWelcomeAdvisory_FittingContentShowsLatestReleaseWithoutScrollHint(t *testing.T) {
+	const releaseURL = "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.49.0"
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Width = 100
+	m.Height = 60
+	updated, _ := m.Update(AdvisoryMsg{Advisory: update.Advisory{
+		Message: "Maintenance improvements are available.",
+		URL:     releaseURL,
+	}})
+	state := updated.(Model)
+	view := state.View()
+
+	if state.AdvisoryURL != releaseURL || !strings.Contains(view, "Latest release: "+releaseURL) {
+		t.Fatalf("latest release link not carried through\nview:\n%s", view)
+	}
+	if strings.Contains(view, "PgUp/PgDn: scroll") {
+		t.Fatalf("fitting advisory unexpectedly shows scroll affordance\nview:\n%s", view)
+	}
+}
+
+func TestWelcomeAdvisory_SmallTerminalPreservesMenu(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Width = 60
+	m.Height = 35
+	baselineHeight := lipgloss.Height(m.View())
+	updated, _ := m.Update(AdvisoryMsg{Advisory: update.Advisory{
+		Message: strings.Repeat("long advisory ", 80),
+		URL:     "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.49.0",
+	}})
+	view := updated.(Model).View()
+
+	if got := lipgloss.Height(view); got != baselineHeight {
+		t.Fatalf("small-terminal advisory added %d lines, want none", got-baselineHeight)
+	}
+	if !strings.Contains(view, "Start installation") {
+		t.Fatalf("small-terminal welcome lost primary action\nview:\n%s", view)
+	}
+}
+
+func TestWelcomeAdvisory_ResizeAndContentChangesClampScroll(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Width = 45
+	m.Height = 60
+	updated, _ := m.Update(AdvisoryMsg{Advisory: update.Advisory{
+		Message: strings.Repeat("release detail ", 12),
+		URL:     "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.49.0",
+	}})
+	state := updated.(Model)
+	updated, _ = state.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	state = updated.(Model)
+	if state.AdvisoryScroll == 0 {
+		t.Fatal("test setup did not produce advisory overflow")
+	}
+
+	updated, _ = state.Update(tea.WindowSizeMsg{Width: 120, Height: 80})
+	state = updated.(Model)
+	if state.AdvisoryScroll != 0 {
+		t.Fatalf("scroll after fitting resize = %d, want 0", state.AdvisoryScroll)
+	}
+	if strings.Contains(state.View(), "PgUp/PgDn: scroll") {
+		t.Fatal("scroll affordance remained after content fit")
+	}
+
+	updated, _ = state.Update(tea.WindowSizeMsg{Width: 45, Height: 60})
+	state = updated.(Model)
+	updated, _ = state.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	state = updated.(Model)
+	updated, _ = state.Update(AdvisoryMsg{Advisory: update.Advisory{Message: "Short notice."}})
+	if got := updated.(Model).AdvisoryScroll; got != 0 {
+		t.Fatalf("scroll after advisory content change = %d, want 0", got)
+	}
+}
+
 // ─── Advisory message sanitization tests ─────────────────────────────────────
 
 // TestSanitizeAdvisoryMessage_StripControlChars verifies that ASCII control

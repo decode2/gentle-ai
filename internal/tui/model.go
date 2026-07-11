@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,15 @@ func sanitizeAdvisoryMessage(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func sanitizeAdvisoryURL(raw string) string {
+	cleaned := sanitizeAdvisoryMessage(strings.TrimSpace(raw))
+	parsed, err := url.ParseRequestURI(cleaned)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.String()
 }
 
 // osStatModelCache is a package-level variable so tests can override it to
@@ -460,6 +470,8 @@ type Model struct {
 	// fetch, when a non-empty message was returned. Empty string means no
 	// advisory to display. Set asynchronously via AdvisoryMsg.
 	AdvisoryMessage string
+	AdvisoryURL     string
+	AdvisoryScroll  int
 
 	// pipelineRunning tracks whether the pipeline goroutine is active.
 	pipelineRunning bool
@@ -723,6 +735,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		m.clampAdvisoryScroll()
 		return m, nil
 	case TickMsg:
 		if m.Screen == ScreenInstalling && !m.Progress.Done() {
@@ -823,6 +836,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Sanitize before storing: strip ANSI escape sequences and control
 		// characters so remote-controlled content cannot corrupt the TUI layout.
 		m.AdvisoryMessage = sanitizeAdvisoryMessage(msg.Advisory.Message)
+		m.AdvisoryURL = sanitizeAdvisoryURL(msg.Advisory.URL)
+		m.AdvisoryScroll = 0
 		return m, nil
 	case UpgradeDoneMsg:
 		m.OperationRunning = false
@@ -991,16 +1006,12 @@ func (m Model) View() string {
 		if m.UpdateCheckDone && update.HasUpdates(m.UpdateResults) {
 			banner = "Updates available: " + update.UpdateSummaryLine(m.UpdateResults)
 		}
-		// Append advisory message below the update banner when present.
-		// The advisory is purely informational and never replaces or blocks
-		// any other launch behavior.
-		if m.AdvisoryMessage != "" {
-			if banner != "" {
-				banner += "\n"
-			}
-			banner += "Advisory: " + m.AdvisoryMessage
-		}
-		return screens.RenderWelcomeWithWidth(m.Cursor, m.Version, banner, m.UpdateResults, m.UpdateCheckDone, m.hasDetectedOpenCode(), len(m.ProfileList), m.hasAgentBuilderEngines(), m.Width)
+		return screens.RenderWelcomeWithAdvisory(
+			m.Cursor, m.Version, banner, m.UpdateResults, m.UpdateCheckDone,
+			m.hasDetectedOpenCode(), len(m.ProfileList), m.hasAgentBuilderEngines(),
+			m.Width, m.Height,
+			screens.WelcomeAdvisory{Message: m.AdvisoryMessage, URL: m.AdvisoryURL, Scroll: m.AdvisoryScroll},
+		)
 	case ScreenUpgrade:
 		return screens.RenderUpgradeWithWidth(m.UpdateResults, m.UpgradeReport, m.UpgradeErr, m.OperationRunning, m.UpdateCheckDone, m.Cursor, m.SpinnerFrame, m.Width)
 	case ScreenSync:
@@ -1286,6 +1297,17 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.Screen == ScreenUpdatePrompt {
 		return m.handleUpdatePromptKey(keyStr)
 	}
+	if m.Screen == ScreenWelcome {
+		pageSize, maxScroll := screens.WelcomeAdvisoryScrollBounds(m.AdvisoryMessage, m.AdvisoryURL, m.Width, m.Height)
+		switch keyStr {
+		case "pgup":
+			m.AdvisoryScroll = max(0, m.AdvisoryScroll-pageSize)
+			return m, nil
+		case "pgdown":
+			m.AdvisoryScroll = min(maxScroll, m.AdvisoryScroll+pageSize)
+			return m, nil
+		}
+	}
 
 	switch keyStr {
 	case "ctrl+c", "q":
@@ -1478,6 +1500,11 @@ func (m Model) handleKeyPress(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m *Model) clampAdvisoryScroll() {
+	_, maxScroll := screens.WelcomeAdvisoryScrollBounds(m.AdvisoryMessage, m.AdvisoryURL, m.Width, m.Height)
+	m.AdvisoryScroll = min(max(0, m.AdvisoryScroll), maxScroll)
 }
 
 func (m Model) shouldSkipModelPickerSeparator() bool {
