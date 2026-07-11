@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gentleman-programming/gentle-ai/internal/agents"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/claude"
+	"github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 )
 
@@ -769,6 +772,28 @@ func TestDetectStatusRejectsDisabledOpenCodeWiring(t *testing.T) {
 	opencode := findAgentStatus(t, status, model.AgentOpenCode)
 	if opencode.Configured || opencode.Status != AgentStatusMissing {
 		t.Fatalf("opencode status = %#v, want disabled MCP reported missing", opencode)
+	}
+}
+
+func TestCodeGraphEffectiveWiringCapabilityIsOptional(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	var openCodeAdapter agents.Adapter = opencode.NewAdapter()
+	if _, ok := openCodeAdapter.(agents.EffectiveCodeGraphWiringDetector); !ok {
+		t.Fatal("OpenCode adapter does not expose effective CodeGraph wiring detection")
+	}
+
+	var claudeAdapter agents.Adapter = claude.NewAdapter()
+	if _, ok := claudeAdapter.(agents.EffectiveCodeGraphWiringDetector); ok {
+		t.Fatal("Claude adapter unexpectedly exposes OpenCode-specific wiring detection")
+	}
+	path := claudeAdapter.MCPConfigPath(home, "codegraph")
+	mustWrite(t, path, `{"command":"codegraph"}`)
+	if gotPath, configured := hasCodeGraphToolWiring(home, claudeAdapter); !configured || gotPath != path {
+		t.Fatalf("fallback marker detection = (%q, %v), want (%q, true)", gotPath, configured, path)
 	}
 }
 

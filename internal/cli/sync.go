@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
+	opencodeagent "github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
@@ -665,7 +666,7 @@ func (r codeGraphHomeRunner) Run(name string, args ...string) error {
 	if filepath.Clean(r.homeDir) != filepath.Clean(actualHome) {
 		command.Env = overrideCommandEnvironment(os.Environ(), map[string]string{
 			"HOME":            r.homeDir,
-			"XDG_CONFIG_HOME": filepath.Join(r.homeDir, ".config"),
+			"XDG_CONFIG_HOME": codeGraphConfigHome(r.homeDir),
 		})
 	}
 	output, err := command.CombinedOutput()
@@ -676,6 +677,10 @@ func (r codeGraphHomeRunner) Run(name string, args ...string) error {
 		}
 	}
 	return err
+}
+
+func codeGraphConfigHome(homeDir string) string {
+	return filepath.Dir(opencodeagent.ConfigPath(homeDir))
 }
 
 func overrideCommandEnvironment(environment []string, overrides map[string]string) []string {
@@ -918,6 +923,15 @@ type syncFileSnapshot struct {
 	targetExists bool
 }
 
+var writeSyncFileAtomic = filemerge.WriteFileAtomic
+
+func syncRestoreWriteMode(mode os.FileMode) os.FileMode {
+	if mode.Perm() == 0 {
+		return 0o600
+	}
+	return mode
+}
+
 func snapshotSyncFiles(paths []string) (map[string]syncFileSnapshot, error) {
 	snapshots := make(map[string]syncFileSnapshot, len(paths))
 	for _, path := range dedupPaths(paths) {
@@ -1013,9 +1027,10 @@ func restoreSyncFiles(snapshots map[string]syncFileSnapshot) error {
 			continue
 		}
 		mode := snapshot.mode
+		writeMode := syncRestoreWriteMode(mode)
 		if snapshot.symlink {
 			if snapshot.targetExists {
-				if _, err := filemerge.WriteFileAtomic(snapshot.targetPath, snapshot.data, mode); err != nil {
+				if _, err := writeSyncFileAtomic(snapshot.targetPath, snapshot.data, writeMode); err != nil {
 					restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync symlink target %q: %w", snapshot.targetPath, err))
 					continue
 				}
@@ -1038,7 +1053,7 @@ func restoreSyncFiles(snapshots map[string]syncFileSnapshot) error {
 			}
 			continue
 		}
-		if _, err := filemerge.WriteFileAtomic(path, snapshot.data, mode); err != nil {
+		if _, err := writeSyncFileAtomic(path, snapshot.data, writeMode); err != nil {
 			restoreErr = errors.Join(restoreErr, fmt.Errorf("restore sync file %q: %w", path, err))
 			continue
 		}

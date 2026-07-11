@@ -166,6 +166,57 @@ func TestConfigPathsRespectXDGConfigHome(t *testing.T) {
 	if got := a.SystemPromptFile(home); got != filepath.Join(wantDir, "AGENTS.md") {
 		t.Fatalf("SystemPromptFile() = %q, want XDG path", got)
 	}
+	if got := a.SystemPromptDir(home); got != wantDir {
+		t.Fatalf("SystemPromptDir() = %q, want %q", got, wantDir)
+	}
+	if got := a.SkillsDir(home); got != filepath.Join(wantDir, "skills") {
+		t.Fatalf("SkillsDir() = %q, want XDG path", got)
+	}
+	if got := a.CommandsDir(home); got != filepath.Join(wantDir, "commands") {
+		t.Fatalf("CommandsDir() = %q, want XDG path", got)
+	}
+	if got := a.MCPConfigPath(home, "codegraph"); got != filepath.Join(wantDir, "opencode.json") {
+		t.Fatalf("MCPConfigPath() = %q, want XDG path", got)
+	}
+}
+
+func TestEffectiveCodeGraphWiring(t *testing.T) {
+	tests := []struct {
+		name       string
+		fileName   string
+		content    string
+		configured bool
+	}{
+		{name: "effective JSON", fileName: "opencode.json", content: `{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":true}}}`, configured: true},
+		{name: "effective JSONC", fileName: "opencode.jsonc", content: "{\n// preserved comment\n\"mcp\": {\"codegraph\": {\"type\": \"local\", \"command\": [\"codegraph\", \"serve\", \"--mcp\"],},},\n}", configured: true},
+		{name: "disabled entry", fileName: "opencode.json", content: `{"mcp":{"codegraph":{"type":"local","command":["codegraph","serve","--mcp"],"enabled":false}}}`},
+		{name: "wrong command", fileName: "opencode.json", content: `{"mcp":{"codegraph":{"type":"local","command":["other","serve","--mcp"]}}}`},
+		{name: "malformed config", fileName: "opencode.json", content: `{"mcp":`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			path := filepath.Join(ConfigPath(home), tt.fileName)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			gotPath, configured := NewAdapter().EffectiveCodeGraphWiring(home)
+			if configured != tt.configured {
+				t.Fatalf("EffectiveCodeGraphWiring() configured = %v, want %v", configured, tt.configured)
+			}
+			if configured && gotPath != path {
+				t.Fatalf("EffectiveCodeGraphWiring() path = %q, want %q", gotPath, path)
+			}
+		})
+	}
 }
 
 func TestConfigPathIgnoresRelativeXDGConfigHome(t *testing.T) {

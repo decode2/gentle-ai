@@ -1,7 +1,6 @@
 package communitytool
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -433,10 +432,10 @@ func hasDetectedCodeGraphToolWiring(homeDir string) bool {
 }
 
 func hasCodeGraphToolWiring(homeDir string, adapter agents.Adapter) (string, bool) {
-	paths := codeGraphToolWiringPaths(homeDir, adapter)
-	if adapter.Agent() == model.AgentOpenCode {
-		return hasOpenCodeCodeGraphWiring(paths)
+	if detector, ok := adapter.(agents.EffectiveCodeGraphWiringDetector); ok {
+		return detector.EffectiveCodeGraphWiring(homeDir)
 	}
+	paths := codeGraphToolWiringPaths(homeDir, adapter)
 	seen := map[string]struct{}{}
 	for _, path := range paths {
 		if path == "" {
@@ -458,137 +457,12 @@ func hasCodeGraphToolWiring(homeDir string, adapter agents.Adapter) (string, boo
 	return "", false
 }
 
-func hasOpenCodeCodeGraphWiring(paths []string) (string, bool) {
-	seen := map[string]struct{}{}
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-		if _, exists := seen[path]; exists {
-			continue
-		}
-		seen[path] = struct{}{}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var root map[string]any
-		if json.Unmarshal(normalizeJSONC(data), &root) != nil {
-			continue
-		}
-		mcp, ok := root["mcp"].(map[string]any)
-		if !ok || !isEffectiveOpenCodeCodeGraphEntry(mcp["codegraph"]) {
-			continue
-		}
-		return path, true
-	}
-	return "", false
-}
-
-func isEffectiveOpenCodeCodeGraphEntry(value any) bool {
-	entry, ok := value.(map[string]any)
-	if !ok || entry["type"] != "local" {
-		return false
-	}
-	if enabled, exists := entry["enabled"]; exists && enabled != true {
-		return false
-	}
-	command, ok := entry["command"].([]any)
-	if !ok || len(command) != 3 {
-		return false
-	}
-	return command[0] == "codegraph" && command[1] == "serve" && command[2] == "--mcp"
-}
-
-func normalizeJSONC(data []byte) []byte {
-	withoutComments := append([]byte(nil), data...)
-	inString := false
-	escaped := false
-	for i := 0; i < len(withoutComments); i++ {
-		current := withoutComments[i]
-		if inString {
-			switch {
-			case escaped:
-				escaped = false
-			case current == '\\':
-				escaped = true
-			case current == '"':
-				inString = false
-			}
-			continue
-		}
-		if current == '"' {
-			inString = true
-			continue
-		}
-		if current != '/' || i+1 >= len(withoutComments) {
-			continue
-		}
-		switch withoutComments[i+1] {
-		case '/':
-			withoutComments[i], withoutComments[i+1] = ' ', ' '
-			i += 2
-			for ; i < len(withoutComments) && withoutComments[i] != '\n'; i++ {
-				withoutComments[i] = ' '
-			}
-			i--
-		case '*':
-			withoutComments[i], withoutComments[i+1] = ' ', ' '
-			i += 2
-			for ; i+1 < len(withoutComments); i++ {
-				if withoutComments[i] == '*' && withoutComments[i+1] == '/' {
-					withoutComments[i], withoutComments[i+1] = ' ', ' '
-					i++
-					break
-				}
-				if withoutComments[i] != '\n' && withoutComments[i] != '\r' {
-					withoutComments[i] = ' '
-				}
-			}
-		}
-	}
-
-	normalized := make([]byte, 0, len(withoutComments))
-	inString = false
-	escaped = false
-	for i, current := range withoutComments {
-		if inString {
-			normalized = append(normalized, current)
-			switch {
-			case escaped:
-				escaped = false
-			case current == '\\':
-				escaped = true
-			case current == '"':
-				inString = false
-			}
-			continue
-		}
-		if current == '"' {
-			inString = true
-			normalized = append(normalized, current)
-			continue
-		}
-		if current == ',' {
-			next := i + 1
-			for next < len(withoutComments) && (withoutComments[next] == ' ' || withoutComments[next] == '\t' || withoutComments[next] == '\r' || withoutComments[next] == '\n') {
-				next++
-			}
-			if next < len(withoutComments) && (withoutComments[next] == '}' || withoutComments[next] == ']') {
-				continue
-			}
-		}
-		normalized = append(normalized, current)
-	}
-	return normalized
-}
-
 func codeGraphToolWiringPaths(homeDir string, adapter agents.Adapter) []string {
 	paths := []string{
 		adapter.MCPConfigPath(homeDir, "codegraph"),
 		adapter.SettingsPath(homeDir),
 	}
-	if adapter.Agent() == model.AgentOpenCode {
+	if _, ok := adapter.(agents.EffectiveCodeGraphWiringDetector); ok {
 		settingsPath := adapter.SettingsPath(homeDir)
 		if strings.HasSuffix(settingsPath, ".json") {
 			paths = append(paths, strings.TrimSuffix(settingsPath, ".json")+".jsonc")

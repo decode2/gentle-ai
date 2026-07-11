@@ -58,3 +58,9 @@ type Adapter interface {
 	SupportsSystemPrompt() bool
 	SupportsMCP() bool
 }
+
+// EffectiveCodeGraphWiringDetector is an optional adapter capability for agents
+// whose configuration format requires semantic validation beyond marker checks.
+type EffectiveCodeGraphWiringDetector interface {
+	EffectiveCodeGraphWiring(homeDir string) (path string, configured bool)
+}

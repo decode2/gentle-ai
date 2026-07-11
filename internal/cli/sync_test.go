@@ -15,6 +15,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
@@ -870,20 +871,91 @@ func TestCodeGraphGuidanceSyncStepPreservesBrokenSymlinkChain(t *testing.T) {
 	}
 }
 
-func TestRestoreSyncFilesPreservesZeroMode(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "managed.json")
-	mustWriteFile(t, path, []byte("changed"))
-	if err := restoreSyncFiles(map[string]syncFileSnapshot{
-		path: {exists: true, data: []byte("original"), mode: 0},
-	}); err != nil {
-		t.Fatalf("restoreSyncFiles() error = %v", err)
+func TestRestoreSyncFilesNeverWidensZeroMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) (string, syncFileSnapshot)
+	}{
+		{
+			name: "regular file",
+			setup: func(t *testing.T) (string, syncFileSnapshot) {
+				path := filepath.Join(t.TempDir(), "managed.json")
+				mustWriteFile(t, path, []byte("changed"))
+				return path, syncFileSnapshot{exists: true, data: []byte("original"), mode: 0}
+			},
+		},
+		{
+			name: "symlink chain target",
+			setup: func(t *testing.T) (string, syncFileSnapshot) {
+				root := t.TempDir()
+				targetPath := filepath.Join(root, "versions", "managed.json")
+				innerPath := filepath.Join(root, "current.json")
+				path := filepath.Join(root, "config", "managed.json")
+				mustWriteFile(t, targetPath, []byte("changed"))
+				if err := os.Symlink(targetPath, innerPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(innerPath, path); err != nil {
+					t.Fatal(err)
+				}
+				return path, syncFileSnapshot{exists: true, data: []byte("original"), mode: 0, symlink: true, linkTarget: innerPath, targetPath: targetPath, targetExists: true}
+			},
+		},
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, snapshot := tt.setup(t)
+			originalWriter := writeSyncFileAtomic
+			t.Cleanup(func() { writeSyncFileAtomic = originalWriter })
+			writeSyncFileAtomic = func(path string, content []byte, mode os.FileMode) (filemerge.WriteResult, error) {
+				if mode != 0o600 {
+					t.Fatalf("atomic restore mode = %o, want restrictive 0600", mode)
+				}
+				result, err := originalWriter(path, content, mode)
+				if err == nil {
+					info, statErr := os.Stat(path)
+					if statErr != nil {
+						t.Fatal(statErr)
+					}
+					if got := info.Mode().Perm(); got != 0o600 {
+						t.Fatalf("mode immediately after atomic replace = %o, want 0600", got)
+					}
+				}
+				return result, err
+			}
+
+			if err := restoreSyncFiles(map[string]syncFileSnapshot{path: snapshot}); err != nil {
+				t.Fatalf("restoreSyncFiles() error = %v", err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0 {
+				t.Fatalf("restored mode = %o, want exact 000", got)
+			}
+		})
 	}
-	if info.Mode().Perm() != 0 {
-		t.Fatalf("restored mode = %o, want 000", info.Mode().Perm())
+}
+
+func TestCodeGraphConfigHomeMatchesOpenCodePathResolution(t *testing.T) {
+	actualHome := t.TempDir()
+	xdg := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("HOME", actualHome)
+	t.Setenv("USERPROFILE", actualHome)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	if got := codeGraphConfigHome(actualHome); got != xdg {
+		t.Fatalf("codeGraphConfigHome(actual home) = %q, want %q", got, xdg)
+	}
+	alternateHome := t.TempDir()
+	wantAlternate := filepath.Join(alternateHome, ".config")
+	if got := codeGraphConfigHome(alternateHome); got != wantAlternate {
+		t.Fatalf("codeGraphConfigHome(alternate home) = %q, want %q", got, wantAlternate)
 	}
 }
 

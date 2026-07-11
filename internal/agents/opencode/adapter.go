@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/internal/installcmd"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
@@ -114,6 +116,44 @@ func (a *Adapter) MCPConfigPath(homeDir string, serverName string) string {
 	// OpenCode merges into opencode.json, but this provides the path
 	// for components that use the separate-file strategy fallback.
 	return filepath.Join(ConfigPath(homeDir), "opencode.json")
+}
+
+// EffectiveCodeGraphWiring validates OpenCode's effective MCP entry while
+// keeping OpenCode's JSON/JSONC schema behind the adapter boundary.
+func (a *Adapter) EffectiveCodeGraphWiring(homeDir string) (string, bool) {
+	settingsPath := a.SettingsPath(homeDir)
+	paths := []string{settingsPath}
+	if strings.HasSuffix(settingsPath, ".json") {
+		paths = append(paths, strings.TrimSuffix(settingsPath, ".json")+".jsonc")
+	}
+
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		root, err := filemerge.UnmarshalJSONObject(data)
+		if err != nil {
+			continue
+		}
+		mcp, ok := root["mcp"].(map[string]any)
+		if ok && isEffectiveCodeGraphEntry(mcp["codegraph"]) {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func isEffectiveCodeGraphEntry(value any) bool {
+	entry, ok := value.(map[string]any)
+	if !ok || entry["type"] != "local" {
+		return false
+	}
+	if enabled, exists := entry["enabled"]; exists && enabled != true {
+		return false
+	}
+	command, ok := entry["command"].([]any)
+	return ok && len(command) == 3 && command[0] == "codegraph" && command[1] == "serve" && command[2] == "--mcp"
 }
 
 // --- Optional capabilities ---
