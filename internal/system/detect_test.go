@@ -112,78 +112,27 @@ func TestDetectFromInputsMarksArchSupported(t *testing.T) {
 	}
 }
 
-func TestDetectFromInputsMarksNixOSSupported(t *testing.T) {
-	osRelease := "ID=nixos\n"
-	result := detectFromInputs("linux", "amd64", "/bin/bash", osRelease, nil, nil)
-
-	if !result.System.Supported {
-		t.Fatalf("expected nixos linux to be supported")
+func TestDetectFromInputsNixProfiles(t *testing.T) {
+	nix := ToolStatus{Name: "nix", Installed: true}
+	brew := ToolStatus{Name: "brew", Installed: true}
+	tests := []struct {
+		name, release, wantDistro, wantPM string
+		tools                             map[string]ToolStatus
+	}{
+		{"nixos", "ID=nixos\n", LinuxDistroNixOS, "nix", nil},
+		{"nixos-like", "ID=custom\nID_LIKE=nixos\n", LinuxDistroNixOS, "nix", nil},
+		{"ubuntu prefers brew", "ID=ubuntu\n", LinuxDistroUbuntu, "brew", map[string]ToolStatus{"nix": nix, "brew": brew}},
+		{"ubuntu prefers apt", "ID=ubuntu\n", LinuxDistroUbuntu, "apt", map[string]ToolStatus{"nix": nix}},
+		{"unsupported falls back to nix", "ID=alpine\n", LinuxDistroUnknown, "nix", map[string]ToolStatus{"nix": nix}},
+		{"nixos prefers nix over brew", "ID=nixos\n", LinuxDistroNixOS, "nix", map[string]ToolStatus{"brew": brew}},
 	}
-
-	if result.System.Profile.LinuxDistro != LinuxDistroNixOS {
-		t.Fatalf("expected nixos distro, got %q", result.System.Profile.LinuxDistro)
-	}
-
-	if result.System.Profile.PackageManager != "nix" {
-		t.Fatalf("expected nix package manager, got %q", result.System.Profile.PackageManager)
-	}
-}
-
-func TestDetectFromInputsMarksNixOSLikeSupported(t *testing.T) {
-	osRelease := "ID=custom-distro\nID_LIKE=nixos\n"
-	result := detectFromInputs("linux", "amd64", "/bin/bash", osRelease, nil, nil)
-
-	if !result.System.Supported {
-		t.Fatalf("expected nixos-like linux to be supported")
-	}
-
-	if result.System.Profile.LinuxDistro != LinuxDistroNixOS {
-		t.Fatalf("expected nixos distro for ID_LIKE=nixos, got %q", result.System.Profile.LinuxDistro)
-	}
-}
-
-func TestDetectFromInputsPrefersBrewOverNixOnUbuntu(t *testing.T) {
-	tools := map[string]ToolStatus{
-		"nix":  {Name: "nix", Installed: true, Path: "/nix/var/nix/profiles/default/bin/nix"},
-		"brew": {Name: "brew", Installed: true, Path: "/home/linuxbrew/.linuxbrew/bin/brew"},
-	}
-	result := detectFromInputs("linux", "amd64", "/bin/bash", "ID=ubuntu\n", tools, nil)
-
-	if result.System.Profile.PackageManager != "brew" {
-		t.Fatalf("expected brew package manager when both nix and brew installed on Ubuntu, got %q", result.System.Profile.PackageManager)
-	}
-}
-
-func TestDetectFromInputsPrefersAptOverNixOnUbuntu(t *testing.T) {
-	tools := map[string]ToolStatus{
-		"nix": {Name: "nix", Installed: true, Path: "/nix/var/nix/profiles/default/bin/nix"},
-	}
-	result := detectFromInputs("linux", "amd64", "/bin/bash", "ID=ubuntu\n", tools, nil)
-
-	if result.System.Profile.PackageManager != "apt" {
-		t.Fatalf("expected apt package manager when only nix is installed on Ubuntu, got %q", result.System.Profile.PackageManager)
-	}
-}
-
-func TestDetectFromInputsFallsBackToNixOnUnsupportedLinux(t *testing.T) {
-	tools := map[string]ToolStatus{
-		"nix": {Name: "nix", Installed: true, Path: "/nix/var/nix/profiles/default/bin/nix"},
-	}
-	result := detectFromInputs("linux", "amd64", "/bin/bash", "ID=alpine\n", tools, nil)
-
-	if result.System.Profile.PackageManager != "nix" {
-		t.Fatalf("expected nix package manager fallback on unsupported Linux with nix installed, got %q", result.System.Profile.PackageManager)
-	}
-}
-
-func TestDetectFromInputsNixOSPrefersNixOverBrew(t *testing.T) {
-	tools := map[string]ToolStatus{
-		"brew": {Name: "brew", Installed: true, Path: "/home/linuxbrew/.linuxbrew/bin/brew"},
-	}
-	result := detectFromInputs("linux", "amd64", "/bin/bash", "ID=nixos\n", tools, nil)
-
-	if result.System.Profile.PackageManager != "nix" {
-		t.Fatalf("expected nix package manager for NixOS even when brew is installed, got %q", result.System.Profile.PackageManager)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := detectFromInputs("linux", "amd64", "/bin/bash", tt.release, tt.tools, nil).System.Profile
+			if !profile.Supported || profile.LinuxDistro != tt.wantDistro || profile.PackageManager != tt.wantPM {
+				t.Fatalf("profile = %#v, want supported distro=%q pm=%q", profile, tt.wantDistro, tt.wantPM)
+			}
+		})
 	}
 }
 

@@ -375,6 +375,12 @@ func TestResolveAgentInstall(t *testing.T) {
 			want:    CommandSequence{{"npm", "install", "-g", "--ignore-scripts", "opencode-ai@" + versions.OpenCode}},
 		},
 		{
+			name:    "opencode on nix uses persistent profile install",
+			profile: system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"},
+			agent:   model.AgentOpenCode,
+			want:    CommandSequence{{"nix", "profile", "install", "nixpkgs#opencode"}},
+		},
+		{
 			name:    "claude-code on windows uses npm without sudo",
 			profile: system.PlatformProfile{OS: "windows", PackageManager: "winget", NpmWritable: true},
 			agent:   model.AgentClaudeCode,

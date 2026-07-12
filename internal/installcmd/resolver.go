@@ -242,6 +242,8 @@ func resolveOpenCodeInstall(profile system.PlatformProfile) (CommandSequence, er
 	case "winget":
 		// On Windows, npm global installs do not require sudo.
 		return CommandSequence{{"npm", "install", "-g", "--ignore-scripts", "opencode-ai@" + versions.OpenCode}}, nil
+	case "nix":
+		return CommandSequence{{"nix", "profile", "install", "nixpkgs#opencode"}}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported platform for opencode: os=%q distro=%q pm=%q",
@@ -408,8 +410,6 @@ func resolveEngramInstall(profile system.PlatformProfile) (CommandSequence, erro
 			{"brew", "install", "engram"},
 		}, nil
 	case "nix":
-		// NixOS requires installing from source via go install because pre-built release
-		// binaries fail to run natively due to hardcoded dynamic linker paths.
 		if err := validateGoForModuleInstall(profile); err != nil {
 			return nil, err
 		}

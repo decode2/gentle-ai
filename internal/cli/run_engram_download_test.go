@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	opencodeagent "github.com/gentleman-programming/gentle-ai/internal/agents/opencode"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
@@ -43,7 +44,7 @@ func TestRunInstallLinuxEngramUsesDownloadNotGoInstall(t *testing.T) {
 
 	detection := linuxDetectionResult(system.LinuxDistroUbuntu, "apt")
 	result, err := RunInstall(
-		[]string{"--agent", "opencode", "--component", "engram"},
+		[]string{"--agent", "cursor", "--component", "engram"},
 		detection,
 	)
 	if err != nil {
@@ -678,7 +679,6 @@ func TestRunInstallBetaEngramUsesMainGoInstallAndInstalledBinary(t *testing.T) {
 	}
 }
 
-// TestRunInstallNixOSEngramUsesGoInstall verifies NixOS uses go install.
 func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 	home := t.TempDir()
 	restoreHome := osUserHomeDir
@@ -687,6 +687,8 @@ func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 	restoreLookPath := cmdLookPath
 	restoreGoEnv := goEnv
 	restorePathEntries := pathEnvEntries
+	restoreOpenCodeLookPath := opencodeagent.LookPathOverride
+	restoreGGAAvailable := ggaAvailableCheck
 	t.Cleanup(func() {
 		osUserHomeDir = restoreHome
 		backup.UserHomeDirFn = restoreBackupHome
@@ -694,6 +696,8 @@ func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 		cmdLookPath = restoreLookPath
 		goEnv = restoreGoEnv
 		pathEnvEntries = restorePathEntries
+		opencodeagent.LookPathOverride = restoreOpenCodeLookPath
+		ggaAvailableCheck = restoreGGAAvailable
 	})
 
 	osUserHomeDir = func() (string, error) { return home, nil }
@@ -704,10 +708,11 @@ func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 		return map[string]string{"GOBIN": gobin, "GOPATH": filepath.Join(home, "go")}, nil
 	}
 	pathEnvEntries = func(system.PlatformProfile) []string { return []string{gobin} }
+	opencodeagent.LookPathOverride = missingBinaryLookPath
+	ggaAvailableCheck = func(system.PlatformProfile) bool { return false }
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
 
-	// DownloadFn should NOT be called for NixOS (go install handles it).
 	origDownloadFn := engramDownloadFn
 	engramDownloadFn = func(profile system.PlatformProfile) (string, error) {
 		t.Error("DownloadLatestBinary should NOT be called on NixOS (go install handles it)")
@@ -717,7 +722,7 @@ func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 
 	detection := linuxDetectionResult(system.LinuxDistroNixOS, "nix")
 	result, err := RunInstall(
-		[]string{"--agent", "opencode", "--component", "engram"},
+		[]string{"--agent", "opencode", "--component", "engram,gga"},
 		detection,
 	)
 	if err != nil {
@@ -727,16 +732,40 @@ func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
 		t.Fatalf("verification ready = false")
 	}
 
-	// Must use go install.
 	commands := recorder.get()
-	foundGoInstall := false
-	for _, cmd := range commands {
-		if strings.Contains(cmd, "go install github.com/Gentleman-Programming/engram/cmd/engram@latest") {
-			foundGoInstall = true
+	allCommands := strings.Join(commands, "\n")
+	for _, want := range []string{"nix profile install nixpkgs#opencode", "go install github.com/Gentleman-Programming/engram/cmd/engram@latest", "git clone https://github.com/Gentleman-Programming/gentleman-guardian-angel.git"} {
+		if !strings.Contains(allCommands, want) {
+			t.Fatalf("expected %q, got commands: %v", want, commands)
 		}
 	}
-	if !foundGoInstall {
-		t.Fatalf("expected go install on NixOS, got commands: %v", commands)
+}
+
+func TestRunInstallNixOSOpenCodeSkipsInstallWhenPresent(t *testing.T) {
+	restore := opencodeagent.LookPathOverride
+	t.Cleanup(func() { opencodeagent.LookPathOverride = restore })
+	opencodeagent.LookPathOverride = func(string) (string, error) { return "/nix/profile/bin/opencode", nil }
+	step := agentInstallStep{agent: model.AgentOpenCode, homeDir: t.TempDir(), profile: system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"}}
+	if err := step.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestRunInstallNixOSOpenCodeFailureStopsPipeline(t *testing.T) {
+	restoreLookPath, restoreCommand := opencodeagent.LookPathOverride, runCommand
+	t.Cleanup(func() { opencodeagent.LookPathOverride, runCommand = restoreLookPath, restoreCommand })
+	opencodeagent.LookPathOverride = missingBinaryLookPath
+	commands := 0
+	runCommand = func(name string, args ...string) error { commands++; return os.ErrPermission }
+	result, err := RunInstall([]string{"--agent", "opencode", "--component", "engram,gga"}, linuxDetectionResult(system.LinuxDistroNixOS, "nix"))
+	if err == nil || !strings.Contains(err.Error(), os.ErrPermission.Error()) {
+		t.Fatalf("RunInstall() error = %v, want command failure", err)
+	}
+	if result.Verify.Ready {
+		t.Fatal("failed OpenCode installation must not report ready")
+	}
+	if commands != 1 {
+		t.Fatalf("command count = %d, want only failed OpenCode install", commands)
 	}
 }
 
@@ -761,7 +790,7 @@ func TestRunInstallNixOSEngramRequiresPersistentPathGuidance(t *testing.T) {
 	recorder := &commandRecorder{}
 	runCommand = recorder.record
 
-	result, err := RunInstall([]string{"--agent", "opencode", "--component", "engram"}, linuxDetectionResult(system.LinuxDistroNixOS, "nix"))
+	result, err := RunInstall([]string{"--agent", "cursor", "--component", "engram"}, linuxDetectionResult(system.LinuxDistroNixOS, "nix"))
 	if err == nil || !strings.Contains(err.Error(), gobin) || !strings.Contains(err.Error(), "persistent user PATH") {
 		t.Fatalf("RunInstall() error = %v, want actionable PATH guidance for %q", err, gobin)
 	}
