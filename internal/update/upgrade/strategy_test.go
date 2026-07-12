@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -603,7 +604,6 @@ func TestRunStrategyOpenCodePluginRegisteredPendingRunsPackageManager(t *testing
 		gotArgs = append([]string(nil), args...)
 		return mockCmd("true")
 	}
-
 	_, err := runStrategy(context.Background(), update.UpdateResult{
 		Tool: update.ToolInfo{
 			Name:          pkg,
@@ -656,12 +656,18 @@ func TestRunStrategyOpenCodePluginNpmERESOLVERetriesWithLegacyPeerDeps(t *testin
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		callHistory = append(callHistory, append([]string{name}, args...))
 		if len(callHistory) == 1 {
-			// First call fails with npm ERESOLVE
-			return mockCmd("sh", "-c", "echo 'npm error code ERESOLVE\nnpm error ERESOLVE could not resolve' && exit 1")
+			return failingCmd("npm error code ERESOLVE\nnpm error ERESOLVE could not resolve")
 		}
 		// Retry succeeds
 		return mockCmd("true")
 	}
+	readStderr, writeStderr, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	origStderr := os.Stderr
+	os.Stderr = writeStderr
+	t.Cleanup(func() { os.Stderr = origStderr })
 
 	_, err := runStrategy(context.Background(), update.UpdateResult{
 		Tool: update.ToolInfo{
@@ -671,8 +677,22 @@ func TestRunStrategyOpenCodePluginNpmERESOLVERetriesWithLegacyPeerDeps(t *testin
 		},
 		Status: update.RegisteredNotMaterialized,
 	}, system.PlatformProfile{})
+	os.Stderr = origStderr
+	if err := writeStderr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	warning, readErr := io.ReadAll(readStderr)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := readStderr.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil {
 		t.Fatalf("unexpected error on retry: %v", err)
+	}
+	if !strings.Contains(string(warning), "WARNING:") || !strings.Contains(string(warning), "--legacy-peer-deps") {
+		t.Fatalf("stderr = %q, want visible legacy peer dependency warning", warning)
 	}
 	if len(callHistory) != 2 {
 		t.Fatalf("expected 2 exec calls (initial + retry), got %d", len(callHistory))
@@ -682,6 +702,85 @@ func TestRunStrategyOpenCodePluginNpmERESOLVERetriesWithLegacyPeerDeps(t *testin
 	if strings.Join(retryArgs, " ") != strings.Join(wantRetryArgs, " ") {
 		t.Fatalf("retry args = %v, want %v", retryArgs, wantRetryArgs)
 	}
+}
+
+func TestRunStrategyOpenCodePluginNpmERESOLVERetryFailurePreservesBothErrors(t *testing.T) {
+	configureOpenCodeNpmTest(t, func(name string, args ...string) *exec.Cmd {
+		if slicesContain(args, "--legacy-peer-deps") {
+			return failingCmd("retry failed")
+		}
+		return failingCmd("npm error code ERESOLVE\noriginal conflict")
+	})
+
+	_, err := runStrategy(context.Background(), openCodePluginUpdateResult("opencode-sdd-engram-manage"), system.PlatformProfile{})
+	if err == nil {
+		t.Fatal("expected retry failure")
+	}
+	for _, want := range []string{"retry failed", "original conflict", "original error", "retry with --legacy-peer-deps failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestRunStrategyOpenCodePluginNpmNonERESOLVEDoesNotRetry(t *testing.T) {
+	calls := 0
+	configureOpenCodeNpmTest(t, func(name string, args ...string) *exec.Cmd {
+		calls++
+		return failingCmd("npm error package code ERESOLVE helper failed")
+	})
+
+	_, err := runStrategy(context.Background(), openCodePluginUpdateResult("opencode-sdd-engram-manage"), system.PlatformProfile{})
+	if err == nil {
+		t.Fatal("expected npm failure")
+	}
+	if calls != 1 {
+		t.Fatalf("exec calls = %d, want 1 without retry", calls)
+	}
+}
+
+func configureOpenCodeNpmTest(t *testing.T, command func(string, ...string) *exec.Cmd) {
+	t.Helper()
+	origHomeDir, origLookPath, origExecCommand := openCodeHomeDir, lookPathCommand, execCommand
+	t.Cleanup(func() {
+		openCodeHomeDir, lookPathCommand, execCommand = origHomeDir, origLookPath, origExecCommand
+	})
+	home := t.TempDir()
+	opencodeDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(opencodeDir, "tui.json"), []byte(`{"plugin":["opencode-sdd-engram-manage"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	openCodeHomeDir = func() (string, error) { return home, nil }
+	lookPathCommand = func(file string) (string, error) {
+		if file == "npm" {
+			return file, nil
+		}
+		return "", errors.New("not found")
+	}
+	execCommand = command
+}
+
+func openCodePluginUpdateResult(pkg string) update.UpdateResult {
+	return update.UpdateResult{Tool: update.ToolInfo{Name: pkg, InstallMethod: update.InstallOpenCodePlugin, NpmPackage: pkg}, Status: update.RegisteredNotMaterialized}
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func failingCmd(output string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/c", "echo "+strings.ReplaceAll(output, "\n", " & echo ")+" & exit /b 1")
+	}
+	return exec.Command("sh", "-c", "printf '%s\\n' \"$1\"; exit 1", "sh", output)
 }
 
 func TestRunStrategyOpenCodePluginFallsBackWithoutPackageManager(t *testing.T) {
@@ -1549,10 +1648,10 @@ func TestInstallerUpgradeArgs(t *testing.T) {
 	const tmpPath = `C:\Users\user\AppData\Local\Temp\gentle-ai-install-12345.ps1`
 
 	tests := []struct {
-		name          string
-		beta          bool
-		wantContains  []string
-		wantAbsent    []string
+		name         string
+		beta         bool
+		wantContains []string
+		wantAbsent   []string
 	}{
 		{
 			name: "stable upgrade does not include -Channel beta",
