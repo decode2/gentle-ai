@@ -260,7 +260,7 @@ func resolveGGAInstall(profile system.PlatformProfile) (CommandSequence, error) 
 			{"brew", "tap", "Gentleman-Programming/homebrew-tap"},
 			{"brew", "reinstall", "gga"},
 		}, nil
-	case "apt", "pacman", "dnf":
+	case "apt", "pacman", "dnf", "nix":
 		const tmpDir = "/tmp/gentleman-guardian-angel"
 		return CommandSequence{
 			{"rm", "-rf", tmpDir},
@@ -406,6 +406,15 @@ func resolveEngramInstall(profile system.PlatformProfile) (CommandSequence, erro
 		return CommandSequence{
 			{"brew", "tap", "Gentleman-Programming/homebrew-tap"},
 			{"brew", "install", "engram"},
+		}, nil
+	case "nix":
+		// NixOS requires installing from source via go install because pre-built release
+		// binaries fail to run natively due to hardcoded dynamic linker paths.
+		if err := validateGoForModuleInstall(profile); err != nil {
+			return nil, err
+		}
+		return CommandSequence{
+			{"go", "install", "github.com/Gentleman-Programming/engram/cmd/engram@latest"},
 		}, nil
 	default:
 		return nil, fmt.Errorf(

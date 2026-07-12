@@ -31,6 +31,7 @@ const (
 	LinuxDistroDebian  = "debian"
 	LinuxDistroArch    = "arch"
 	LinuxDistroFedora  = "fedora"
+	LinuxDistroNixOS   = "nixos"
 )
 
 type DetectionResult struct {
@@ -39,6 +40,8 @@ type DetectionResult struct {
 	Configs      []ConfigState
 	Dependencies DependencyReport
 }
+
+var detectTools = DetectTools
 
 func IsSupportedOS(goos string) bool {
 	return goos == "darwin" || goos == "linux" || goos == "windows"
@@ -50,7 +53,7 @@ func Detect(ctx context.Context) (DetectionResult, error) {
 		return DetectionResult{}, err
 	}
 
-	tools := DetectTools(ctx, []string{"git", "curl", "brew", "node", "go"})
+	tools := detectTools(ctx, []string{"git", "curl", "brew", "nix", "node", "go"})
 	configs := ScanConfigs(homeDir)
 	osReleaseContent, _ := osReleaseContent(runtime.GOOS)
 
@@ -131,6 +134,13 @@ func resolvePlatformProfile(goos, linuxOSRelease string, tools map[string]ToolSt
 		distro := detectLinuxDistro(linuxOSRelease)
 		profile.LinuxDistro = distro
 
+		// NixOS should always resolve to nix, even if Homebrew is also installed.
+		if distro == LinuxDistroNixOS {
+			profile.PackageManager = "nix"
+			profile.Supported = true
+			return profile
+		}
+
 		// Check if brew is available on Linux
 		if brew, ok := tools["brew"]; ok && brew.Installed {
 			profile.PackageManager = "brew"
@@ -149,8 +159,13 @@ func resolvePlatformProfile(goos, linuxOSRelease string, tools map[string]ToolSt
 			profile.PackageManager = "dnf"
 			profile.Supported = true
 		default:
-			profile.PackageManager = ""
-			profile.Supported = false
+			if nix, ok := tools["nix"]; ok && nix.Installed {
+				profile.PackageManager = "nix"
+				profile.Supported = true
+			} else {
+				profile.PackageManager = ""
+				profile.Supported = false
+			}
 		}
 
 		return profile
@@ -188,6 +203,10 @@ func detectLinuxDistro(linuxOSRelease string) string {
 
 	id := fields["ID"]
 	idLike := fields["ID_LIKE"]
+
+	if isNixOSLike(id, idLike) {
+		return LinuxDistroNixOS
+	}
 
 	if isUbuntuLike(id, idLike) {
 		if id == LinuxDistroDebian {
@@ -242,6 +261,20 @@ func isFedoraLike(id, idLike string) bool {
 
 	for _, token := range strings.Fields(idLike) {
 		if token == LinuxDistroFedora || token == "rhel" || token == "centos" || token == "rocky" || token == "almalinux" || token == "nobara" {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isNixOSLike(id, idLike string) bool {
+	if id == LinuxDistroNixOS {
+		return true
+	}
+
+	for _, token := range strings.Fields(idLike) {
+		if token == LinuxDistroNixOS {
 			return true
 		}
 	}

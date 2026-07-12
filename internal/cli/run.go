@@ -376,8 +376,10 @@ func goInstallBinDirFromGoEnv() (string, error) {
 	if gobin := strings.TrimSpace(values["GOBIN"]); gobin != "" {
 		return gobin, nil
 	}
-	if gopath := strings.TrimSpace(values["GOPATH"]); gopath != "" {
-		return filepath.Join(gopath, "bin"), nil
+	for _, gopath := range filepath.SplitList(values["GOPATH"]) {
+		if gopath = strings.TrimSpace(gopath); gopath != "" {
+			return filepath.Join(gopath, "bin"), nil
+		}
 	}
 	return "", fmt.Errorf("go env returned empty GOBIN and GOPATH")
 }
@@ -931,14 +933,33 @@ func (s componentApplyStep) Run() error {
 			engramCommand = binaryPath
 		} else if installedPath, err := cmdLookPath("engram"); err != nil {
 			// Engram not on PATH — install it.
-			if s.profile.PackageManager == "brew" {
-				// macOS (or Linux with Homebrew): use brew tap + brew install.
+			if s.profile.PackageManager == "brew" || s.profile.PackageManager == "nix" {
+				// macOS/Brew or NixOS: use component resolver. NixOS installs from source via go install.
+				var nixBinDir string
+				var nixBinDirOnPath bool
+				if s.profile.PackageManager == "nix" {
+					nixBinDir, err = goInstallBinDirFromGoEnv()
+					if err != nil {
+						return fmt.Errorf("resolve go install bin dir: %w", err)
+					}
+					nixBinDirOnPath = pathEntriesContainDir(pathEnvEntries(s.profile), nixBinDir)
+				}
 				commands, err := engram.InstallCommand(s.profile)
 				if err != nil {
 					return fmt.Errorf("resolve install command for component %q: %w", s.component, err)
 				}
 				if err := runCommandSequence(commands); err != nil {
 					return err
+				}
+				if s.profile.PackageManager == "nix" {
+					if !nixBinDirOnPath {
+						return fmt.Errorf("Engram was installed in %s, but that directory is not on PATH for this shell or fresh shells; add %s to your persistent user PATH, start a new shell, and rerun gentle-ai install", nixBinDir, nixBinDir)
+					}
+					binaryName := "engram"
+					if runtime.GOOS == "windows" {
+						binaryName += ".exe"
+					}
+					engramCommand = filepath.Join(nixBinDir, binaryName)
 				}
 			} else {
 				// Linux / Windows: download the pre-built binary from GitHub Releases.

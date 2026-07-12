@@ -145,6 +145,20 @@ func TestResolveEngramBrewBypassesGoValidation(t *testing.T) {
 	}
 }
 
+func TestResolveEngramNixValidatesGo(t *testing.T) {
+	origLookPath := cmdLookPath
+	cmdLookPath = func(file string) (string, error) {
+		return "", fmt.Errorf("go not found")
+	}
+	t.Cleanup(func() { cmdLookPath = origLookPath })
+
+	profile := system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"}
+	_, err := resolveEngramInstall(profile)
+	if err == nil || !strings.Contains(err.Error(), "Go 1.24+ is required") {
+		t.Fatalf("resolveEngramInstall() error = %v, want actionable Go requirement", err)
+	}
+}
+
 func TestResolveDependencyInstall(t *testing.T) {
 	r := NewResolver()
 
@@ -614,6 +628,12 @@ func TestResolveComponentInstall(t *testing.T) {
 			wantErr:   true,
 		},
 		{
+			name:      "engram on nixos uses go install",
+			profile:   system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"},
+			component: model.ComponentEngram,
+			want:      CommandSequence{{"go", "install", "github.com/Gentleman-Programming/engram/cmd/engram@latest"}},
+		},
+		{
 			name:      "gga on darwin uses brew tap and reinstall",
 			profile:   system.PlatformProfile{OS: "darwin", PackageManager: "brew"},
 			component: model.ComponentGGA,
@@ -646,6 +666,16 @@ func TestResolveComponentInstall(t *testing.T) {
 			want: CommandSequence{
 				{"rm", "-rf", "/tmp/gentleman-guardian-angel"},
 				{"git", "clone", "--depth=1", "--branch", "v" + versions.GGAVersion, "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", "/tmp/gentleman-guardian-angel"},
+				{"bash", "/tmp/gentleman-guardian-angel/install.sh"},
+			},
+		},
+		{
+			name:      "gga on nixos uses git clone and install.sh",
+			profile:   system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"},
+			component: model.ComponentGGA,
+			want: CommandSequence{
+				{"rm", "-rf", "/tmp/gentleman-guardian-angel"},
+				{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", "/tmp/gentleman-guardian-angel"},
 				{"bash", "/tmp/gentleman-guardian-angel/install.sh"},
 			},
 		},

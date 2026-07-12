@@ -101,6 +101,15 @@ func TestInstallCommandByProfile(t *testing.T) {
 			},
 		},
 		{
+			name:    "nixos uses git clone and install.sh",
+			profile: system.PlatformProfile{OS: "linux", LinuxDistro: system.LinuxDistroNixOS, PackageManager: "nix"},
+			want: [][]string{
+				{"rm", "-rf", "/tmp/gentleman-guardian-angel"},
+				{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", "/tmp/gentleman-guardian-angel"},
+				{"bash", "/tmp/gentleman-guardian-angel/install.sh"},
+			},
+		},
+		{
 			name: "unsupported package manager returns error",
 			profile: system.PlatformProfile{
 				OS:             "linux",

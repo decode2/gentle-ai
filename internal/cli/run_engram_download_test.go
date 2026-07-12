@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
@@ -674,6 +675,169 @@ func TestRunInstallBetaEngramUsesMainGoInstallAndInstalledBinary(t *testing.T) {
 	}
 	if probeCommand != betaEngram {
 		t.Fatalf("expected protocol probe to use beta engram binary %q, got %q", betaEngram, probeCommand)
+	}
+}
+
+// TestRunInstallNixOSEngramUsesGoInstall verifies NixOS uses go install.
+func TestRunInstallNixOSEngramUsesGoInstall(t *testing.T) {
+	home := t.TempDir()
+	restoreHome := osUserHomeDir
+	restoreBackupHome := backup.UserHomeDirFn
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	restoreGoEnv := goEnv
+	restorePathEntries := pathEnvEntries
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		backup.UserHomeDirFn = restoreBackupHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+		goEnv = restoreGoEnv
+		pathEnvEntries = restorePathEntries
+	})
+
+	osUserHomeDir = func() (string, error) { return home, nil }
+	backup.UserHomeDirFn = func() (string, error) { return home, nil }
+	cmdLookPath = missingBinaryLookPath
+	gobin := filepath.Join(home, "go-bin")
+	goEnv = func(keys ...string) (map[string]string, error) {
+		return map[string]string{"GOBIN": gobin, "GOPATH": filepath.Join(home, "go")}, nil
+	}
+	pathEnvEntries = func(system.PlatformProfile) []string { return []string{gobin} }
+	recorder := &commandRecorder{}
+	runCommand = recorder.record
+
+	// DownloadFn should NOT be called for NixOS (go install handles it).
+	origDownloadFn := engramDownloadFn
+	engramDownloadFn = func(profile system.PlatformProfile) (string, error) {
+		t.Error("DownloadLatestBinary should NOT be called on NixOS (go install handles it)")
+		return "", nil
+	}
+	t.Cleanup(func() { engramDownloadFn = origDownloadFn })
+
+	detection := linuxDetectionResult(system.LinuxDistroNixOS, "nix")
+	result, err := RunInstall(
+		[]string{"--agent", "opencode", "--component", "engram"},
+		detection,
+	)
+	if err != nil {
+		t.Fatalf("RunInstall() error = %v", err)
+	}
+	if !result.Verify.Ready {
+		t.Fatalf("verification ready = false")
+	}
+
+	// Must use go install.
+	commands := recorder.get()
+	foundGoInstall := false
+	for _, cmd := range commands {
+		if strings.Contains(cmd, "go install github.com/Gentleman-Programming/engram/cmd/engram@latest") {
+			foundGoInstall = true
+		}
+	}
+	if !foundGoInstall {
+		t.Fatalf("expected go install on NixOS, got commands: %v", commands)
+	}
+}
+
+func TestRunInstallNixOSEngramRequiresPersistentPathGuidance(t *testing.T) {
+	home := t.TempDir()
+	gobin := filepath.Join(home, "go-bin")
+	restoreHome, restoreBackupHome := osUserHomeDir, backup.UserHomeDirFn
+	restoreCommand, restoreLookPath := runCommand, cmdLookPath
+	restoreGoEnv, restorePathEntries := goEnv, pathEnvEntries
+	t.Cleanup(func() {
+		osUserHomeDir, backup.UserHomeDirFn = restoreHome, restoreBackupHome
+		runCommand, cmdLookPath = restoreCommand, restoreLookPath
+		goEnv, pathEnvEntries = restoreGoEnv, restorePathEntries
+	})
+	osUserHomeDir = func() (string, error) { return home, nil }
+	backup.UserHomeDirFn = func() (string, error) { return home, nil }
+	cmdLookPath = missingBinaryLookPath
+	goEnv = func(...string) (map[string]string, error) {
+		return map[string]string{"GOBIN": gobin}, nil
+	}
+	pathEnvEntries = func(system.PlatformProfile) []string { return []string{filepath.Join(home, "other-bin")} }
+	recorder := &commandRecorder{}
+	runCommand = recorder.record
+
+	result, err := RunInstall([]string{"--agent", "opencode", "--component", "engram"}, linuxDetectionResult(system.LinuxDistroNixOS, "nix"))
+	if err == nil || !strings.Contains(err.Error(), gobin) || !strings.Contains(err.Error(), "persistent user PATH") {
+		t.Fatalf("RunInstall() error = %v, want actionable PATH guidance for %q", err, gobin)
+	}
+	if result.Verify.Ready {
+		t.Fatal("installation requiring manual PATH action must not report ready")
+	}
+	if !strings.Contains(strings.Join(recorder.get(), "\n"), "go install github.com/Gentleman-Programming/engram/cmd/engram@latest") {
+		t.Fatalf("expected installation before PATH guidance, got %v", recorder.get())
+	}
+}
+
+func TestRunInstallNixOSEngramReportsGoEnvFailure(t *testing.T) {
+	restoreGoEnv := goEnv
+	t.Cleanup(func() {
+		goEnv = restoreGoEnv
+	})
+
+	goEnv = func(keys ...string) (map[string]string, error) {
+		return nil, os.ErrInvalid
+	}
+
+	_, err := goInstallBinDirFromGoEnv()
+	if err == nil || !strings.Contains(err.Error(), os.ErrInvalid.Error()) {
+		t.Fatalf("goInstallBinDirFromGoEnv() error = %v, want go env failure", err)
+	}
+}
+
+func TestGoInstallBinDirFromGoEnvGOPATH(t *testing.T) {
+	restoreGoEnv := goEnv
+	t.Cleanup(func() { goEnv = restoreGoEnv })
+
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	tests := []struct {
+		name    string
+		gopath  string
+		want    string
+		wantErr string
+	}{
+		{
+			name:   "uses first entry from platform-separated list",
+			gopath: first + string(os.PathListSeparator) + second,
+			want:   filepath.Join(first, "bin"),
+		},
+		{
+			name:   "skips empty entries",
+			gopath: string(os.PathListSeparator) + second,
+			want:   filepath.Join(second, "bin"),
+		},
+		{
+			name:    "rejects only empty entries",
+			gopath:  string(os.PathListSeparator),
+			wantErr: "go env returned empty GOBIN and GOPATH",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			goEnv = func(keys ...string) (map[string]string, error) {
+				return map[string]string{"GOBIN": "", "GOPATH": tt.gopath}, nil
+			}
+
+			got, err := goInstallBinDirFromGoEnv()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("goInstallBinDirFromGoEnv() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("goInstallBinDirFromGoEnv() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("goInstallBinDirFromGoEnv() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

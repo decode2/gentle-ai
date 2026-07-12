@@ -3,6 +3,7 @@ package gga
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -120,6 +121,10 @@ func TestInjectWritesConfigAndAgents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	}
+
 	result, err := Inject(home, []model.AgentID{model.AgentClaudeCode})
 	if err != nil {
 		t.Fatalf("Inject() error = %v", err)
@@ -164,6 +169,10 @@ func TestInjectWritesConfigAndAgents(t *testing.T) {
 func TestInjectIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	}
 
 	first, err := Inject(home, []model.AgentID{model.AgentOpenCode})
 	if err != nil {
