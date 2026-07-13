@@ -63,10 +63,10 @@ func WelcomeOptions(updateResults []update.UpdateResult, updateCheckDone bool, s
 		opts = append(opts, profilesLabel)
 	}
 
-	opts = append(opts, "Edit installed agents")
 	opts = append(opts, "Manage backups")
 	opts = append(opts, "Managed uninstall")
 	opts = append(opts, "Community Tools/Plugins")
+	opts = append(opts, "Edit installed agents")
 	opts = append(opts, "Quit")
 
 	return opts

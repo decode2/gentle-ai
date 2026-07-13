@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,24 +10,21 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/tui/screens"
 )
 
-// ─── Edit installed agents shortcut ───────────────────────────────────────
-
 // TestEditAgents_WelcomeDispatchesScreenEditAgents verifies that selecting
 // "Edit installed agents" from the Welcome menu sets EditAgentsMode and
 // navigates to ScreenEditAgents.
 func TestEditAgents_WelcomeDispatchesScreenEditAgents(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenWelcome
-	// "Edit installed agents" is at index 7 (0-based) when showProfiles=false:
+	// "Edit installed agents" is at index 11 (0-based) when showProfiles=false.
 	// 0=Start, 1=Upgrade, 2=Sync, 3=Upgrade+Sync, 4=Configure models,
-	// 5=Create Agent, 6=OC Plugins, 7=Edit installed agents
-	m.Cursor = 7
+	m.Cursor = 11
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 
 	if got.Screen != ScreenEditAgents {
-		t.Fatalf("Welcome cursor=7: screen = %v, want ScreenEditAgents", got.Screen)
+		t.Fatalf("Welcome cursor=11: screen = %v, want ScreenEditAgents", got.Screen)
 	}
 	if !got.EditAgentsMode {
 		t.Fatalf("EditAgentsMode should be true after entering ScreenEditAgents from Welcome")
@@ -162,5 +160,30 @@ func TestEditAgents_DeselectingAgentCleansUpConfig(t *testing.T) {
 	}
 	if len(capturedOverrides.DeselectedAgents) != 1 || capturedOverrides.DeselectedAgents[0] != model.AgentOpenCode {
 		t.Fatalf("expected deselected agents list to be [opencode], got %v", capturedOverrides.DeselectedAgents)
+	}
+}
+
+func TestEditAgents_SelectionCommitsOnlyAfterSuccessfulSync(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want model.AgentID
+	}{
+		{name: "success", want: model.AgentClaudeCode},
+		{name: "failure", err: fmt.Errorf("sync failed"), want: model.AgentOpenCode},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel(system.DetectionResult{}, "dev")
+			m.Selection.Agents = []model.AgentID{model.AgentOpenCode}
+			m.PendingAgentSelection = []model.AgentID{model.AgentClaudeCode}
+			updated, _ := m.Update(SyncDoneMsg{Err: tt.err})
+			got := updated.(Model)
+			if len(got.Selection.Agents) != 1 || got.Selection.Agents[0] != tt.want {
+				t.Fatalf("agents = %v, want [%s]", got.Selection.Agents, tt.want)
+			}
+			if got.PendingAgentSelection != nil {
+				t.Fatal("pending selection was not cleared")
+			}
+		})
 	}
 }

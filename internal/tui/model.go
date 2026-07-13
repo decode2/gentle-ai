@@ -527,8 +527,9 @@ type Model struct {
 	// EditAgentsMode is true when the agent checklist was reached via the
 	// "Edit installed agents" Welcome shortcut. On confirmation it syncs
 	// only the affected agents and returns to ScreenWelcome.
-	EditAgentsMode      bool
-	EditAgentsSelection []model.AgentID
+	EditAgentsMode        bool
+	EditAgentsSelection   []model.AgentID
+	PendingAgentSelection []model.AgentID
 
 	// PendingSyncOverrides holds model assignments selected via the
 	// "Configure Models" shortcut. When non-nil, the next sync run merges
@@ -952,6 +953,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SyncErr = msg.Err
 		m.HasSyncRun = true
 		m.PendingSyncOverrides = nil
+		if msg.Err == nil && m.PendingAgentSelection != nil {
+			m.Selection.Agents = m.PendingAgentSelection
+		}
+		m.PendingAgentSelection = nil
 		// Refresh profile list after sync (profile create/delete/edit flows use sync).
 		// On failure, keep the existing list — this is a non-critical background refresh.
 		// Do NOT set m.Err: ScreenSync never renders it and it would leak to other screens.
@@ -1726,16 +1731,6 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			}
 
 			if m.Cursor == next {
-				// "Edit installed agents" — launch the agent checklist in edit mode.
-				m.EditAgentsMode = true
-				m.EditAgentsSelection = make([]model.AgentID, len(m.Selection.Agents))
-				copy(m.EditAgentsSelection, m.Selection.Agents)
-				m.setScreen(ScreenEditAgents)
-				return m, nil
-			}
-			next++
-
-			if m.Cursor == next {
 				m.setScreen(ScreenBackups)
 				return m, nil
 			}
@@ -1757,6 +1752,14 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 				m.Selection.CommunityTools = nil
 				m.setScreen(ScreenCommunityTools)
 				return m, m.startCommunityToolStatusDetection()
+			}
+			next++
+
+			if m.Cursor == next {
+				m.EditAgentsMode = true
+				m.EditAgentsSelection = append([]model.AgentID(nil), m.Selection.Agents...)
+				m.setScreen(ScreenEditAgents)
+				return m, nil
 			}
 			next++
 
@@ -2077,7 +2080,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 		case m.Cursor < agentCount:
 			m.toggleCurrentEditAgent()
 		case m.Cursor == agentCount && len(m.EditAgentsSelection) > 0:
-			// User confirmed — commit draft selection and persist via a sync run.
+			// Keep the confirmed selection pending until sync succeeds.
 			selectedAgents := make([]model.AgentID, len(m.EditAgentsSelection))
 			copy(selectedAgents, m.EditAgentsSelection)
 
@@ -2096,7 +2099,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 				}
 			}
 
-			m.Selection.Agents = selectedAgents
+			m.PendingAgentSelection = selectedAgents
 			m.EditAgentsMode = false
 			m.EditAgentsSelection = nil
 			m = m.withResetOperationState()
@@ -3627,6 +3630,8 @@ func (m Model) optionCount() int {
 		return 1
 	case ScreenModelConfig:
 		return len(screens.ModelConfigOptions())
+	case ScreenEditAgents:
+		return len(screens.AgentOptions()) + 2
 	case ScreenUninstallMode:
 		return len(screens.UninstallModeOptions()) + 1
 	case ScreenUninstall:

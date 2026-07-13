@@ -589,23 +589,11 @@ func tuiSync(homeDir string) tui.SyncFunc {
 	return func(overrides *model.SyncOverrides) ([]string, error) {
 		if overrides != nil && len(overrides.DeselectedAgents) > 0 {
 			workspaceDir, err := os.Getwd()
-			if err == nil {
-				allComponents := []model.ComponentID{
-					model.ComponentEngram,
-					model.ComponentSDD,
-					model.ComponentSkills,
-					model.ComponentContext7,
-					model.ComponentPermission,
-					model.ComponentGGA,
-					model.ComponentPersona,
-					model.ComponentTheme,
-					model.ComponentClaudeTheme,
-					model.ComponentOpenCodeGentleLogo,
-				}
-				_, uninstallErr := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, allComponents)
-				if uninstallErr != nil {
-					return nil, fmt.Errorf("uninstall deselected agents: %w", uninstallErr)
-				}
+			if err != nil {
+				return nil, fmt.Errorf("resolve workspace directory: %w", err)
+			}
+			if _, err := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, nil); err != nil {
+				return nil, fmt.Errorf("uninstall deselected agents: %w", err)
 			}
 		}
 

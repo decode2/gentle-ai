@@ -2272,10 +2272,15 @@ func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state.Read: %v", err)
 	}
+	foundClaude := false
 	for _, agent := range s.InstalledAgents {
 		if agent == "opencode" {
 			t.Errorf("expected opencode to be removed from InstalledAgents in state.json")
 		}
+		foundClaude = foundClaude || agent == "claude-code"
+	}
+	if !foundClaude {
+		t.Error("expected claude-code to remain installed")
 	}
 
 	// Verify that opencode settings file is cleaned of our agent configurations
