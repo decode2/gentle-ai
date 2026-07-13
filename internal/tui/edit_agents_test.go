@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,14 +12,9 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/tui/screens"
 )
 
-// TestEditAgents_WelcomeDispatchesScreenEditAgents verifies that selecting
-// "Edit installed agents" from the Welcome menu sets EditAgentsMode and
-// navigates to ScreenEditAgents.
 func TestEditAgents_WelcomeDispatchesScreenEditAgents(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenWelcome
-	// "Edit installed agents" is at index 11 (0-based) when showProfiles=false.
-	// 0=Start, 1=Upgrade, 2=Sync, 3=Upgrade+Sync, 4=Configure models,
 	m.Cursor = 11
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -31,8 +28,6 @@ func TestEditAgents_WelcomeDispatchesScreenEditAgents(t *testing.T) {
 	}
 }
 
-// TestEditAgents_SpaceTogglesAgent verifies that pressing space on ScreenEditAgents
-// toggles the agent at the cursor position in EditAgentsSelection.
 func TestEditAgents_SpaceTogglesAgent(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
@@ -40,19 +35,15 @@ func TestEditAgents_SpaceTogglesAgent(t *testing.T) {
 	m.EditAgentsSelection = append([]model.AgentID(nil), m.Selection.Agents...)
 	m.Cursor = 0
 
-	before := len(m.EditAgentsSelection)
+	want := screens.AgentOptions()[0]
+	wasSelected := slices.Contains(m.EditAgentsSelection, want)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	got := updated.(Model)
-	after := len(got.EditAgentsSelection)
-
-	if after == before {
-		t.Fatalf("spacebar on ScreenEditAgents should toggle agent in draft selection; selection unchanged at %d agents", before)
+	if slices.Contains(got.EditAgentsSelection, want) == wasSelected {
+		t.Fatalf("agent %s was not toggled: %v", want, got.EditAgentsSelection)
 	}
 }
 
-// TestEditAgents_ConfirmTransitionsToSync verifies that confirming with at least
-// one agent selected transitions to ScreenSync, clears EditAgentsMode, and
-// populates PendingSyncOverrides.TargetAgents.
 func TestEditAgents_ConfirmTransitionsToSync(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
@@ -77,13 +68,11 @@ func TestEditAgents_ConfirmTransitionsToSync(t *testing.T) {
 	}
 }
 
-// TestEditAgents_BackButtonReturnsToWelcome verifies that pressing Enter on the
-// "Back" button (cursor = agentCount+1) from ScreenEditAgents returns to ScreenWelcome.
 func TestEditAgents_BackButtonReturnsToWelcome(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
 	m.EditAgentsMode = true
-	m.Cursor = len(screens.AgentOptions()) + 1 // "Back" button
+	m.Cursor = len(screens.AgentOptions()) + 1
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
@@ -96,8 +85,6 @@ func TestEditAgents_BackButtonReturnsToWelcome(t *testing.T) {
 	}
 }
 
-// TestEditAgents_EscReturnsToWelcome verifies that pressing Esc from ScreenEditAgents
-// navigates back to ScreenWelcome via the router.
 func TestEditAgents_EscReturnsToWelcome(t *testing.T) {
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
@@ -111,42 +98,29 @@ func TestEditAgents_EscReturnsToWelcome(t *testing.T) {
 	}
 }
 
-// TestEditAgents_DeselectingAgentCleansUpConfig verifies that if an agent is
-// deselected during the Edit Installed Agents flow, its configurations are
-// cleaned up (uninstalled) upon confirmation.
 func TestEditAgents_DeselectingAgentCleansUpConfig(t *testing.T) {
-	// Initialize the TUI model
 	m := NewModel(system.DetectionResult{}, "dev")
 	m.Screen = ScreenEditAgents
 	m.EditAgentsMode = true
 
-	// Simulate that the user previously had two agents selected/installed
 	m.Selection.Agents = []model.AgentID{model.AgentClaudeCode, model.AgentOpenCode}
-
-	// The user deselects open-code, so only claude-code remains in EditAgentsSelection
 	m.EditAgentsSelection = []model.AgentID{model.AgentClaudeCode}
-
-	// We set a custom SyncFn that intercepts the overrides
 	var capturedOverrides *model.SyncOverrides
 	m.SyncFn = func(overrides *model.SyncOverrides) ([]string, error) {
 		capturedOverrides = overrides
 		return nil, nil
 	}
 
-	// Cursor on the "Continue" action
 	agentCount := len(screens.AgentOptions())
 	m.Cursor = agentCount
 
-	// Press Enter to confirm selection on ScreenEditAgents
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 
-	// Verify TUI screen transition
 	if got.Screen != ScreenSync {
 		t.Fatalf("expected ScreenSync, got %v", got.Screen)
 	}
 
-	// Press Enter on ScreenSync to trigger the sync command execution
 	_, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd from ScreenSync enter")
@@ -154,7 +128,6 @@ func TestEditAgents_DeselectingAgentCleansUpConfig(t *testing.T) {
 
 	_ = findSyncDoneMsgInBatch(t, cmd)
 
-	// Verify captured overrides contains the deselected agent (open-code)
 	if capturedOverrides == nil {
 		t.Fatal("expected capturedOverrides to be non-nil")
 	}
@@ -185,5 +158,44 @@ func TestEditAgents_SelectionCommitsOnlyAfterSuccessfulSync(t *testing.T) {
 				t.Fatal("pending selection was not cleared")
 			}
 		})
+	}
+}
+
+func TestEditAgents_EmptySelectionDoesNotSync(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenEditAgents
+	m.EditAgentsMode = true
+	m.Cursor = len(screens.AgentOptions())
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if got.Screen != ScreenEditAgents || got.PendingSyncOverrides != nil {
+		t.Fatalf("empty confirmation changed state: screen=%v overrides=%+v", got.Screen, got.PendingSyncOverrides)
+	}
+}
+
+func TestEditAgents_RendersOnNarrowScreen(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenEditAgents
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 45, Height: 20})
+	if view := updated.(Model).View(); !strings.Contains(view, "Edit Installed Agents") {
+		t.Fatalf("narrow view omitted edit screen: %q", view)
+	}
+}
+
+func TestEditAgents_CancelledSyncDiscardsPendingSelection(t *testing.T) {
+	m := NewModel(system.DetectionResult{}, "dev")
+	m.Screen = ScreenSync
+	m.Selection.Agents = []model.AgentID{model.AgentOpenCode}
+	m.PendingAgentSelection = []model.AgentID{model.AgentClaudeCode}
+	m.PendingSyncOverrides = &model.SyncOverrides{TargetAgents: []model.AgentID{model.AgentClaudeCode}}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(Model)
+	if got.PendingAgentSelection != nil || got.PendingSyncOverrides != nil {
+		t.Fatalf("cancel retained pending edit: selection=%v overrides=%+v", got.PendingAgentSelection, got.PendingSyncOverrides)
+	}
+	if len(got.Selection.Agents) != 1 || got.Selection.Agents[0] != model.AgentOpenCode {
+		t.Fatalf("committed selection changed on cancel: %v", got.Selection.Agents)
 	}
 }

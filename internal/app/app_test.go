@@ -2226,37 +2226,26 @@ func TestCustomClearRoundTripLeavesFutureSyncInPreserveMode(t *testing.T) {
 	}
 }
 
-// TestTuiSync_CleansUpDeselectedAgents verifies that tuiSync calls the uninstall logic
-// and deletes the config files of deselected agents.
 func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 
-	// Seed state.json with installed agents
 	if err := state.Write(home, state.InstallState{
 		InstalledAgents: []string{"claude-code", "opencode"},
 	}); err != nil {
 		t.Fatalf("state.Write: %v", err)
 	}
 
-	// Create a dummy config file for opencode settings with some gentle agent configurations
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 	if err := os.MkdirAll(opencodeConfigDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	opencodeConfigPath := filepath.Join(opencodeConfigDir, "opencode.json")
-	initialConfig := `{
-  "agent": {
-    "gentle-orchestrator": {
-      "mode": "primary"
-    }
-  }
-}`
+	initialConfig := `{"agent":{"gentle-orchestrator":{"mode":"primary"}}}`
 	if err := os.WriteFile(opencodeConfigPath, []byte(initialConfig), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Run tuiSync with overrides deselecting opencode
 	syncFn := tuiSync(home)
 	overrides := &model.SyncOverrides{
 		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
@@ -2267,7 +2256,6 @@ func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
 		t.Fatalf("syncFn error = %v", err)
 	}
 
-	// Verify that state.json no longer contains opencode
 	s, err := state.Read(home)
 	if err != nil {
 		t.Fatalf("state.Read: %v", err)
@@ -2283,7 +2271,6 @@ func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
 		t.Error("expected claude-code to remain installed")
 	}
 
-	// Verify that opencode settings file is cleaned of our agent configurations
 	content, err := os.ReadFile(opencodeConfigPath)
 	if err != nil {
 		if !os.IsNotExist(err) {

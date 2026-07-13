@@ -410,9 +410,6 @@ const (
 	// ScreenOpenCodePluginUninstallResult reports the success/failure
 	// summary of the uninstall and returns to Welcome on Enter.
 	ScreenOpenCodePluginUninstallResult
-	// ScreenEditAgents is reached from the Welcome menu to let the user add or
-	// remove installed agents without going through the full install wizard.
-	// It reuses ScreenAgents (same checklist) but is driven by EditAgentsMode.
 	ScreenEditAgents
 )
 
@@ -524,9 +521,6 @@ type Model struct {
 	// continuing the install flow.
 	ModelConfigMode bool
 
-	// EditAgentsMode is true when the agent checklist was reached via the
-	// "Edit installed agents" Welcome shortcut. On confirmation it syncs
-	// only the affected agents and returns to ScreenWelcome.
 	EditAgentsMode        bool
 	EditAgentsSelection   []model.AgentID
 	PendingAgentSelection []model.AgentID
@@ -3508,6 +3502,7 @@ func (m Model) goBack() Model {
 	// into a future sync triggered from a different flow (e.g. Welcome menu).
 	if m.Screen == ScreenSync && m.PendingSyncOverrides != nil {
 		m.PendingSyncOverrides = nil
+		m.PendingAgentSelection = nil
 	}
 
 	previous, ok := PreviousScreen(m.Screen)

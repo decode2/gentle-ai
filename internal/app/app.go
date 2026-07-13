@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/internal/catalog"
 	"github.com/gentleman-programming/gentle-ai/internal/cli"
 	"github.com/gentleman-programming/gentle-ai/internal/components/opencodeplugin"
 	componentuninstall "github.com/gentleman-programming/gentle-ai/internal/components/uninstall"
@@ -587,16 +588,6 @@ func tuiUpgrade(profile system.PlatformProfile, homeDir string) tui.UpgradeFunc 
 // so that the "Configure Models" TUI flow persists its choices to disk.
 func tuiSync(homeDir string) tui.SyncFunc {
 	return func(overrides *model.SyncOverrides) ([]string, error) {
-		if overrides != nil && len(overrides.DeselectedAgents) > 0 {
-			workspaceDir, err := os.Getwd()
-			if err != nil {
-				return nil, fmt.Errorf("resolve workspace directory: %w", err)
-			}
-			if _, err := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, nil); err != nil {
-				return nil, fmt.Errorf("uninstall deselected agents: %w", err)
-			}
-		}
-
 		agentIDs := syncAgentIDs(homeDir, overrides)
 		syncFlags := cli.SyncFlags{IncludePermissions: syncShouldIncludePermissions(agentIDs)}
 		selection := cli.BuildSyncSelection(syncFlags, agentIDs)
@@ -617,6 +608,16 @@ func tuiSync(homeDir string) tui.SyncFunc {
 		// or loaded from state) so the next sync preserves them too.
 		if err := persistAssignments(homeDir, selection); err != nil {
 			return nil, fmt.Errorf("persist model assignments: %w", err)
+		}
+
+		if overrides != nil && len(overrides.DeselectedAgents) > 0 {
+			workspaceDir, err := os.Getwd()
+			if err != nil {
+				return nil, fmt.Errorf("resolve workspace directory: %w", err)
+			}
+			if _, err := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, catalog.MVPComponentIDs()); err != nil {
+				return nil, fmt.Errorf("uninstall deselected agents: %w", err)
+			}
 		}
 
 		return result.ChangedFiles, nil
