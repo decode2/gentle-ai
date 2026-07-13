@@ -88,6 +88,7 @@ func TestLegacyV1ResumeValidateExportImportRemainUsable(t *testing.T) {
 	request.BundleDigest = bundle.BundleDigest
 	requestPath := filepath.Join(t.TempDir(), "request.json")
 	writeReviewCLIJSON(t, requestPath, request)
+	runReviewCLIGit(t, fixture.repo, "branch", "reviewed-base", "HEAD^")
 	clone := filepath.Join(t.TempDir(), "clone")
 	runReviewCLIGit(t, fixture.repo, "clone", "--no-local", fixture.repo, clone)
 	if err := RunReviewBundleImport([]string{
@@ -101,7 +102,7 @@ func TestLegacyV1ResumeValidateExportImportRemainUsable(t *testing.T) {
 	output.Reset()
 	if err := RunReviewValidate([]string{
 		"--cwd", clone, "--receipt", fixture.receiptPath,
-		"--lineage", fixture.lineage, "--gate", string(reviewtransaction.GatePrePush),
+		"--lineage", fixture.lineage, "--gate", string(reviewtransaction.GatePrePush), "--base-ref", "origin/reviewed-base",
 	}, &output); err != nil {
 		t.Fatalf("imported legacy validate: %v\n%s", err, output.String())
 	}
@@ -209,6 +210,8 @@ type legacyCLIFixture struct {
 func newLegacyCLIFixture(t *testing.T, lineage string) legacyCLIFixture {
 	t.Helper()
 	repo := initReviewCLIRepo(t)
+	branch := strings.TrimSpace(runReviewCLIGit(t, repo, "symbolic-ref", "--short", "HEAD"))
+	configureCLIReviewPublicationRemote(t, repo, branch)
 	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("candidate\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

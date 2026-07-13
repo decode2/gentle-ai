@@ -182,7 +182,7 @@ func TestReviewFacadeStartSupportsCommittedBaseDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if err := RunReviewFacadeValidate([]string{"--cwd", repo, "--lineage", result.LineageID, "--gate", string(reviewtransaction.GatePrePR), "--base-ref", base}, &output); err != nil {
+	if err := RunReviewFacadeValidate([]string{"--cwd", repo, "--lineage", result.LineageID, "--gate", string(reviewtransaction.GatePrePR), "--base-ref", "origin/" + branch}, &output); err != nil {
 		t.Fatalf("pre-pr base diff gate: %v\n%s", err, output.String())
 	}
 	output.Reset()
@@ -947,6 +947,7 @@ func TestCompactTransportRecoversCorrectedCurrentChangesWithoutIntermediateTrees
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 	runReviewCLIGit(t, source, "clone", "--no-local", source, clone)
+	runReviewCLIGit(t, source, "branch", "reviewed-base", "HEAD^")
 	for _, tree := range []string{initial.State.InitialSnapshot.CandidateTree, sourceRecord.State.CurrentSnapshot.BaseTree} {
 		command := exec.Command("git", "-C", clone, "cat-file", "-e", tree+"^{tree}")
 		if err := command.Run(); err == nil {
@@ -969,7 +970,7 @@ func TestCompactTransportRecoversCorrectedCurrentChangesWithoutIntermediateTrees
 		t.Fatal("corrected compact recovery changed state or receipt")
 	}
 	var output bytes.Buffer
-	if err := RunReviewFacadeValidate([]string{"--cwd", clone, "--lineage", started.LineageID, "--gate", string(reviewtransaction.GatePrePush)}, &output); err != nil {
+	if err := RunReviewFacadeValidate([]string{"--cwd", clone, "--lineage", started.LineageID, "--gate", string(reviewtransaction.GatePrePush), "--base-ref", "origin/reviewed-base"}, &output); err != nil {
 		t.Fatalf("corrected recovered gate: %v\n%s", err, output.String())
 	}
 }

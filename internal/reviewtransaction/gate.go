@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -35,6 +36,7 @@ type GateRequest struct {
 	EvidenceArtifact string                      `json:"evidence_artifact"`
 	EvidenceContent  string                      `json:"evidence_content,omitempty"`
 	ExternalEvidence ExternalEvidenceDisposition `json:"external_evidence,omitempty"`
+	Push             *PushRequest                `json:"push,omitempty"`
 	PrePR            *PrePRRequest               `json:"pre_pr,omitempty"`
 	Release          *ReleaseRequest             `json:"release,omitempty"`
 	preimages        *gateArtifactPreimages
@@ -43,6 +45,16 @@ type GateRequest struct {
 type PrePRRequest struct {
 	CIAttestationArtifact string                  `json:"ci_attestation_artifact"`
 	Boundary              *PrePRBoundarySelection `json:"boundary,omitempty"`
+	PushRemote            string                  `json:"push_remote,omitempty"`
+	PushRemoteIdentity    string                  `json:"push_remote_identity,omitempty"`
+}
+
+type PushRequest struct {
+	Boundary           PrePRBoundarySelection `json:"boundary"`
+	MergeBase          string                 `json:"merge_base"`
+	PushRemote         string                 `json:"push_remote"`
+	PushRemoteIdentity string                 `json:"push_remote_identity"`
+	DeliveryBaseTree   string                 `json:"delivery_base_tree,omitempty"`
 }
 
 type PrePRBoundarySource string
@@ -55,11 +67,12 @@ const (
 // PrePRBoundarySelection records how the immutable pre-PR range boundary was
 // selected. It is evidence only; receipt binding still authorizes the range.
 type PrePRBoundarySelection struct {
-	Source    PrePRBoundarySource `json:"source"`
-	Selector  string              `json:"selector"`
-	Commit    string              `json:"commit"`
-	Remote    string              `json:"remote,omitempty"`
-	RemoteRef string              `json:"remote_ref,omitempty"`
+	Source         PrePRBoundarySource `json:"source"`
+	Selector       string              `json:"selector"`
+	Commit         string              `json:"commit"`
+	Remote         string              `json:"remote,omitempty"`
+	RemoteRef      string              `json:"remote_ref,omitempty"`
+	RemoteIdentity string              `json:"remote_identity,omitempty"`
 }
 
 type ReleaseRequest struct {
@@ -195,6 +208,12 @@ func EvaluateNativeGate(ctx context.Context, repo string, receipt Receipt, reque
 	if request.Gate == GatePrePush && record.Transaction.Snapshot.Kind == TargetCurrentChanges && snapshot.BaseTree == snapshot.CandidateTree {
 		return invalid("pre-push current-changes receipt requires a delivered tree change")
 	}
+	if request.Gate == GatePrePush && (resolvedPrePR == nil || resolvedPrePR.DeliveredCommitCount < 1) {
+		return invalid("pre-push validation requires at least one delivered commit")
+	}
+	if request.Gate == GatePrePush && record.Transaction.Snapshot.Kind == TargetCurrentChanges && resolvedPrePR.DeliveredCommitCount != 1 {
+		return invalid("pre-push current-changes receipt requires exactly one delivery commit")
+	}
 	policyHash := authoritativeReceipt.PolicyHash
 	if hasArtifactSource(request.PolicyArtifact, request.PolicyContent) {
 		policyHash = hashArtifactPayload(preimages.policy)
@@ -269,11 +288,22 @@ func EvaluateNativeGate(ctx context.Context, repo string, receipt Receipt, reque
 }
 
 type resolvedPrePRRefs struct {
-	Selection  PrePRBoundarySelection
-	HeadCommit string
+	Selection            PrePRBoundarySelection
+	HeadCommit           string
+	BaseCommit           string
+	DeliveredCommitCount int
+	PushRemote           string
 }
 
 func buildLifecycleSnapshot(ctx context.Context, repo string, request GateRequest) (Snapshot, *resolvedPrePRRefs, error) {
+	if request.Gate == GatePrePush {
+		target, refs, err := prePushTargetForRequest(ctx, repo, request)
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		snapshot, err := (SnapshotBuilder{Repo: repo}).Build(ctx, target)
+		return snapshot, refs, err
+	}
 	target, err := lifecycleTargetForGate(ctx, repo, request)
 	if err != nil {
 		return Snapshot{}, nil, err
@@ -297,7 +327,16 @@ func buildLifecycleSnapshot(ctx context.Context, repo string, request GateReques
 	if err != nil {
 		return Snapshot{}, nil, err
 	}
-	return snapshot, &resolvedPrePRRefs{Selection: selection, HeadCommit: head}, nil
+	count, err := commitCount(ctx, repo, selection.Commit, head)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	pushRemote, _, _ := publicationRemote(ctx, repo)
+	pushIdentity, err := pushRepositoryIdentity(ctx, repo, pushRemote)
+	if err != nil || request.PrePR.PushRemote != pushRemote || request.PrePR.PushRemoteIdentity != pushIdentity {
+		return Snapshot{}, nil, errors.New("push destination remote changed during validation")
+	}
+	return snapshot, &resolvedPrePRRefs{Selection: selection, HeadCommit: head, BaseCommit: selection.Commit, DeliveredCommitCount: count, PushRemote: pushRemote}, nil
 }
 
 func prePRBoundaryForRequest(ctx context.Context, repo string, request GateRequest) (PrePRBoundarySelection, error) {
@@ -328,21 +367,34 @@ func prePRBoundaryForRequest(ctx context.Context, repo string, request GateReque
 
 func selectPrePRBoundary(ctx context.Context, repo, selector string) (PrePRBoundarySelection, error) {
 	selector = strings.TrimSpace(selector)
+	var selection PrePRBoundarySelection
+	var err error
 	if selector != "" {
 		if filepath.IsAbs(selector) {
 			return PrePRBoundarySelection{}, errors.New("explicit pre-PR base selector must not be an absolute path")
 		}
-		commit, err := resolveCommit(ctx, repo, selector)
-		if err != nil {
-			return PrePRBoundarySelection{}, fmt.Errorf("resolve explicit pre-PR base %q: %w", selector, err)
+		selection, err = resolveAdvertisedSelector(ctx, repo, selector, PrePRBoundaryExplicit)
+	} else {
+		var ref, remote, commit string
+		ref, remote, commit, err = resolveAuthoritativePublicationBase(ctx, repo)
+		identity, identityErr := remoteRepositoryIdentity(ctx, repo, remote)
+		if err == nil {
+			err = identityErr
 		}
-		return PrePRBoundarySelection{Source: PrePRBoundaryExplicit, Selector: selector, Commit: commit}, nil
+		selection = PrePRBoundarySelection{Source: PrePRBoundaryPublicationDefault, Selector: ref, Commit: commit, Remote: remote, RemoteRef: ref, RemoteIdentity: identity}
 	}
-	ref, remote, commit, err := resolveAuthoritativePublicationBase(ctx, repo)
 	if err != nil {
 		return PrePRBoundarySelection{}, err
 	}
-	return PrePRBoundarySelection{Source: PrePRBoundaryPublicationDefault, Selector: ref, Commit: commit, Remote: remote, RemoteRef: ref}, nil
+	head, err := resolveCommit(ctx, repo, "HEAD")
+	if err != nil {
+		return PrePRBoundarySelection{}, err
+	}
+	bases, mergeErr := runGit(ctx, repo, nil, nil, "merge-base", "--all", head, selection.Commit)
+	if mergeBases := strings.Fields(string(bases)); mergeErr != nil || len(mergeBases) != 1 {
+		return PrePRBoundarySelection{}, fmt.Errorf("publication base has %d merge bases; pass --base-ref <remote>/<branch>", len(mergeBases))
+	}
+	return selection, nil
 }
 
 func buildPrePRTarget(ctx context.Context, repo, selector, ciAttestation string, intendedUntracked []string) (Target, *PrePRRequest, error) {
@@ -350,8 +402,13 @@ func buildPrePRTarget(ctx context.Context, repo, selector, ciAttestation string,
 	if err != nil {
 		return Target{}, nil, err
 	}
+	pushRemote, _, _ := publicationRemote(ctx, repo)
+	pushIdentity, err := pushRepositoryIdentity(ctx, repo, pushRemote)
+	if err != nil {
+		return Target{}, nil, err
+	}
 	return Target{Kind: TargetBaseDiff, BaseRef: selection.Commit, IntendedUntracked: append([]string(nil), intendedUntracked...)},
-		&PrePRRequest{CIAttestationArtifact: ciAttestation, Boundary: &selection}, nil
+		&PrePRRequest{CIAttestationArtifact: ciAttestation, Boundary: &selection, PushRemote: pushRemote, PushRemoteIdentity: pushIdentity}, nil
 }
 
 func publicationRemoteConfigured(ctx context.Context, repo string) (bool, error) {
@@ -361,34 +418,148 @@ func publicationRemoteConfigured(ctx context.Context, repo string) (bool, error)
 
 func resolveAuthoritativePublicationBase(ctx context.Context, repo string) (string, string, string, error) {
 	remote, configured, err := publicationRemote(ctx, repo)
-	if err != nil {
-		return "", "", "", err
-	}
-	if !configured {
-		return "", "", "", errors.New("publication remote is not configured")
+	if err != nil || !configured {
+		return "", "", "", errors.New("publication target remote is not configured; pass --base-ref <remote>/<branch>")
 	}
 	output, err := runGit(ctx, repo, nil, nil, "ls-remote", "--symref", remote, "HEAD")
 	if err != nil {
-		return "", "", "", fmt.Errorf("query publication remote %q: %w", remote, err)
+		return "", "", "", fmt.Errorf("query publication target default branch: %w", err)
 	}
-	var baseRef, commit string
+	ref := ""
 	for _, line := range strings.Split(string(output), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" {
-			baseRef = fields[1]
-		}
-		if len(fields) == 2 && fields[1] == "HEAD" && validGitTree(fields[0]) {
-			commit = fields[0]
+		if len(fields) == 3 && fields[0] == "ref:" && fields[2] == "HEAD" && strings.HasPrefix(fields[1], "refs/heads/") {
+			ref = fields[1]
 		}
 	}
-	if !strings.HasPrefix(baseRef, "refs/heads/") || !validGitTree(commit) {
-		return "", "", "", errors.New("publication remote does not advertise a default branch HEAD")
+	if ref == "" {
+		return "", "", "", errors.New("publication target default branch is unavailable; pass --base-ref <remote>/<branch>")
 	}
-	local, err := resolveCommit(ctx, repo, commit)
-	if err != nil || local != commit {
-		return "", "", "", errors.New("publication base commit is not available locally; fetch before validation")
+	selection, err := advertisedRemoteRef(ctx, repo, remote, ref, remote+"/"+strings.TrimPrefix(ref, "refs/heads/"), PrePRBoundaryPublicationDefault)
+	if err != nil {
+		return "", "", "", err
 	}
-	return baseRef, remote, commit, nil
+	return selection.RemoteRef, selection.Remote, selection.Commit, nil
+}
+
+func resolveTrackingUpstreamBase(ctx context.Context, repo string) (string, string, string, error) {
+	branch := currentBranch(ctx, repo)
+	if branch == "" {
+		return "", "", "", errors.New("configured upstream is unavailable on detached HEAD; pass --base-ref <remote>/<branch>")
+	}
+	output, err := runGit(ctx, repo, nil, nil, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", "refs/heads/"+branch)
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "\x00", 2)
+	if err != nil || len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
+		return "", "", "", errors.New("configured upstream is missing or ambiguous; pass --base-ref <remote>/<branch>")
+	}
+	selection, err := advertisedRemoteRef(ctx, repo, parts[0], parts[1], parts[0]+"/"+strings.TrimPrefix(parts[1], "refs/heads/"), PrePRBoundaryPublicationDefault)
+	if err != nil {
+		return "", "", "", err
+	}
+	return selection.RemoteRef, selection.Remote, selection.Commit, nil
+}
+
+func resolveAdvertisedSelector(ctx context.Context, repo, selector string, source PrePRBoundarySource) (PrePRBoundarySelection, error) {
+	output, err := runGit(ctx, repo, nil, nil, "remote")
+	if err != nil {
+		return PrePRBoundarySelection{}, err
+	}
+	remotes := strings.Fields(string(output))
+	matches := []PrePRBoundarySelection{}
+	for _, remote := range remotes {
+		identity, identityErr := remoteRepositoryIdentity(ctx, repo, remote)
+		if identityErr != nil {
+			continue
+		}
+		branch := selector
+		if strings.HasPrefix(selector, remote+"/") {
+			branch = strings.TrimPrefix(selector, remote+"/")
+		} else if strings.Contains(selector, "/") {
+			continue
+		}
+		if validGitTree(selector) {
+			branch = ""
+		} else if _, err := runGit(ctx, repo, nil, nil, "check-ref-format", "--branch", branch); err != nil {
+			continue
+		}
+		remoteOutput, queryErr := runGit(ctx, repo, nil, nil, "ls-remote", "--heads", remote, branch)
+		if queryErr != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(remoteOutput), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && strings.HasPrefix(fields[1], "refs/heads/") &&
+				(validGitTree(selector) && fields[0] == selector || !validGitTree(selector) && fields[1] == "refs/heads/"+branch) {
+				matches = append(matches, PrePRBoundarySelection{Source: source, Selector: selector, Commit: fields[0], Remote: remote, RemoteRef: fields[1], RemoteIdentity: identity})
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return PrePRBoundarySelection{}, fmt.Errorf("explicit pre-PR base %q is missing or ambiguous on advertised remote branches; pass --base-ref <remote>/<branch>", selector)
+	}
+	local, err := resolveCommit(ctx, repo, matches[0].Commit)
+	if err != nil || local != matches[0].Commit {
+		return PrePRBoundarySelection{}, errors.New("advertised base commit is not available locally; fetch before validation")
+	}
+	return matches[0], nil
+}
+
+func advertisedRemoteRef(ctx context.Context, repo, remote, ref, selector string, source PrePRBoundarySource) (PrePRBoundarySelection, error) {
+	identity, err := remoteRepositoryIdentity(ctx, repo, remote)
+	if err != nil {
+		return PrePRBoundarySelection{}, err
+	}
+	output, err := runGit(ctx, repo, nil, nil, "ls-remote", "--heads", remote, ref)
+	if err != nil {
+		return PrePRBoundarySelection{}, fmt.Errorf("query base remote %q: %w", remote, err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 || fields[1] != ref || !validGitTree(fields[0]) {
+		return PrePRBoundarySelection{}, fmt.Errorf("base selector %q is not a current advertised remote branch; pass --base-ref <remote>/<branch>", selector)
+	}
+	local, err := resolveCommit(ctx, repo, fields[0])
+	if err != nil || local != fields[0] {
+		return PrePRBoundarySelection{}, errors.New("advertised base commit is not available locally; fetch before validation")
+	}
+	return PrePRBoundarySelection{Source: source, Selector: selector, Commit: fields[0], Remote: remote, RemoteRef: ref, RemoteIdentity: identity}, nil
+}
+
+func remoteRepositoryIdentity(ctx context.Context, repo, remote string) (string, error) {
+	output, err := runGit(ctx, repo, nil, nil, "config", "--get", "remote."+remote+".url")
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return "", errors.New("publication remote URL is not configured")
+	}
+	return repositoryLocationIdentity(ctx, repo, strings.TrimSpace(string(output)))
+}
+
+func pushRepositoryIdentity(ctx context.Context, repo, remote string) (string, error) {
+	output, err := runGit(ctx, repo, nil, nil, "config", "--get", "remote."+remote+".pushurl")
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return remoteRepositoryIdentity(ctx, repo, remote)
+	}
+	return repositoryLocationIdentity(ctx, repo, strings.TrimSpace(string(output)))
+}
+
+func repositoryLocationIdentity(ctx context.Context, repo, value string) (string, error) {
+	if parsed, parseErr := url.Parse(value); parseErr == nil && parsed.Scheme != "" && parsed.Opaque == "" {
+		value = strings.ToLower(parsed.Host) + "/" + strings.Trim(parsed.Path, "/")
+	} else {
+		if colon := strings.Index(value, ":"); colon > 0 && !strings.Contains(value[:colon], "/") {
+			host := value[:colon]
+			if at := strings.LastIndex(host, "@"); at >= 0 {
+				host = host[at+1:]
+			}
+			value = strings.ToLower(host) + "/" + value[colon+1:]
+		} else if !filepath.IsAbs(value) {
+			root, rootErr := runGit(ctx, repo, nil, nil, "rev-parse", "--show-toplevel")
+			if rootErr != nil {
+				return "", errors.New("publication remote identity cannot be derived")
+			}
+			value = filepath.Clean(filepath.Join(strings.TrimSpace(string(root)), value))
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSuffix(strings.TrimRight(value, "/"), ".git")))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func publicationRemote(ctx context.Context, repo string) (string, bool, error) {
@@ -420,6 +591,118 @@ func sameResolvedPrePRRefs(left, right *resolvedPrePRRefs) bool {
 		return left == right
 	}
 	return *left == *right
+}
+
+func currentBranch(ctx context.Context, repo string) string {
+	output, _ := runGit(ctx, repo, nil, nil, "symbolic-ref", "--quiet", "--short", "HEAD")
+	return strings.TrimSpace(string(output))
+}
+
+func buildPushTarget(ctx context.Context, repo, selector, deliveryBaseTree string) (Target, *PushRequest, error) {
+	selection, err := selectPrePushBoundary(ctx, repo, selector)
+	if err != nil {
+		return Target{}, nil, err
+	}
+	head, err := resolveCommit(ctx, repo, "HEAD")
+	if err != nil {
+		return Target{}, nil, err
+	}
+	bases, err := runGit(ctx, repo, nil, nil, "merge-base", "--all", head, selection.Commit)
+	mergeBases := strings.Fields(string(bases))
+	if err != nil || len(mergeBases) != 1 {
+		return Target{}, nil, fmt.Errorf("publication base has %d merge bases; pass --base-ref <remote>/<branch>", len(mergeBases))
+	}
+	pushRemote, configured, err := publicationRemote(ctx, repo)
+	if err != nil || !configured {
+		return Target{}, nil, errors.New("push destination remote is not configured")
+	}
+	pushIdentity, err := pushRepositoryIdentity(ctx, repo, pushRemote)
+	if err != nil {
+		return Target{}, nil, err
+	}
+	push := &PushRequest{Boundary: selection, MergeBase: mergeBases[0], PushRemote: pushRemote, PushRemoteIdentity: pushIdentity, DeliveryBaseTree: deliveryBaseTree}
+	base := push.MergeBase
+	if deliveryBaseTree != "" {
+		base, err = reviewedDeliveryBase(ctx, repo, push.MergeBase, head, deliveryBaseTree)
+		count, countErr := commitCount(ctx, repo, base, head)
+		if err != nil || countErr != nil || count != 1 {
+			return Target{}, nil, errors.New("reviewed delivery is not exactly one commit from its reviewed base")
+		}
+	}
+	return Target{Kind: TargetBaseDiff, BaseRef: base, IntendedUntracked: []string{}}, push, nil
+}
+
+func selectPrePushBoundary(ctx context.Context, repo, selector string) (PrePRBoundarySelection, error) {
+	if strings.TrimSpace(selector) != "" {
+		return selectPrePRBoundary(ctx, repo, selector)
+	}
+	ref, remote, commit, err := resolveTrackingUpstreamBase(ctx, repo)
+	if err != nil {
+		return PrePRBoundarySelection{}, err
+	}
+	identity, err := remoteRepositoryIdentity(ctx, repo, remote)
+	return PrePRBoundarySelection{Source: PrePRBoundaryPublicationDefault, Selector: ref, Commit: commit, Remote: remote, RemoteRef: ref, RemoteIdentity: identity}, err
+}
+
+func reviewedDeliveryBase(ctx context.Context, repo, publicationBase, head, reviewedTree string) (string, error) {
+	output, err := runGit(ctx, repo, nil, nil, "rev-list", head, "^"+publicationBase)
+	if err != nil {
+		return "", err
+	}
+	matches := []string{}
+	for _, commit := range append(strings.Fields(string(output)), publicationBase) {
+		tree, treeErr := runGit(ctx, repo, nil, nil, "rev-parse", commit+"^{tree}")
+		if treeErr != nil {
+			return "", treeErr
+		}
+		if strings.TrimSpace(string(tree)) == reviewedTree {
+			matches = append(matches, commit)
+		}
+	}
+	if len(matches) != 1 {
+		return "", errors.New("reviewed delivery base commit is missing or ambiguous in publication range")
+	}
+	return matches[0], nil
+}
+
+func prePushTargetForRequest(ctx context.Context, repo string, request GateRequest) (Target, *resolvedPrePRRefs, error) {
+	selector := ""
+	if request.Push != nil && request.Push.Boundary.Source == PrePRBoundaryExplicit {
+		selector = request.Push.Boundary.Selector
+	}
+	deliveryBaseTree := ""
+	if request.Push != nil {
+		deliveryBaseTree = request.Push.DeliveryBaseTree
+	}
+	target, push, err := buildPushTarget(ctx, repo, selector, deliveryBaseTree)
+	if err != nil {
+		return Target{}, nil, err
+	}
+	if request.Push != nil && *request.Push != *push {
+		return Target{}, nil, errors.New("push publication boundary changed during validation")
+	}
+	if request.Target.Kind == TargetBaseDiff && request.Target.BaseRef != "" && request.Target.BaseRef != target.BaseRef {
+		return Target{}, nil, errors.New("committed publication merge base changed during validation")
+	}
+	head, err := resolveCommit(ctx, repo, "HEAD")
+	if err != nil {
+		return Target{}, nil, err
+	}
+	count, err := commitCount(ctx, repo, target.BaseRef, head)
+	if err != nil {
+		return Target{}, nil, err
+	}
+	return target, &resolvedPrePRRefs{Selection: push.Boundary, HeadCommit: head, BaseCommit: push.MergeBase, DeliveredCommitCount: count, PushRemote: push.PushRemote}, nil
+}
+
+func commitCount(ctx context.Context, repo, base, head string) (int, error) {
+	output, err := runGit(ctx, repo, nil, nil, "rev-list", "--count", base+".."+head)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	_, err = fmt.Sscan(strings.TrimSpace(string(output)), &count)
+	return count, err
 }
 
 func resolveCommit(ctx context.Context, repo, revision string) (string, error) {
@@ -492,6 +775,15 @@ func validateGateRequest(request GateRequest) error {
 	}
 	if request.Gate != GatePrePR && request.PrePR != nil {
 		return errors.New("pre-PR evidence is only valid at the pre-PR gate")
+	}
+	if request.Gate != GatePrePush && request.Push != nil {
+		return errors.New("push evidence is only valid at the pre-push gate")
+	}
+	if request.Gate == GatePrePush && (request.Push == nil || request.Push.PushRemoteIdentity == "" || request.Push.Boundary.RemoteIdentity == "") {
+		return errors.New("pre-push gate requires repository-bound push evidence")
+	}
+	if request.Gate == GatePrePR && (request.PrePR == nil || request.PrePR.Boundary == nil || request.PrePR.PushRemoteIdentity == "" || request.PrePR.Boundary.RemoteIdentity == "") {
+		return errors.New("pre-PR gate requires repository-bound publication evidence; pass --base-ref <remote>/<branch>")
 	}
 	switch request.ExternalEvidence {
 	case ExternalEvidenceNone, ExternalEvidenceInvalidating, ExternalEvidenceEscalating:

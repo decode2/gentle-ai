@@ -281,8 +281,11 @@ func TestCompactPrePRGatePreservesBoundaryContextForExactAndUnavailableSelectors
 	gitSnapshot(t, repo, "commit", "-m", "candidate")
 	state, _, receipt := approvedCompactRevisionFixture(t, repo, "compact-pre-pr-boundary")
 	base := trimGit(gitSnapshot(t, repo, "rev-parse", "HEAD^"))
+	branch := currentBranch(context.Background(), repo)
+	remote := configurePublicationRemote(t, repo, branch)
+	gitSnapshot(t, repo, "--git-dir", remote, "branch", "reviewed-base", base)
 
-	exact := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePR, LineageID: state.LineageID, BaseRef: base})
+	exact := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePR, LineageID: state.LineageID, BaseRef: "origin/reviewed-base"})
 	if exact.Result != GateAllow || exact.Context.PrePRBoundary == nil || exact.Context.PrePRBoundary.Commit != base {
 		t.Fatalf("exact compact pre-PR boundary = %#v", exact)
 	}
@@ -300,8 +303,8 @@ func TestCompactPrePRGatePreservesBoundaryContextForExactAndUnavailableSelectors
 		t.Fatalf("unavailable compact pre-PR context round trip = %#v, %v", parsed, err)
 	}
 
-	mismatched := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePR, LineageID: state.LineageID, BaseRef: "HEAD"})
-	if mismatched.Result == GateAllow || mismatched.Context.PrePRBoundary == nil || mismatched.Context.PrePRBoundary.Selector != "HEAD" || mismatched.Context.Denial == nil || mismatched.Context.Denial.Stage != "receipt-binding" {
+	mismatched := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePR, LineageID: state.LineageID, BaseRef: "origin/" + branch})
+	if mismatched.Result == GateAllow || mismatched.Context.PrePRBoundary == nil || mismatched.Context.Denial == nil || mismatched.Context.Denial.Stage != "receipt-binding" {
 		t.Fatalf("mismatched compact pre-PR boundary = %#v", mismatched)
 	}
 }
@@ -329,7 +332,7 @@ func TestCompactPrePRGateInvalidatesSelectedBaseAndHeadRaces(t *testing.T) {
 		mutate func(t *testing.T, fixture *compatiblePrePRFixture)
 	}{
 		{name: "selected base moves", mutate: func(t *testing.T, fixture *compatiblePrePRFixture) {
-			gitSnapshot(t, fixture.repo, "update-ref", "refs/heads/main", fixture.originalBaseCommit)
+			gitSnapshot(t, fixture.repo, "--git-dir", fixture.remote, "update-ref", "refs/heads/main", fixture.originalBaseCommit)
 		}},
 		{name: "head moves", mutate: func(t *testing.T, fixture *compatiblePrePRFixture) {
 			gitSnapshot(t, fixture.repo, "commit", "--allow-empty", "-m", "move head")
