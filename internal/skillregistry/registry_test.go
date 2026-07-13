@@ -3,6 +3,7 @@ package skillregistry
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -536,14 +537,8 @@ func containsPath(paths []string, want string) bool {
 }
 
 func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
-	sourceDir := t.TempDir()
+	sourceRegistry := filepath.Join(t.TempDir(), "skill-registry.md")
 	targetDir := t.TempDir()
-
-	sourceRegistry := filepath.Join(sourceDir, ".atl", "skill-registry.md")
-	if err := os.MkdirAll(filepath.Dir(sourceRegistry), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	content := strings.Join([]string{
 		"  # Skill Registry  ",
 		"## Contract",
@@ -554,9 +549,28 @@ func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
 		"| `custom-skill` | Custom trigger | project | `skills/custom/SKILL.md` |",
 		"",
 	}, "\n")
-	if err := os.WriteFile(sourceRegistry, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	writeSkill(t, sourceRegistry, content)
+
+	markers := []struct{ name, value, near string }{
+		{"title", "# Skill Registry", "# Skill Registries"},
+		{"skills heading", "## Skills", "### Skills"},
+		{"table header", "| Skill | Trigger / description | Scope | Path |", "| Skill | Trigger | Scope | Path |"},
+		{"table separator", "| --- | --- | --- | --- |", "| -- | --- | --- | --- |"},
 	}
+	for _, marker := range markers {
+		for _, variant := range []struct{ name, replacement string }{{"missing", ""}, {"near-match", marker.near}} {
+			t.Run(marker.name+" "+variant.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "registry.md")
+				writeSkill(t, path, strings.Replace(content, marker.value, variant.replacement, 1))
+				_, err := LoadRegistry(path, t.TempDir(), false)
+				want := fmt.Sprintf("invalid skill registry format in %q: missing required headers or table", path)
+				if err == nil || err.Error() != want {
+					t.Fatalf("LoadRegistry() error = %v, want %q", err, want)
+				}
+			})
+		}
+	}
+
 	res, err := LoadRegistry(sourceRegistry, targetDir, false)
 	if err != nil {
 		t.Fatalf("LoadRegistry error = %v", err)
@@ -579,12 +593,9 @@ func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
 }
 
 func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
-	sourceDir := t.TempDir()
-	source := filepath.Join(sourceDir, "registry.md")
+	source := filepath.Join(t.TempDir(), "registry.md")
 	content := "# Skill Registry\n## Skills\n| Skill | Trigger / description | Scope | Path |\n| --- | --- | --- | --- |\n"
-	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeSkill(t, source, content)
 
 	for _, tt := range []struct {
 		name        string
@@ -602,12 +613,7 @@ func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
 			cwd := t.TempDir()
 			registryPath := filepath.Join(cwd, RegistryRelPath)
 			if tt.previous != nil {
-				if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(registryPath, tt.previous, 0o644); err != nil {
-					t.Fatal(err)
-				}
+				writeSkill(t, registryPath, string(tt.previous))
 			}
 			cachePath := filepath.Join(cwd, CacheRelPath)
 			if tt.cache != nil {
@@ -663,12 +669,7 @@ func TestRegeneratePreservesOnlyMatchingLoadedFingerprint(t *testing.T) {
 		t.Run(map[bool]string{true: "matching", false: "mismatched"}[matching], func(t *testing.T) {
 			cwd := t.TempDir()
 			registry := []byte("manual registry")
-			if err := os.MkdirAll(filepath.Join(cwd, ".atl"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(cwd, RegistryRelPath), registry, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeSkill(t, filepath.Join(cwd, RegistryRelPath), string(registry))
 			fingerprint := contentFingerprint(registry)
 			if !matching {
 				fingerprint = "stale"

@@ -357,8 +357,9 @@ func runSkillRegistryRefresh(cmd string, args []string, stdout io.Writer) error 
 	if err != nil {
 		return err
 	}
+	isLoad := cmd == "load" || loadPath != ""
 	var prepared skillregistry.PreparedLoad
-	if cmd == "load" || loadPath != "" {
+	if isLoad {
 		prepared, err = skillregistry.PrepareLoadRegistry(loadPath, cwd)
 		if err != nil {
 			return err
@@ -371,7 +372,7 @@ func runSkillRegistryRefresh(cmd string, args []string, stdout io.Writer) error 
 	}
 
 	var result skillregistry.Result
-	if cmd == "load" || loadPath != "" {
+	if isLoad {
 		result, err = prepared.Commit(force)
 	} else {
 		result, err = skillregistry.Regenerate(cwd, home, force)
@@ -381,7 +382,7 @@ func runSkillRegistryRefresh(cmd string, args []string, stdout io.Writer) error 
 	}
 	if !quiet {
 		if result.Regenerated {
-			if cmd == "load" || loadPath != "" {
+			if isLoad {
 				_, _ = fmt.Fprintf(stdout, "Skill registry loaded (%d skills): %s\n", result.SkillCount, result.Registry)
 			} else {
 				_, _ = fmt.Fprintf(stdout, "Skill registry refreshed (%d skills): %s\n", result.SkillCount, result.Registry)
