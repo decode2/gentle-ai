@@ -18,12 +18,64 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/planner"
+	"github.com/gentleman-programming/gentle-ai/internal/skillregistry"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/tui"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
 	"github.com/gentleman-programming/gentle-ai/internal/update/upgrade"
 )
+
+func TestRunSkillRegistryLoadGitignoreFailureDoesNotBeginLoad(t *testing.T) {
+	cwd := t.TempDir()
+	source := filepath.Join(cwd, "registry.md")
+	content := "# Skill Registry\n## Skills\n| Skill | Trigger / description | Scope | Path |\n| --- | --- | --- | --- |\n"
+	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(cwd, ".gitignore"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSkillRegistry([]string{"load", source, "--cwd", cwd}, io.Discard); err == nil {
+		t.Fatal("runSkillRegistry() error = nil, want .gitignore error")
+	}
+	if _, err := os.Stat(filepath.Join(cwd, skillregistry.RegistryRelPath)); !os.IsNotExist(err) {
+		t.Fatalf("registry was mutated: %v", err)
+	}
+}
+
+func tomlSection(text, header string) string {
+	start := strings.Index(text, header)
+	if start == -1 {
+		return ""
+	}
+	section := text[start+len(header):]
+	if next := strings.Index(section, "\n["); next != -1 {
+		section = section[:next]
+	}
+	return section
+}
+
+func assertCodexWorkspaceWriteRulesScoped(t *testing.T, text string) {
+	t.Helper()
+
+	rootFilesystem := tomlSection(text, `[permissions.gentle-dev.filesystem]`)
+	for _, rule := range []string{`"." = "write"`, `".git/**" = "write"`} {
+		if strings.Contains(rootFilesystem, rule) {
+			t.Fatalf("root filesystem table contains workspace write rule %q; got:\n%s", rule, rootFilesystem)
+		}
+	}
+
+	scopedFilesystem := tomlSection(text, `[permissions.gentle-dev.filesystem.":workspace_roots"]`)
+	if scopedFilesystem == "" {
+		t.Fatalf("config.toml missing workspace-scoped filesystem table; got:\n%s", text)
+	}
+	for _, rule := range []string{`"." = "write"`, `".git/**" = "write"`} {
+		if !strings.Contains(scopedFilesystem, rule) {
+			t.Fatalf("workspace-scoped filesystem table missing workspace write rule %q; got:\n%s", rule, scopedFilesystem)
+		}
+	}
+}
 
 // TestListBackupsNewestFirst verifies that ListBackups returns manifests sorted
 // newest-first by CreatedAt timestamp, matching the spec "newest first" ordering.

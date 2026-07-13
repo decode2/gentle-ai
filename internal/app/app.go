@@ -285,15 +285,17 @@ func gentleAIUpgradeVersionFromTUI(finalModel tea.Model) (string, bool) {
 
 func runSkillRegistry(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: gentle-ai skill-registry <refresh|list> [flags]")
+		return fmt.Errorf("usage: gentle-ai skill-registry <refresh|load|list> [flags]")
 	}
 	switch args[0] {
 	case "refresh":
-		return runSkillRegistryRefresh(args[1:], stdout)
+		return runSkillRegistryRefresh("refresh", args[1:], stdout)
+	case "load":
+		return runSkillRegistryRefresh("load", args[1:], stdout)
 	case "list":
 		return runSkillRegistryList(args[1:], stdout)
 	default:
-		return fmt.Errorf("unknown skill-registry command %q (want refresh or list)", args[0])
+		return fmt.Errorf("unknown skill-registry command %q (want refresh, load, or list)", args[0])
 	}
 }
 
@@ -314,11 +316,16 @@ func resolveSkillRegistryDirs(cwd string) (string, string, error) {
 	return cwd, home, nil
 }
 
-func runSkillRegistryRefresh(args []string, stdout io.Writer) error {
+func runSkillRegistryRefresh(cmd string, args []string, stdout io.Writer) error {
 	cwd := ""
 	force := false
 	quiet := false
 	ensureGitignore := true
+	loadPath := ""
+	if cmd == "load" && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		loadPath = args[0]
+		args = args[1:]
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--force", "-f":
@@ -333,26 +340,52 @@ func runSkillRegistryRefresh(args []string, stdout io.Writer) error {
 			}
 			cwd = args[i+1]
 			i++
+		case "--load":
+			if i+1 >= len(args) {
+				return fmt.Errorf("--load requires a value")
+			}
+			loadPath = args[i+1]
+			i++
 		default:
-			return fmt.Errorf("unknown skill-registry refresh argument %q", args[i])
+			return fmt.Errorf("unknown skill-registry %s argument %q", cmd, args[i])
 		}
+	}
+	if cmd == "load" && loadPath == "" {
+		return fmt.Errorf("skill-registry load requires a source file path")
 	}
 	cwd, home, err := resolveSkillRegistryDirs(cwd)
 	if err != nil {
 		return err
+	}
+	var prepared skillregistry.PreparedLoad
+	if cmd == "load" || loadPath != "" {
+		prepared, err = skillregistry.PrepareLoadRegistry(loadPath, cwd)
+		if err != nil {
+			return err
+		}
 	}
 	if ensureGitignore {
 		if err := skillregistry.EnsureATLIgnored(cwd); err != nil {
 			return err
 		}
 	}
-	result, err := skillregistry.Regenerate(cwd, home, force)
+
+	var result skillregistry.Result
+	if cmd == "load" || loadPath != "" {
+		result, err = prepared.Commit(force)
+	} else {
+		result, err = skillregistry.Regenerate(cwd, home, force)
+	}
 	if err != nil {
 		return err
 	}
 	if !quiet {
 		if result.Regenerated {
-			_, _ = fmt.Fprintf(stdout, "Skill registry refreshed (%d skills): %s\n", result.SkillCount, result.Registry)
+			if cmd == "load" || loadPath != "" {
+				_, _ = fmt.Fprintf(stdout, "Skill registry loaded (%d skills): %s\n", result.SkillCount, result.Registry)
+			} else {
+				_, _ = fmt.Fprintf(stdout, "Skill registry refreshed (%d skills): %s\n", result.SkillCount, result.Registry)
+			}
 		} else {
 			_, _ = fmt.Fprintf(stdout, "Skill registry up to date (%s): %s\n", result.Reason, result.Registry)
 		}

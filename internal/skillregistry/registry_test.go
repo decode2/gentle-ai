@@ -1,10 +1,14 @@
 package skillregistry
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 )
 
 func TestRegenerateWritesRegistryAndCacheThenHitsCache(t *testing.T) {
@@ -529,4 +533,161 @@ func containsPath(paths []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	sourceRegistry := filepath.Join(sourceDir, ".atl", "skill-registry.md")
+	if err := os.MkdirAll(filepath.Dir(sourceRegistry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := strings.Join([]string{
+		"  # Skill Registry  ",
+		"## Contract",
+		"Contract description.",
+		"\t## Skills\t",
+		"  | Skill | Trigger / description | Scope | Path |  ",
+		"\t| --- | --- | --- | --- |\t",
+		"| `custom-skill` | Custom trigger | project | `skills/custom/SKILL.md` |",
+		"",
+	}, "\n")
+	if err := os.WriteFile(sourceRegistry, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := LoadRegistry(sourceRegistry, targetDir, false)
+	if err != nil {
+		t.Fatalf("LoadRegistry error = %v", err)
+	}
+	if !res.Regenerated || res.SkillCount != 1 || res.Reason != "loaded" {
+		t.Fatalf("unexpected LoadRegistry result: %#v", res)
+	}
+	got := readFile(t, filepath.Join(targetDir, RegistryRelPath))
+	if got != content {
+		t.Fatalf("loaded content mismatch: got %q, want %q", got, content)
+	}
+	cacheContent := readFile(t, filepath.Join(targetDir, CacheRelPath))
+	if !strings.Contains(cacheContent, "loaded:") {
+		t.Fatalf("cache fingerprint mismatch: got %q, expected 'loaded:' prefix", cacheContent)
+	}
+	res, err = LoadRegistry(sourceRegistry, targetDir, false)
+	if err != nil || res.Regenerated || res.Reason != "cache-hit" {
+		t.Fatalf("second LoadRegistry() = %#v, %v; want cache hit", res, err)
+	}
+}
+
+func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
+	sourceDir := t.TempDir()
+	source := filepath.Join(sourceDir, "registry.md")
+	content := "# Skill Registry\n## Skills\n| Skill | Trigger / description | Scope | Path |\n| --- | --- | --- | --- |\n"
+	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name        string
+		destination string
+		previous    []byte
+		cache       []byte
+		regen       bool
+	}{
+		{name: "load registry destination removes absent pair", destination: RegistryRelPath},
+		{name: "load cache destination restores prior pair", destination: CacheRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n")},
+		{name: "regenerate registry destination restores pair", destination: RegistryRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n"), regen: true},
+		{name: "regenerate cache destination restores pair", destination: CacheRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n"), regen: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			registryPath := filepath.Join(cwd, RegistryRelPath)
+			if tt.previous != nil {
+				if err := os.MkdirAll(filepath.Dir(registryPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(registryPath, tt.previous, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cachePath := filepath.Join(cwd, CacheRelPath)
+			if tt.cache != nil {
+				if err := os.WriteFile(cachePath, tt.cache, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			originalWrite := writeFileAtomic
+			failurePath := filepath.Join(cwd, tt.destination)
+			failed := false
+			writeFileAtomic = func(path string, data []byte, mode os.FileMode) (filemerge.WriteResult, error) {
+				if path == failurePath && !failed {
+					failed = true
+					if err := os.WriteFile(path, []byte("mutated destination"), mode); err != nil {
+						return filemerge.WriteResult{}, err
+					}
+					return filemerge.WriteResult{}, errors.New("injected mutation failure")
+				}
+				return originalWrite(path, data, mode)
+			}
+			t.Cleanup(func() { writeFileAtomic = originalWrite })
+
+			var err error
+			if tt.regen {
+				_, err = Regenerate(cwd, t.TempDir(), true)
+			} else {
+				_, err = LoadRegistry(source, cwd, false)
+			}
+			if err == nil || !strings.Contains(err.Error(), "injected mutation failure") {
+				t.Fatalf("operation error = %v, want mutation failure", err)
+			}
+			got, err := os.ReadFile(registryPath)
+			if tt.previous == nil {
+				if !os.IsNotExist(err) {
+					t.Fatalf("registry exists after rollback: %v", err)
+				}
+			} else if err != nil || !bytes.Equal(got, tt.previous) {
+				t.Fatalf("registry after rollback = %q, %v; want %q", got, err, tt.previous)
+			}
+			got, err = os.ReadFile(cachePath)
+			if tt.cache == nil && !os.IsNotExist(err) {
+				t.Fatalf("cache exists after rollback: %v", err)
+			} else if tt.cache != nil && (err != nil || !bytes.Equal(got, tt.cache)) {
+				t.Fatalf("cache after rollback = %q, %v; want %q", got, err, tt.cache)
+			}
+		})
+	}
+}
+
+func TestRegeneratePreservesOnlyMatchingLoadedFingerprint(t *testing.T) {
+	for _, matching := range []bool{true, false} {
+		t.Run(map[bool]string{true: "matching", false: "mismatched"}[matching], func(t *testing.T) {
+			cwd := t.TempDir()
+			registry := []byte("manual registry")
+			if err := os.MkdirAll(filepath.Join(cwd, ".atl"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cwd, RegistryRelPath), registry, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fingerprint := contentFingerprint(registry)
+			if !matching {
+				fingerprint = "stale"
+			}
+			cache := []byte("{\"fingerprint\":\"loaded:" + fingerprint + "\"}\n")
+			if err := os.WriteFile(filepath.Join(cwd, CacheRelPath), cache, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			res, err := Regenerate(cwd, t.TempDir(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if matching && (res.Regenerated || res.Reason != "manually-loaded") {
+				t.Fatalf("Regenerate() = %#v; want manual preservation", res)
+			}
+			if !matching && (!res.Regenerated || readFile(t, filepath.Join(cwd, RegistryRelPath)) == string(registry)) {
+				t.Fatalf("Regenerate() = %#v; stale loaded pairing was preserved", res)
+			}
+		})
+	}
 }

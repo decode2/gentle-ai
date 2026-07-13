@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -52,6 +53,22 @@ type Result struct {
 type cacheFile struct {
 	Fingerprint string `json:"fingerprint"`
 }
+
+type PreparedLoad struct {
+	data        []byte
+	fingerprint string
+	skillCount  int
+	registry    string
+	cache       string
+}
+
+type fileSnapshot struct {
+	path   string
+	data   []byte
+	exists bool
+}
+
+var writeFileAtomic = filemerge.WriteFileAtomic
 
 // Keep these source roots in sync with the gentle-pi skill-registry extension.
 func UserSkillDirs(home string) []string {
@@ -107,6 +124,14 @@ func ProjectSkillDirs(cwd string) []string {
 func Regenerate(cwd, home string, force bool) (Result, error) {
 	cwd = filepath.Clean(cwd)
 	home = filepath.Clean(home)
+	registryPath := filepath.Join(cwd, RegistryRelPath)
+	cachePath := filepath.Join(cwd, CacheRelPath)
+	if !force {
+		registry, err := os.ReadFile(registryPath)
+		if err == nil && readCachedFingerprint(cachePath) == "loaded:"+contentFingerprint(registry) {
+			return Result{Regenerated: false, Reason: "manually-loaded", Registry: registryPath, Cache: cachePath}, nil
+		}
+	}
 
 	existingDirs := uniqueExistingDirs(append(ProjectSkillDirs(cwd), UserSkillDirs(home)...))
 	files, err := findAllSkillFiles(existingDirs)
@@ -114,8 +139,6 @@ func Regenerate(cwd, home string, force bool) (Result, error) {
 		return Result{}, err
 	}
 
-	registryPath := filepath.Join(cwd, RegistryRelPath)
-	cachePath := filepath.Join(cwd, CacheRelPath)
 	fp := Fingerprint(files)
 	cached := readCachedFingerprint(cachePath)
 	if !force && cached == fp && fileExists(registryPath) {
@@ -147,16 +170,13 @@ func Regenerate(cwd, home string, force bool) (Result, error) {
 		return Result{}, fmt.Errorf("create .atl directory: %w", err)
 	}
 	md := RenderRegistry(cwd, sources, entries)
-	if _, err := filemerge.WriteFileAtomic(registryPath, []byte(md), 0o644); err != nil {
-		return Result{}, fmt.Errorf("write registry: %w", err)
-	}
 	cacheBytes, err := json.MarshalIndent(cacheFile{Fingerprint: fp}, "", "  ")
 	if err != nil {
 		return Result{}, err
 	}
 	cacheBytes = append(cacheBytes, '\n')
-	if _, err := filemerge.WriteFileAtomic(cachePath, cacheBytes, 0o644); err != nil {
-		return Result{}, fmt.Errorf("write registry cache: %w", err)
+	if err := commitRegistryPair(registryPath, []byte(md), cachePath, cacheBytes); err != nil {
+		return Result{}, err
 	}
 
 	reason := "fingerprint-changed"
@@ -184,6 +204,136 @@ func List(cwd, home string) []SkillEntry {
 		}
 	}
 	return dedupeBySkillName(entries, cwd)
+}
+
+func PrepareLoadRegistry(loadPath, cwd string) (PreparedLoad, error) {
+	cwd = filepath.Clean(cwd)
+	targetRegistryPath := filepath.Join(cwd, RegistryRelPath)
+	cachePath := filepath.Join(cwd, CacheRelPath)
+
+	if loadPath == "" {
+		loadPath = targetRegistryPath
+	} else if !filepath.IsAbs(loadPath) {
+		loadPath = filepath.Join(cwd, loadPath)
+	}
+	loadPath = filepath.Clean(loadPath)
+
+	data, err := os.ReadFile(loadPath)
+	if err != nil {
+		return PreparedLoad{}, fmt.Errorf("read target skill registry %q: %w", loadPath, err)
+	}
+
+	content := string(data)
+	if !hasRegistryMarkers(content) {
+		return PreparedLoad{}, fmt.Errorf("invalid skill registry format in %q: missing required headers or table", loadPath)
+	}
+
+	fp := "loaded:" + contentFingerprint(data)
+	skillCount := 0
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "| `") {
+			skillCount++
+		}
+	}
+	return PreparedLoad{data: data, fingerprint: fp, skillCount: skillCount, registry: targetRegistryPath, cache: cachePath}, nil
+}
+
+func (load PreparedLoad) Commit(force bool) (Result, error) {
+	if !force && readCachedFingerprint(load.cache) == load.fingerprint {
+		current, readErr := os.ReadFile(load.registry)
+		if readErr == nil && contentFingerprint(current) == contentFingerprint(load.data) {
+			return Result{Regenerated: false, Reason: "cache-hit", Registry: load.registry, Cache: load.cache}, nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(load.registry), 0o755); err != nil {
+		return Result{}, fmt.Errorf("create .atl directory: %w", err)
+	}
+
+	cacheBytes, err := json.MarshalIndent(cacheFile{Fingerprint: load.fingerprint}, "", "  ")
+	if err != nil {
+		return Result{}, fmt.Errorf("marshal cache fingerprint: %w", err)
+	}
+	cacheBytes = append(cacheBytes, '\n')
+	if err := commitRegistryPair(load.registry, load.data, load.cache, cacheBytes); err != nil {
+		return Result{}, err
+	}
+
+	reason := "loaded"
+	if force {
+		reason = "forced-load"
+	}
+	return Result{Regenerated: true, SkillCount: load.skillCount, Reason: reason, Registry: load.registry, Cache: load.cache}, nil
+}
+
+func LoadRegistry(loadPath, cwd string, force bool) (Result, error) {
+	load, err := PrepareLoadRegistry(loadPath, cwd)
+	if err != nil {
+		return Result{}, err
+	}
+	return load.Commit(force)
+}
+
+func hasRegistryMarkers(content string) bool {
+	title, skills, table, separator := false, false, false, false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		title = title || line == "# Skill Registry"
+		skills = skills || line == "## Skills"
+		table = table || line == "| Skill | Trigger / description | Scope | Path |"
+		separator = separator || line == "| --- | --- | --- | --- |"
+	}
+	return title && skills && table && separator
+}
+
+func contentFingerprint(content []byte) string {
+	sum := sha1.Sum(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func snapshotFiles(paths ...string) ([]fileSnapshot, error) {
+	snapshots := make([]fileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("snapshot %q: %w", path, err)
+		}
+		snapshots = append(snapshots, fileSnapshot{path: path, data: data, exists: err == nil})
+	}
+	return snapshots, nil
+}
+
+func commitRegistryPair(registryPath string, registry []byte, cachePath string, cache []byte) error {
+	snapshots, err := snapshotFiles(registryPath, cachePath)
+	if err != nil {
+		return err
+	}
+	if _, err := writeFileAtomic(registryPath, registry, 0o644); err != nil {
+		return errors.Join(fmt.Errorf("write registry: %w", err), restoreFiles(snapshots))
+	}
+	if _, err := writeFileAtomic(cachePath, cache, 0o644); err != nil {
+		return errors.Join(fmt.Errorf("write registry cache: %w", err), restoreFiles(snapshots))
+	}
+	return nil
+}
+
+func restoreFiles(snapshots []fileSnapshot) error {
+	var joined error
+	for _, snapshot := range snapshots {
+		var restoreErr error
+		if snapshot.exists {
+			_, restoreErr = writeFileAtomic(snapshot.path, snapshot.data, 0o644)
+		} else {
+			restoreErr = os.Remove(snapshot.path)
+			if os.IsNotExist(restoreErr) {
+				restoreErr = nil
+			}
+		}
+		if restoreErr != nil {
+			joined = errors.Join(joined, fmt.Errorf("restore %q: %w", snapshot.path, restoreErr))
+		}
+	}
+	return joined
 }
 
 func EnsureATLIgnored(cwd string) error {
@@ -247,9 +397,8 @@ func LoadSkill(file string) (SkillEntry, bool) {
 }
 
 func RenderRegistry(cwd string, sources []string, entries []SkillEntry) string {
-	projectName := filepath.Base(cwd)
 	var lines []string
-	lines = append(lines, "# Skill Registry — "+projectName, "")
+	lines = append(lines, "# Skill Registry", "")
 	lines = append(lines, "<!-- Auto-generated by gentle-ai skill-registry refresh. Run `gentle-ai skill-registry refresh --force` to regenerate. -->", "")
 	lines = append(lines, "Last updated: "+time.Now().UTC().Format("2006-01-02"), "")
 	lines = append(lines, "## Sources scanned", "")

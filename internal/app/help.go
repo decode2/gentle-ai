@@ -18,6 +18,8 @@ COMMANDS
   sync         Sync agent configs and skills to current version
   skill-registry refresh
                Refresh .atl/skill-registry.md with cache-hit fast path
+  skill-registry load <path>
+               Load pre-curated .atl/skill-registry.md into current project
   sdd-status [change]
                Print native SDD phase status for orchestrators
   sdd-continue [change]
