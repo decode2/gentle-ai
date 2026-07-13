@@ -14,10 +14,76 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
+	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
+	"github.com/gentleman-programming/gentle-ai/internal/state"
 )
 
 type stubSnapshotter struct{}
+
+func TestCleanupDeselectedAgentsIsNarrowAndIdempotent(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	settings := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"agent":{"gentle-orchestrator":{},"user-agent":{}},"user-setting":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(filepath.Dir(settings), "user-notes.txt")
+	if err := os.WriteFile(userFile, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(gga.ConfigPath(home)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gga.ConfigPath(home), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Write(home, state.InstallState{InstalledAgents: []string{"opencode"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := CleanupDeselectedAgents(home, workspace, []model.AgentID{model.AgentOpenCode}); err != nil {
+			t.Fatalf("cleanup run %d: %v", i+1, err)
+		}
+	}
+	if body := string(mustReadServiceFile(t, settings)); strings.Contains(body, "gentle-orchestrator") || !strings.Contains(body, "user-agent") || !strings.Contains(body, "user-setting") {
+		t.Fatalf("settings cleanup did not preserve user content: %s", body)
+	}
+	if body := string(mustReadServiceFile(t, userFile)); body != "keep" {
+		t.Fatalf("unknown user file changed: %q", body)
+	}
+	if body := string(mustReadServiceFile(t, gga.ConfigPath(home))); body != "shared" {
+		t.Fatalf("shared GGA config changed: %q", body)
+	}
+	if got, err := state.Read(home); err != nil || len(got.InstalledAgents) != 0 {
+		t.Fatalf("installed agents = %v, err = %v", got.InstalledAgents, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".gentle-ai", "backups")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup created uninstall backup: %v", err)
+	}
+}
+
+func TestCleanupDeselectedAgentsRejectsUnsafePathsAndPropagatesErrors(t *testing.T) {
+	home := t.TempDir()
+	svc, err := NewService(home, t.TempDir(), "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "escape")
+	if err := svc.validateCleanupPlan(plan{operations: []operation{{path: outside}}}); err == nil || !strings.Contains(err.Error(), "escapes managed roots") {
+		t.Fatalf("containment error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode", "opencode.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CleanupDeselectedAgents(home, svc.workspaceDir, []model.AgentID{model.AgentOpenCode}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("cleanup error = %v, want managed-file error", err)
+	}
+}
 
 func TestBuildPlanSnapshotsPiManifestAndOwnedOverlay(t *testing.T) {
 	homeDir := t.TempDir()

@@ -521,7 +521,6 @@ type Model struct {
 	// continuing the install flow.
 	ModelConfigMode bool
 
-	EditAgentsMode        bool
 	EditAgentsSelection   []model.AgentID
 	PendingAgentSelection []model.AgentID
 
@@ -1750,7 +1749,6 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			next++
 
 			if m.Cursor == next {
-				m.EditAgentsMode = true
 				m.EditAgentsSelection = append([]model.AgentID(nil), m.Selection.Agents...)
 				m.setScreen(ScreenEditAgents)
 				return m, nil
@@ -2068,33 +2066,21 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			m.setScreen(ScreenDetection)
 		}
 	case ScreenEditAgents:
-		// "Edit installed agents" shortcut: confirm runs a targeted sync.
 		agentCount := len(screens.AgentOptions())
 		switch {
 		case m.Cursor < agentCount:
 			m.toggleCurrentEditAgent()
 		case m.Cursor == agentCount && len(m.EditAgentsSelection) > 0:
-			// Keep the confirmed selection pending until sync succeeds.
-			selectedAgents := make([]model.AgentID, len(m.EditAgentsSelection))
-			copy(selectedAgents, m.EditAgentsSelection)
+			selectedAgents := append([]model.AgentID(nil), m.EditAgentsSelection...)
 
-			// Find deselected agents for config cleanup
 			var deselected []model.AgentID
 			for _, oldAgent := range m.Selection.Agents {
-				found := false
-				for _, newAgent := range selectedAgents {
-					if oldAgent == newAgent {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !hasSelectedAgent(selectedAgents, oldAgent) {
 					deselected = append(deselected, oldAgent)
 				}
 			}
 
 			m.PendingAgentSelection = selectedAgents
-			m.EditAgentsMode = false
 			m.EditAgentsSelection = nil
 			m = m.withResetOperationState()
 			m.PendingSyncOverrides = &model.SyncOverrides{
@@ -2103,7 +2089,6 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			}
 			m.setScreen(ScreenSync)
 		case m.Cursor == agentCount+1:
-			m.EditAgentsMode = false
 			m.EditAgentsSelection = nil
 			m.setScreen(ScreenWelcome)
 		}
@@ -3353,8 +3338,7 @@ func (m Model) goBack() Model {
 		return m
 	}
 
-	if m.EditAgentsMode && m.Screen == ScreenEditAgents {
-		m.EditAgentsMode = false
+	if m.Screen == ScreenEditAgents {
 		m.EditAgentsSelection = nil
 		m.setScreen(ScreenWelcome)
 		return m
@@ -3772,37 +3756,26 @@ func setOSRemoveForTest(fn func(path string) error) func() {
 }
 
 func (m *Model) toggleCurrentAgent() {
-	options := screens.AgentOptions()
-	if m.Cursor >= len(options) {
-		return
-	}
-
-	agent := options[m.Cursor]
-	for idx, selected := range m.Selection.Agents {
-		if selected == agent {
-			m.Selection.Agents = append(m.Selection.Agents[:idx], m.Selection.Agents[idx+1:]...)
-			return
-		}
-	}
-
-	m.Selection.Agents = append(m.Selection.Agents, agent)
+	m.Selection.Agents = toggleAgent(m.Selection.Agents, m.Cursor)
 }
 
 func (m *Model) toggleCurrentEditAgent() {
+	m.EditAgentsSelection = toggleAgent(m.EditAgentsSelection, m.Cursor)
+}
+
+func toggleAgent(selected []model.AgentID, cursor int) []model.AgentID {
 	options := screens.AgentOptions()
-	if m.Cursor >= len(options) {
-		return
+	if cursor >= len(options) {
+		return selected
 	}
 
-	agent := options[m.Cursor]
-	for idx, selected := range m.EditAgentsSelection {
-		if selected == agent {
-			m.EditAgentsSelection = append(m.EditAgentsSelection[:idx], m.EditAgentsSelection[idx+1:]...)
-			return
+	agent := options[cursor]
+	for idx, candidate := range selected {
+		if candidate == agent {
+			return append(selected[:idx], selected[idx+1:]...)
 		}
 	}
-
-	m.EditAgentsSelection = append(m.EditAgentsSelection, agent)
+	return append(selected, agent)
 }
 
 func (m *Model) toggleCurrentComponent() {

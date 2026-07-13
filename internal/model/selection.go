@@ -63,7 +63,9 @@ type SyncOverrides struct {
 	// TargetAgents forces TUI sync to run the adapter(s) affected by the
 	// override, even when persisted install state omits them. This is used by
 	// model/profile configurators, where the user picked a concrete target agent.
-	TargetAgents                []AgentID
+	TargetAgents []AgentID
+	// DeselectedAgents is disjoint from TargetAgents. Nil/empty skips cleanup;
+	// otherwise cleanup runs after sync and persistence and removes only managed agent artifacts.
 	DeselectedAgents            []AgentID
 	ModelAssignments            map[string]ModelAssignment       // nil = no override; empty map = reset to defaults
 	ClaudeModelAssignments      map[string]ClaudeModelAlias      // nil = no override; empty map = reset to defaults

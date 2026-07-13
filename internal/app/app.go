@@ -12,7 +12,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
-	"github.com/gentleman-programming/gentle-ai/internal/catalog"
 	"github.com/gentleman-programming/gentle-ai/internal/cli"
 	"github.com/gentleman-programming/gentle-ai/internal/components/opencodeplugin"
 	componentuninstall "github.com/gentleman-programming/gentle-ai/internal/components/uninstall"
@@ -615,8 +614,8 @@ func tuiSync(homeDir string) tui.SyncFunc {
 			if err != nil {
 				return nil, fmt.Errorf("resolve workspace directory: %w", err)
 			}
-			if _, err := cli.RunUninstallWithSelection(homeDir, workspaceDir, overrides.DeselectedAgents, catalog.MVPComponentIDs()); err != nil {
-				return nil, fmt.Errorf("uninstall deselected agents: %w", err)
+			if _, err := componentuninstall.CleanupDeselectedAgents(homeDir, workspaceDir, overrides.DeselectedAgents); err != nil {
+				return nil, fmt.Errorf("clean up deselected agents: %w", err)
 			}
 		}
 

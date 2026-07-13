@@ -145,10 +145,6 @@ func NewService(homeDir, workspaceDir, appVersion string) (*Service, error) {
 	}
 
 	backupRoot := filepath.Join(homeDir, ".gentle-ai", "backups")
-	if err := os.MkdirAll(backupRoot, 0o755); err != nil {
-		return nil, fmt.Errorf("create backup root %q: %w", backupRoot, err)
-	}
-
 	return &Service{
 		homeDir:              homeDir,
 		workspaceDir:         workspaceDir,
@@ -159,6 +155,25 @@ func NewService(homeDir, workspaceDir, appVersion string) (*Service, error) {
 		now:                  time.Now,
 		engramUninstallScope: model.EngramUninstallScopeGlobal,
 	}, nil
+}
+
+// CleanupDeselectedAgents removes agent-scoped managed artifacts without a snapshot.
+func CleanupDeselectedAgents(homeDir, workspaceDir string, agentIDs []model.AgentID) (Result, error) {
+	if len(agentIDs) == 0 {
+		return Result{}, nil
+	}
+	svc, err := NewService(homeDir, workspaceDir, "")
+	if err != nil {
+		return Result{}, err
+	}
+	plan, err := svc.buildPlan(agentIDs, fullAgentRemovalComponents)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := svc.validateCleanupPlan(plan); err != nil {
+		return Result{}, err
+	}
+	return svc.executeOperationsInto(plan, slices.Clone(agentIDs), Result{})
 }
 
 func PartialUninstall(homeDir, workspaceDir, appVersion string, agentIDs []string, componentIDs []string) (Result, error) {
@@ -387,6 +402,9 @@ func (s *Service) buildPlan(agentIDs []model.AgentID, componentIDs []model.Compo
 }
 
 func (s *Service) executePlan(p plan, agentsToRemove []model.AgentID) (Result, error) {
+	if err := os.MkdirAll(s.backupRoot, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create backup root %q: %w", s.backupRoot, err)
+	}
 	snapshotDir := filepath.Join(s.backupRoot, s.now().UTC().Format("20060102150405.000000000"))
 	manifest, err := s.snapshotter.Create(snapshotDir, p.backupTargets)
 	if err != nil {
@@ -404,6 +422,10 @@ func (s *Service) executePlan(p plan, agentsToRemove []model.AgentID) (Result, e
 		Manifest:   manifest,
 		BackupPath: snapshotDir,
 	}
+	return s.executeOperationsInto(p, agentsToRemove, result)
+}
+
+func (s *Service) executeOperationsInto(p plan, agentsToRemove []model.AgentID, result Result) (Result, error) {
 	// Pi ownership hashes include the shared MCP file. Remove its managed entry
 	// before other component cleanup (notably Engram) mutates that file, otherwise
 	// an unrelated mutation is indistinguishable from user drift.
@@ -450,6 +472,57 @@ func (s *Service) executePlan(p plan, agentsToRemove []model.AgentID) (Result, e
 	result.AgentsRemovedFromState = removed
 	result.ManualActions = dedupeSortedStrings(result.ManualActions)
 	return result, nil
+}
+
+func (s *Service) validateCleanupPlan(p plan) error {
+	roots := []string{s.homeDir}
+	if strings.TrimSpace(s.workspaceDir) != "" {
+		roots = append(roots, s.workspaceDir)
+	}
+	for _, op := range p.operations {
+		if err := validateManagedPath(op.path, roots); err != nil {
+			return fmt.Errorf("validate cleanup path %q: %w", op.path, err)
+		}
+	}
+	return nil
+}
+
+func validateManagedPath(path string, roots []string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(absRoot, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		current := absRoot
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			if part != "." {
+				current = filepath.Join(current, part)
+			}
+			info, err := os.Lstat(current)
+			if os.IsNotExist(err) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing symlink path")
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("path escapes managed roots")
 }
 
 func manualActionForNonEmptyDirectory(path string) (string, bool) {
@@ -553,6 +626,9 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 			ops = append(ops, removeFile(path), removeDirIfEmpty(filepath.Dir(path)))
 		}
 	case model.ComponentOpenCodeGentleLogo:
+		if adapter.Agent() != model.AgentOpenCode {
+			break
+		}
 		pluginPath := filepath.Join(homeDir, ".config", "opencode", "tui-plugins", "gentle-logo.tsx")
 		targets = append(targets, pluginPath)
 		ops = append(ops, removeFile(pluginPath), removeDirIfEmpty(filepath.Dir(pluginPath)))

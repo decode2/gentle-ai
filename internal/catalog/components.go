@@ -26,12 +26,3 @@ func MVPComponents() []Component {
 	copy(components, mvpComponents)
 	return components
 }
-
-func MVPComponentIDs() []model.ComponentID {
-	components := MVPComponents()
-	ids := make([]model.ComponentID, 0, len(components))
-	for _, component := range components {
-		ids = append(ids, component.ID)
-	}
-	return ids
-}

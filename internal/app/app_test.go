@@ -703,7 +703,7 @@ func TestTuiSyncClaudeModelConfigWritesSelectedAssignments(t *testing.T) {
 func TestTuiSyncModelConfigPropagatesAssignmentWriteFailure(t *testing.T) {
 	home := t.TempDir()
 	original := state.InstallState{
-		InstalledAgents:          []string{string(model.AgentClaudeCode)},
+		InstalledAgents:          []string{string(model.AgentClaudeCode), string(model.AgentOpenCode)},
 		CommunityToolsConfigured: true,
 		ClaudeModelAssignments:   map[string]string{"sdd-apply": "haiku"},
 	}
@@ -722,6 +722,7 @@ func TestTuiSyncModelConfigPropagatesAssignmentWriteFailure(t *testing.T) {
 
 	_, err := tuiSync(home)(&model.SyncOverrides{
 		TargetAgents: []model.AgentID{model.AgentClaudeCode},
+		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
 		ClaudeModelAssignments: map[string]model.ClaudeModelAlias{
 			"sdd-apply": model.ClaudeModelSonnet,
 		},
@@ -2223,60 +2224,5 @@ func TestCustomClearRoundTripLeavesFutureSyncInPreserveMode(t *testing.T) {
 	loadPersistedAssignments(home, &future)
 	if future.CodexOrchestratorAssignment != nil || future.ClearCodexOrchestratorAssignment {
 		t.Fatalf("future sync did not return to preserve mode: assignment=%#v clear=%v", future.CodexOrchestratorAssignment, future.ClearCodexOrchestratorAssignment)
-	}
-}
-
-func TestTuiSync_CleansUpDeselectedAgents(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-
-	if err := state.Write(home, state.InstallState{
-		InstalledAgents: []string{"claude-code", "opencode"},
-	}); err != nil {
-		t.Fatalf("state.Write: %v", err)
-	}
-
-	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(opencodeConfigDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	opencodeConfigPath := filepath.Join(opencodeConfigDir, "opencode.json")
-	initialConfig := `{"agent":{"gentle-orchestrator":{"mode":"primary"}}}`
-	if err := os.WriteFile(opencodeConfigPath, []byte(initialConfig), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	syncFn := tuiSync(home)
-	overrides := &model.SyncOverrides{
-		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
-		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
-	}
-	_, err := syncFn(overrides)
-	if err != nil {
-		t.Fatalf("syncFn error = %v", err)
-	}
-
-	s, err := state.Read(home)
-	if err != nil {
-		t.Fatalf("state.Read: %v", err)
-	}
-	foundClaude := false
-	for _, agent := range s.InstalledAgents {
-		if agent == "opencode" {
-			t.Errorf("expected opencode to be removed from InstalledAgents in state.json")
-		}
-		foundClaude = foundClaude || agent == "claude-code"
-	}
-	if !foundClaude {
-		t.Error("expected claude-code to remain installed")
-	}
-
-	content, err := os.ReadFile(opencodeConfigPath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			t.Fatalf("ReadFile: %v", err)
-		}
-	} else if strings.Contains(string(content), "gentle-orchestrator") {
-		t.Errorf("expected opencode config file to have agent configurations removed, got: %s", string(content))
 	}
 }
