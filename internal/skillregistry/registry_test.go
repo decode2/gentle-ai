@@ -1,7 +1,6 @@
 package skillregistry
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -541,16 +540,13 @@ func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
 	targetDir := t.TempDir()
 	content := strings.Join([]string{
 		"  # Skill Registry  ",
-		"## Contract",
-		"Contract description.",
 		"\t## Skills\t",
 		"  | Skill | Trigger / description | Scope | Path |  ",
 		"\t| --- | --- | --- | --- |\t",
-		"| `custom-skill` | Custom trigger | project | `skills/custom/SKILL.md` |",
+		"  | `custom-skill` | Custom trigger | project | `skills/custom/SKILL.md` |  ",
 		"",
 	}, "\n")
 	writeSkill(t, sourceRegistry, content)
-
 	markers := []struct{ name, value, near string }{
 		{"title", "# Skill Registry", "# Skill Registries"},
 		{"skills heading", "## Skills", "### Skills"},
@@ -570,7 +566,6 @@ func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
 			})
 		}
 	}
-
 	res, err := LoadRegistry(sourceRegistry, targetDir, false)
 	if err != nil {
 		t.Fatalf("LoadRegistry error = %v", err)
@@ -594,34 +589,27 @@ func TestLoadRegistryValidatesAndLoadsRegistry(t *testing.T) {
 
 func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "registry.md")
-	content := "# Skill Registry\n## Skills\n| Skill | Trigger / description | Scope | Path |\n| --- | --- | --- | --- |\n"
-	writeSkill(t, source, content)
-
+	writeSkill(t, source, "# Skill Registry\n## Skills\n| Skill | Trigger / description | Scope | Path |\n| --- | --- | --- | --- |\n")
+	previous, previousCache := []byte("previous registry bytes\n"), []byte("previous cache bytes\n")
 	for _, tt := range []struct {
 		name        string
 		destination string
-		previous    []byte
-		cache       []byte
+		preserve    bool
 		regen       bool
 	}{
 		{name: "load registry destination removes absent pair", destination: RegistryRelPath},
-		{name: "load cache destination restores prior pair", destination: CacheRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n")},
-		{name: "regenerate registry destination restores pair", destination: RegistryRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n"), regen: true},
-		{name: "regenerate cache destination restores pair", destination: CacheRelPath, previous: []byte("previous registry bytes\n"), cache: []byte("previous cache bytes\n"), regen: true},
+		{name: "load cache destination restores prior pair", destination: CacheRelPath, preserve: true},
+		{name: "regenerate registry destination restores pair", destination: RegistryRelPath, preserve: true, regen: true},
+		{name: "regenerate cache destination restores pair", destination: CacheRelPath, preserve: true, regen: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cwd := t.TempDir()
 			registryPath := filepath.Join(cwd, RegistryRelPath)
-			if tt.previous != nil {
-				writeSkill(t, registryPath, string(tt.previous))
-			}
 			cachePath := filepath.Join(cwd, CacheRelPath)
-			if tt.cache != nil {
-				if err := os.WriteFile(cachePath, tt.cache, 0o644); err != nil {
-					t.Fatal(err)
-				}
+			if tt.preserve {
+				writeSkill(t, registryPath, string(previous))
+				writeSkill(t, cachePath, string(previousCache))
 			}
-
 			originalWrite := writeFileAtomic
 			failurePath := filepath.Join(cwd, tt.destination)
 			failed := false
@@ -636,7 +624,6 @@ func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
 				return originalWrite(path, data, mode)
 			}
 			t.Cleanup(func() { writeFileAtomic = originalWrite })
-
 			var err error
 			if tt.regen {
 				_, err = Regenerate(cwd, t.TempDir(), true)
@@ -646,48 +633,49 @@ func TestRegistryMutationFailureRollsBackPair(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "injected mutation failure") {
 				t.Fatalf("operation error = %v, want mutation failure", err)
 			}
-			got, err := os.ReadFile(registryPath)
-			if tt.previous == nil {
-				if !os.IsNotExist(err) {
-					t.Fatalf("registry exists after rollback: %v", err)
+			for _, want := range []struct {
+				path string
+				data []byte
+			}{{registryPath, previous}, {cachePath, previousCache}} {
+				got, readErr := os.ReadFile(want.path)
+				if !tt.preserve && !os.IsNotExist(readErr) {
+					t.Fatalf("%s exists after rollback: %v", want.path, readErr)
+				} else if tt.preserve && (readErr != nil || string(got) != string(want.data)) {
+					t.Fatalf("%s after rollback = %q, %v; want %q", want.path, got, readErr, want.data)
 				}
-			} else if err != nil || !bytes.Equal(got, tt.previous) {
-				t.Fatalf("registry after rollback = %q, %v; want %q", got, err, tt.previous)
-			}
-			got, err = os.ReadFile(cachePath)
-			if tt.cache == nil && !os.IsNotExist(err) {
-				t.Fatalf("cache exists after rollback: %v", err)
-			} else if tt.cache != nil && (err != nil || !bytes.Equal(got, tt.cache)) {
-				t.Fatalf("cache after rollback = %q, %v; want %q", got, err, tt.cache)
 			}
 		})
 	}
 }
 
 func TestRegeneratePreservesOnlyMatchingLoadedFingerprint(t *testing.T) {
-	for _, matching := range []bool{true, false} {
-		t.Run(map[bool]string{true: "matching", false: "mismatched"}[matching], func(t *testing.T) {
+	registry := []byte("manual registry")
+	for _, tt := range []struct {
+		name        string
+		fingerprint string
+		preserved   bool
+	}{
+		{name: "matching SHA-256", fingerprint: contentFingerprint(registry), preserved: true},
+		{name: "matching legacy SHA-1", fingerprint: "952c0df9f9790dec953ed8f575ff0c93d1afda40", preserved: true},
+		{name: "mismatched", fingerprint: "stale"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			cwd := t.TempDir()
-			registry := []byte("manual registry")
 			writeSkill(t, filepath.Join(cwd, RegistryRelPath), string(registry))
-			fingerprint := contentFingerprint(registry)
-			if !matching {
-				fingerprint = "stale"
-			}
-			cache := []byte("{\"fingerprint\":\"loaded:" + fingerprint + "\"}\n")
-			if err := os.WriteFile(filepath.Join(cwd, CacheRelPath), cache, 0o644); err != nil {
-				t.Fatal(err)
-			}
-
+			writeSkill(t, filepath.Join(cwd, CacheRelPath), "{\"fingerprint\":\"loaded:"+tt.fingerprint+"\"}\n")
 			res, err := Regenerate(cwd, t.TempDir(), false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if matching && (res.Regenerated || res.Reason != "manually-loaded") {
-				t.Fatalf("Regenerate() = %#v; want manual preservation", res)
-			}
-			if !matching && (!res.Regenerated || readFile(t, filepath.Join(cwd, RegistryRelPath)) == string(registry)) {
-				t.Fatalf("Regenerate() = %#v; stale loaded pairing was preserved", res)
+			if tt.preserved {
+				if res.Regenerated || res.Reason != "manually-loaded" || readFile(t, filepath.Join(cwd, RegistryRelPath)) != string(registry) {
+					t.Fatalf("Regenerate() = %#v; want manual preservation", res)
+				}
+				if got, want := readCachedFingerprint(filepath.Join(cwd, CacheRelPath)), "loaded:49bec6db7f9208e1770af21b2ea59368f7450d091bae7c5412bc25978d1b7220"; got != want {
+					t.Fatalf("cache fingerprint = %q, want migrated %q", got, want)
+				}
+			} else if !res.Regenerated || res.Reason != "loaded-drifted" || readFile(t, filepath.Join(cwd, RegistryRelPath)) == string(registry) {
+				t.Fatalf("Regenerate() = %#v; want loaded drift regeneration", res)
 			}
 		})
 	}

@@ -288,10 +288,8 @@ func runSkillRegistry(args []string, stdout io.Writer) error {
 		return fmt.Errorf("usage: gentle-ai skill-registry <refresh|load|list> [flags]")
 	}
 	switch args[0] {
-	case "refresh":
-		return runSkillRegistryRefresh("refresh", args[1:], stdout)
-	case "load":
-		return runSkillRegistryRefresh("load", args[1:], stdout)
+	case "refresh", "load":
+		return runSkillRegistryRefresh(args[0], args[1:], stdout)
 	case "list":
 		return runSkillRegistryList(args[1:], stdout)
 	default:
@@ -382,11 +380,11 @@ func runSkillRegistryRefresh(cmd string, args []string, stdout io.Writer) error 
 	}
 	if !quiet {
 		if result.Regenerated {
+			action := "refreshed"
 			if isLoad {
-				_, _ = fmt.Fprintf(stdout, "Skill registry loaded (%d skills): %s\n", result.SkillCount, result.Registry)
-			} else {
-				_, _ = fmt.Fprintf(stdout, "Skill registry refreshed (%d skills): %s\n", result.SkillCount, result.Registry)
+				action = "loaded"
 			}
+			_, _ = fmt.Fprintf(stdout, "Skill registry %s (%d skills): %s\n", action, result.SkillCount, result.Registry)
 		} else {
 			_, _ = fmt.Fprintf(stdout, "Skill registry up to date (%s): %s\n", result.Reason, result.Registry)
 		}

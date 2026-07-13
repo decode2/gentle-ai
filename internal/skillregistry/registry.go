@@ -2,6 +2,7 @@ package skillregistry
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -126,10 +127,28 @@ func Regenerate(cwd, home string, force bool) (Result, error) {
 	home = filepath.Clean(home)
 	registryPath := filepath.Join(cwd, RegistryRelPath)
 	cachePath := filepath.Join(cwd, CacheRelPath)
+	reason := "fingerprint-changed"
 	if !force {
+		cached := readCachedFingerprint(cachePath)
 		registry, err := os.ReadFile(registryPath)
-		if err == nil && readCachedFingerprint(cachePath) == "loaded:"+contentFingerprint(registry) {
-			return Result{Regenerated: false, Reason: "manually-loaded", Registry: registryPath, Cache: cachePath}, nil
+		if err == nil && strings.HasPrefix(cached, "loaded:") {
+			fingerprint := strings.TrimPrefix(cached, "loaded:")
+			current := contentFingerprint(registry)
+			legacy := sha1.Sum(registry)
+			if fingerprint == current || fingerprint == hex.EncodeToString(legacy[:]) {
+				if fingerprint != current {
+					cacheBytes, err := json.MarshalIndent(cacheFile{Fingerprint: "loaded:" + current}, "", "  ")
+					if err != nil {
+						return Result{}, err
+					}
+					cacheBytes = append(cacheBytes, '\n')
+					if _, err := writeFileAtomic(cachePath, cacheBytes, 0o644); err != nil {
+						return Result{}, fmt.Errorf("migrate registry cache fingerprint: %w", err)
+					}
+				}
+				return Result{Regenerated: false, Reason: "manually-loaded", Registry: registryPath, Cache: cachePath}, nil
+			}
+			reason = "loaded-drifted"
 		}
 	}
 
@@ -179,7 +198,6 @@ func Regenerate(cwd, home string, force bool) (Result, error) {
 		return Result{}, err
 	}
 
-	reason := "fingerprint-changed"
 	if force {
 		reason = "forced"
 	}
@@ -210,7 +228,6 @@ func PrepareLoadRegistry(loadPath, cwd string) (PreparedLoad, error) {
 	cwd = filepath.Clean(cwd)
 	targetRegistryPath := filepath.Join(cwd, RegistryRelPath)
 	cachePath := filepath.Join(cwd, CacheRelPath)
-
 	if loadPath == "" {
 		loadPath = targetRegistryPath
 	} else if !filepath.IsAbs(loadPath) {
@@ -222,20 +239,17 @@ func PrepareLoadRegistry(loadPath, cwd string) (PreparedLoad, error) {
 	if err != nil {
 		return PreparedLoad{}, fmt.Errorf("read target skill registry %q: %w", loadPath, err)
 	}
-
 	content := string(data)
 	if !hasRegistryMarkers(content) {
 		return PreparedLoad{}, fmt.Errorf("invalid skill registry format in %q: missing required headers or table", loadPath)
 	}
-
-	fp := "loaded:" + contentFingerprint(data)
 	skillCount := 0
 	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(line, "| `") {
+		if strings.HasPrefix(strings.TrimSpace(line), "| `") {
 			skillCount++
 		}
 	}
-	return PreparedLoad{data: data, fingerprint: fp, skillCount: skillCount, registry: targetRegistryPath, cache: cachePath}, nil
+	return PreparedLoad{data: data, fingerprint: "loaded:" + contentFingerprint(data), skillCount: skillCount, registry: targetRegistryPath, cache: cachePath}, nil
 }
 
 func (load PreparedLoad) Commit(force bool) (Result, error) {
@@ -249,7 +263,6 @@ func (load PreparedLoad) Commit(force bool) (Result, error) {
 	if err := os.MkdirAll(filepath.Dir(load.registry), 0o755); err != nil {
 		return Result{}, fmt.Errorf("create .atl directory: %w", err)
 	}
-
 	cacheBytes, err := json.MarshalIndent(cacheFile{Fingerprint: load.fingerprint}, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("marshal cache fingerprint: %w", err)
@@ -258,7 +271,6 @@ func (load PreparedLoad) Commit(force bool) (Result, error) {
 	if err := commitRegistryPair(load.registry, load.data, load.cache, cacheBytes); err != nil {
 		return Result{}, err
 	}
-
 	reason := "loaded"
 	if force {
 		reason = "forced-load"
@@ -287,7 +299,7 @@ func hasRegistryMarkers(content string) bool {
 }
 
 func contentFingerprint(content []byte) string {
-	sum := sha1.Sum(content)
+	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
 }
 
@@ -323,11 +335,8 @@ func restoreFiles(snapshots []fileSnapshot) error {
 		var restoreErr error
 		if snapshot.exists {
 			_, restoreErr = writeFileAtomic(snapshot.path, snapshot.data, 0o644)
-		} else {
-			restoreErr = os.Remove(snapshot.path)
-			if os.IsNotExist(restoreErr) {
-				restoreErr = nil
-			}
+		} else if restoreErr = os.Remove(snapshot.path); os.IsNotExist(restoreErr) {
+			restoreErr = nil
 		}
 		if restoreErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("restore %q: %w", snapshot.path, restoreErr))
