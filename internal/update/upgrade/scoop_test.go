@@ -171,6 +171,19 @@ func TestScoopUpgradeReportsCommandFailure(t *testing.T) {
 	}
 }
 
+func TestScoopUpgradeReportsRunningProcessSkip(t *testing.T) {
+	original := execCommand
+	execCommand = func(string, ...string) *exec.Cmd {
+		return mockCmd("echo", "Running process detected, skip updating.")
+	}
+	t.Cleanup(func() { execCommand = original })
+
+	err := scoopUpgrade(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "running process") {
+		t.Fatalf("scoopUpgrade() error = %v, want running process failure", err)
+	}
+}
+
 func TestRenderUpgradeReportShowsScoopDryRunCommand(t *testing.T) {
 	report := UpgradeReport{DryRun: true, Results: []ToolUpgradeResult{{
 		ToolName: "gentle-ai", OldVersion: "2.1.3", NewVersion: "2.1.4",

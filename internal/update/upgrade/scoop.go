@@ -162,8 +162,12 @@ func scoopUpgrade(ctx context.Context) error {
 	}
 	cmd := execCommand("scoop", "update", "gentle-ai")
 	cmd.Stdin = nil
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("scoop update gentle-ai: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	if strings.Contains(strings.ToLower(string(out)), "running process detected, skip updating") {
+		return fmt.Errorf("scoop update gentle-ai: running process prevented update (output: %s)", strings.TrimSpace(string(out)))
 	}
 	return nil
 }
