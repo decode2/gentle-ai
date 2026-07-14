@@ -132,28 +132,53 @@ func TestEffectiveMethodWindowsGentleAIScoopOwnership(t *testing.T) {
 	}
 }
 
-func TestScoopUpgradeRunsExactCommand(t *testing.T) {
-	original := execCommand
-	t.Cleanup(func() { execCommand = original })
-	var gotName string
-	var gotArgs []string
-	var gotCmd *exec.Cmd
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		gotName, gotArgs = name, append([]string(nil), args...)
-		gotCmd = mockCmd("true")
-		return gotCmd
+func TestScoopUpgradeTemporarilyIgnoresRunningProcess(t *testing.T) {
+	tests := []struct {
+		name, prior, fail, wantErr string
+		wantRestore                []string
+	}{
+		{"unset", "'IGNORE_RUNNING_PROCESSES' is not set", "", "", []string{"config", "rm", "IGNORE_RUNNING_PROCESSES"}},
+		{"false", "False", "", "", []string{"config", "IGNORE_RUNNING_PROCESSES", "false"}},
+		{"true", "True", "", "", []string{"config", "IGNORE_RUNNING_PROCESSES", "true"}},
+		{"update failure", "False", "update", "scoop update gentle-ai", []string{"config", "IGNORE_RUNNING_PROCESSES", "false"}},
+		{"restore failure", "False", "restore", "restore Scoop setting", []string{"config", "IGNORE_RUNNING_PROCESSES", "false"}},
+		{"false success", "False", "skip", "running process", []string{"config", "IGNORE_RUNNING_PROCESSES", "false"}},
 	}
-	if err := scoopUpgrade(context.Background()); err != nil {
-		t.Fatalf("scoopUpgrade() error = %v", err)
-	}
-	if gotName != "scoop" || !reflect.DeepEqual(gotArgs, []string{"update", "gentle-ai"}) {
-		t.Fatalf("command = %q %v, want scoop update gentle-ai", gotName, gotArgs)
-	}
-	if gotCmd.Stdin != nil {
-		t.Fatal("scoop command stdin must be nil")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := execCommand
+			t.Cleanup(func() { execCommand = original })
+			var calls [][]string
+			execCommand = func(name string, args ...string) *exec.Cmd {
+				calls = append(calls, append([]string{name}, args...))
+				switch len(calls) {
+				case 1:
+					return mockCmd("echo", tt.prior)
+				case 3:
+					if tt.fail == "update" {
+						return mockCmd("false")
+					}
+					if tt.fail == "skip" {
+						return mockCmd("echo", "Running process detected, skip updating.")
+					}
+				case 4:
+					if tt.fail == "restore" {
+						return mockCmd("false")
+					}
+				}
+				return mockCmd("true")
+			}
+			err := scoopUpgrade(context.Background())
+			if (err == nil) != (tt.wantErr == "") || err != nil && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("scoopUpgrade() error = %v, want containing %q", err, tt.wantErr)
+			}
+			want := [][]string{{"scoop", "config", "IGNORE_RUNNING_PROCESSES"}, {"scoop", "config", "IGNORE_RUNNING_PROCESSES", "true"}, {"scoop", "update", "gentle-ai"}, append([]string{"scoop"}, tt.wantRestore...)}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("commands = %#v, want %#v", calls, want)
+			}
+		})
 	}
 }
-
 func TestScoopUpgradeHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -168,19 +193,6 @@ func TestScoopUpgradeReportsCommandFailure(t *testing.T) {
 	t.Cleanup(func() { execCommand = original })
 	if err := scoopUpgrade(context.Background()); err == nil {
 		t.Fatal("expected Scoop command failure")
-	}
-}
-
-func TestScoopUpgradeReportsRunningProcessSkip(t *testing.T) {
-	original := execCommand
-	execCommand = func(string, ...string) *exec.Cmd {
-		return mockCmd("echo", "Running process detected, skip updating.")
-	}
-	t.Cleanup(func() { execCommand = original })
-
-	err := scoopUpgrade(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "running process") {
-		t.Fatalf("scoopUpgrade() error = %v, want running process failure", err)
 	}
 }
 

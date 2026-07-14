@@ -3,6 +3,7 @@ package upgrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -156,15 +157,42 @@ func windowsPathWithin(candidate, root string) bool {
 	return candidateOK && rootOK && candidateVolume == rootVolume && (candidatePath == rootPath || strings.HasPrefix(candidatePath, rootPath+`\`))
 }
 
-func scoopUpgrade(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	cmd := execCommand("scoop", "update", "gentle-ai")
+func scoopCommand(args ...string) ([]byte, error) {
+	cmd := execCommand("scoop", args...)
 	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("scoop update gentle-ai: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return out, fmt.Errorf("scoop %s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
+func scoopUpgrade(ctx context.Context) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	priorOut, err := scoopCommand("config", "IGNORE_RUNNING_PROCESSES")
+	if err != nil {
+		return err
+	}
+	prior := strings.ToLower(strings.TrimSpace(string(priorOut)))
+	restore := []string{"config", "rm", "IGNORE_RUNNING_PROCESSES"}
+	if prior == "true" || prior == "false" {
+		restore = []string{"config", "IGNORE_RUNNING_PROCESSES", prior}
+	} else if !strings.Contains(prior, "is not set") {
+		return fmt.Errorf("read Scoop IGNORE_RUNNING_PROCESSES: unexpected output %q", strings.TrimSpace(string(priorOut)))
+	}
+	defer func() {
+		if _, restoreErr := scoopCommand(restore...); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore Scoop setting: %w", restoreErr))
+		}
+	}()
+	if _, err = scoopCommand("config", "IGNORE_RUNNING_PROCESSES", "true"); err != nil {
+		return err
+	}
+	out, err := scoopCommand("update", "gentle-ai")
+	if err != nil {
+		return err
 	}
 	if strings.Contains(strings.ToLower(string(out)), "running process detected, skip updating") {
 		return fmt.Errorf("scoop update gentle-ai: running process prevented update (output: %s)", strings.TrimSpace(string(out)))
