@@ -274,6 +274,10 @@ func TestRunStrategy_GoInstallFailure(t *testing.T) {
 // TestEffectiveMethod_GentleAIOnWindowsUsesInstaller verifies that gentle-ai
 // on Windows uses InstallInstaller (auto-upgrade via PowerShell)
 func TestEffectiveMethod_GentleAIOnWindowsUsesInstaller(t *testing.T) {
+	original := scoopOwnershipDetector
+	scoopOwnershipDetector = func() bool { return false }
+	t.Cleanup(func() { scoopOwnershipDetector = original })
+
 	tests := []struct {
 		name string
 		tool update.ToolInfo
