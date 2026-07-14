@@ -520,7 +520,7 @@ func ExecuteWithOptions(ctx context.Context, results []update.UpdateResult, prof
 		method := effectiveMethod(r.Tool, profile)
 		msg := fmt.Sprintf("Upgrading %s via %s (%s → %s)", r.Tool.Name, method, r.InstalledVersion, r.LatestVersion)
 		sp := NewSpinner(pw, msg)
-		toolResult := executeOne(ctx, r, profile, dryRun)
+		toolResult := executeOneWithMethod(ctx, r, profile, dryRun, method)
 
 		// Check if the upgrade succeeded but requires immediate exit (Windows self-replace).
 		// This must be handled BEFORE calling sp.Finish() so the spinner can terminate properly.
@@ -568,11 +568,15 @@ func detectCommandHint(tool update.ToolInfo) string {
 
 // executeOne runs the upgrade for a single tool.
 func executeOne(ctx context.Context, r update.UpdateResult, profile system.PlatformProfile, dryRun bool) ToolUpgradeResult {
+	return executeOneWithMethod(ctx, r, profile, dryRun, effectiveMethod(r.Tool, profile))
+}
+
+func executeOneWithMethod(ctx context.Context, r update.UpdateResult, profile system.PlatformProfile, dryRun bool, method update.InstallMethod) ToolUpgradeResult {
 	base := ToolUpgradeResult{
 		ToolName:   r.Tool.Name,
 		OldVersion: r.InstalledVersion,
 		NewVersion: r.LatestVersion,
-		Method:     effectiveMethod(r.Tool, profile),
+		Method:     method,
 	}
 
 	if dryRun {
@@ -580,7 +584,16 @@ func executeOne(ctx context.Context, r update.UpdateResult, profile system.Platf
 		return base
 	}
 
-	exitReq, err := runStrategy(ctx, r, profile)
+	var exitReq bool
+	var err error
+	switch method {
+	case update.InstallScoop:
+		err = scoopUpgrade(ctx)
+	case update.InstallInstaller:
+		exitReq, err = installerUpgrade(ctx, r.Tool, r.ReleaseURL, isBetaGentleAIUpgrade(r))
+	default:
+		exitReq, err = runStrategy(ctx, r, profile)
+	}
 	if err != nil {
 		// Distinguish manual fallback (informational skip) from real failures.
 		if hint, ok := AsManualFallback(err); ok {
@@ -615,8 +628,10 @@ func effectiveMethod(tool update.ToolInfo, profile system.PlatformProfile) updat
 	if profile.PackageManager == "brew" && homebrewPackageInstalled(tool.Name) {
 		return update.InstallBrew
 	}
-	// Use installer method for gentle-ai on Windows (launches PowerShell installer).
 	if profile.OS == "windows" && tool.Name == "gentle-ai" {
+		if scoopOwnershipDetector() {
+			return update.InstallScoop
+		}
 		return update.InstallInstaller
 	}
 	if profile.GoAvailable && tool.GoImportPath != "" {

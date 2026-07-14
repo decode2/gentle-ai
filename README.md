@@ -116,7 +116,7 @@ brew install gentle-ai
 go install github.com/gentleman-programming/gentle-ai/cmd/gentle-ai@latest
 ```
 
-**Scoop (Windows)** — this is a manual-update path; update it with `scoop update gentle-ai`.
+**Scoop (Windows)** — active Scoop installs are upgraded through `scoop update gentle-ai` by `gentle-ai upgrade`; the command also remains available for manual updates.
 
 ```powershell
 scoop bucket add gentleman https://github.com/Gentleman-Programming/scoop-bucket

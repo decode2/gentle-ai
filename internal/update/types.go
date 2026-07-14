@@ -24,6 +24,7 @@ type InstallMethod string
 
 const (
 	InstallBrew      InstallMethod = "brew"
+	InstallScoop     InstallMethod = "scoop"
 	InstallGoInstall InstallMethod = "go-install"
 	InstallBinary    InstallMethod = "binary"
 	InstallInstaller InstallMethod = "installer"
