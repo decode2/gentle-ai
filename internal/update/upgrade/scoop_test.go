@@ -3,6 +3,8 @@ package upgrade
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -146,10 +148,10 @@ func TestScoopUpgradeTemporarilyIgnoresRunningProcess(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			original := execCommand
-			t.Cleanup(func() { execCommand = original })
+			original := scoopExecCommand
+			t.Cleanup(func() { scoopExecCommand = original })
 			var calls [][]string
-			execCommand = func(name string, args ...string) *exec.Cmd {
+			scoopExecCommand = func(_ context.Context, name string, args ...string) *exec.Cmd {
 				calls = append(calls, append([]string{name}, args...))
 				switch len(calls) {
 				case 1:
@@ -187,10 +189,60 @@ func TestScoopUpgradeHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestScoopUpgradeCancelsSubprocessAndRestoresConfig(t *testing.T) {
+	original := scoopExecCommand
+	t.Cleanup(func() { scoopExecCommand = original })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updateStarted := make(chan struct{})
+	var restoreContextLive, restoreHasDeadline bool
+	scoopExecCommand = func(commandCtx context.Context, _ string, args ...string) *exec.Cmd {
+		if reflect.DeepEqual(args, []string{"update", "gentle-ai"}) {
+			close(updateStarted)
+		}
+		if reflect.DeepEqual(args, []string{"config", "IGNORE_RUNNING_PROCESSES", "false"}) {
+			restoreContextLive = commandCtx.Err() == nil
+			_, restoreHasDeadline = commandCtx.Deadline()
+		}
+		cmd := exec.CommandContext(commandCtx, os.Args[0], "-test.run=TestScoopCommandHelper", "--")
+		cmd.Env = append(os.Environ(), "GO_WANT_SCOOP_HELPER=1", "SCOOP_HELPER_ARGS="+strings.Join(args, "|"))
+		return cmd
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- scoopUpgrade(ctx) }()
+	<-updateStarted
+	cancel()
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("scoopUpgrade() error = %v, want context.Canceled", err)
+	}
+	if !restoreContextLive {
+		t.Fatal("restore command must receive a live cleanup context")
+	}
+	if !restoreHasDeadline {
+		t.Fatal("restore context must have a cleanup deadline")
+	}
+}
+
+func TestScoopCommandHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_SCOOP_HELPER") != "1" {
+		return
+	}
+	switch os.Getenv("SCOOP_HELPER_ARGS") {
+	case "config|IGNORE_RUNNING_PROCESSES":
+		fmt.Print("False")
+	case "update|gentle-ai":
+		select {}
+	}
+	os.Exit(0)
+}
+
 func TestScoopUpgradeReportsCommandFailure(t *testing.T) {
-	original := execCommand
-	execCommand = func(string, ...string) *exec.Cmd { return mockCmd("false") }
-	t.Cleanup(func() { execCommand = original })
+	original := scoopExecCommand
+	scoopExecCommand = func(context.Context, string, ...string) *exec.Cmd { return mockCmd("false") }
+	t.Cleanup(func() { scoopExecCommand = original })
 	if err := scoopUpgrade(context.Background()); err == nil {
 		t.Fatal("expected Scoop command failure")
 	}

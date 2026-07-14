@@ -584,16 +584,7 @@ func executeOneWithMethod(ctx context.Context, r update.UpdateResult, profile sy
 		return base
 	}
 
-	var exitReq bool
-	var err error
-	switch method {
-	case update.InstallScoop:
-		err = scoopUpgrade(ctx)
-	case update.InstallInstaller:
-		exitReq, err = installerUpgrade(ctx, r.Tool, r.ReleaseURL, isBetaGentleAIUpgrade(r))
-	default:
-		exitReq, err = runStrategy(ctx, r, profile)
-	}
+	exitReq, err := runStrategy(ctx, r, profile, method)
 	if err != nil {
 		// Distinguish manual fallback (informational skip) from real failures.
 		if hint, ok := AsManualFallback(err); ok {

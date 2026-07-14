@@ -6,10 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+var scoopExecCommand = exec.CommandContext
+
+const scoopCleanupTimeout = 5 * time.Second
 
 const gentleAIHomepage = "https://github.com/gentleman-programming/gentle-ai"
 
@@ -157,11 +163,14 @@ func windowsPathWithin(candidate, root string) bool {
 	return candidateOK && rootOK && candidateVolume == rootVolume && (candidatePath == rootPath || strings.HasPrefix(candidatePath, rootPath+`\`))
 }
 
-func scoopCommand(args ...string) ([]byte, error) {
-	cmd := execCommand("scoop", args...)
+func scoopCommand(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := scoopExecCommand(ctx, "scoop", args...)
 	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out, fmt.Errorf("scoop %s: %w (command error: %v, output: %s)", strings.Join(args, " "), ctxErr, err, strings.TrimSpace(string(out)))
+		}
 		return out, fmt.Errorf("scoop %s: %w (output: %s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
@@ -171,7 +180,7 @@ func scoopUpgrade(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	priorOut, err := scoopCommand("config", "IGNORE_RUNNING_PROCESSES")
+	priorOut, err := scoopCommand(ctx, "config", "IGNORE_RUNNING_PROCESSES")
 	if err != nil {
 		return err
 	}
@@ -183,14 +192,16 @@ func scoopUpgrade(ctx context.Context) (err error) {
 		return fmt.Errorf("read Scoop IGNORE_RUNNING_PROCESSES: unexpected output %q", strings.TrimSpace(string(priorOut)))
 	}
 	defer func() {
-		if _, restoreErr := scoopCommand(restore...); restoreErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), scoopCleanupTimeout)
+		defer cancel()
+		if _, restoreErr := scoopCommand(cleanupCtx, restore...); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("restore Scoop setting: %w", restoreErr))
 		}
 	}()
-	if _, err = scoopCommand("config", "IGNORE_RUNNING_PROCESSES", "true"); err != nil {
+	if _, err = scoopCommand(ctx, "config", "IGNORE_RUNNING_PROCESSES", "true"); err != nil {
 		return err
 	}
-	out, err := scoopCommand("update", "gentle-ai")
+	out, err := scoopCommand(ctx, "update", "gentle-ai")
 	if err != nil {
 		return err
 	}

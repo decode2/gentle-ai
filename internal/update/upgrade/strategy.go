@@ -65,9 +65,17 @@ const maxScriptSize = 1 * 1024 * 1024 // 1 MB
 //   - script method + windows → manualFallback
 //   - OpenCode plugin method → update materialized package in ~/.config/opencode when possible
 //   - unknown method → manualFallback with explicit message
-func runStrategy(ctx context.Context, r update.UpdateResult, profile system.PlatformProfile) (bool, error) {
+func runStrategy(ctx context.Context, r update.UpdateResult, profile system.PlatformProfile, resolvedMethod ...update.InstallMethod) (bool, error) {
+	method := r.Tool.InstallMethod
+	hasResolvedMethod := len(resolvedMethod) > 0
+	if hasResolvedMethod {
+		method = resolvedMethod[0]
+	} else {
+		method = effectiveMethod(r.Tool, profile)
+	}
+
 	ownership := update.HomebrewNone
-	if profile.PackageManager == "brew" && r.Tool.InstallMethod != update.InstallOpenCodePlugin {
+	if method == update.InstallBrew || !hasResolvedMethod && profile.PackageManager == "brew" && r.Tool.InstallMethod != update.InstallOpenCodePlugin {
 		var err error
 		ownership, err = homebrewOwnershipDetector(r.Tool.Name)
 		if err != nil {
@@ -78,7 +86,6 @@ func runStrategy(ctx context.Context, r update.UpdateResult, profile system.Plat
 		return false, goInstallMainUpgrade(r.Tool)
 	}
 
-	method := effectiveMethod(r.Tool, profile)
 	if ownership != update.HomebrewNone {
 		method = update.InstallBrew
 	}

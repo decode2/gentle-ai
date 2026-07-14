@@ -101,6 +101,31 @@ func TestRunStrategy_GoInstallUpgrade(t *testing.T) {
 	}
 }
 
+func TestRunStrategyUsesResolvedScoopMethod(t *testing.T) {
+	originalExec := scoopExecCommand
+	originalDetector := scoopOwnershipDetector
+	t.Cleanup(func() {
+		scoopExecCommand = originalExec
+		scoopOwnershipDetector = originalDetector
+	})
+
+	scoopOwnershipDetector = func() bool {
+		t.Fatal("resolved strategy must not detect Scoop ownership again")
+		return false
+	}
+	scoopExecCommand = func(_ context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) == 2 && args[0] == "config" && args[1] == "IGNORE_RUNNING_PROCESSES" {
+			return mockCmd("echo", "False")
+		}
+		return mockCmd("true")
+	}
+
+	r := update.UpdateResult{Tool: update.ToolInfo{Name: "gentle-ai", InstallMethod: update.InstallBinary}}
+	if _, err := runStrategy(context.Background(), r, system.PlatformProfile{OS: "windows"}, update.InstallScoop); err != nil {
+		t.Fatalf("runStrategy resolved Scoop method: %v", err)
+	}
+}
+
 func TestRunStrategy_BetaGentleAISelfUpgradeUsesGoInstallMain(t *testing.T) {
 	origExecCommand := execCommand
 	t.Cleanup(func() { execCommand = origExecCommand })
