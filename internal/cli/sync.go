@@ -22,6 +22,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
 	"github.com/gentleman-programming/gentle-ai/internal/components/mcp"
+	"github.com/gentleman-programming/gentle-ai/internal/components/opencodeplugin"
 	"github.com/gentleman-programming/gentle-ai/internal/components/permissions"
 	"github.com/gentleman-programming/gentle-ai/internal/components/persona"
 	"github.com/gentleman-programming/gentle-ai/internal/components/sdd"
@@ -923,8 +924,25 @@ func (s componentSyncStep) Run() error {
 		}
 		return nil
 
+	case model.ComponentClaudeTheme:
+		for _, adapter := range adapters {
+			res, err := theme.InjectClaudeTheme(s.homeDir, adapter)
+			if err != nil {
+				return fmt.Errorf("sync Claude theme for %q: %w", adapter.Agent(), err)
+			}
+			s.countChanged(boolToInt(res.Changed), res.Files...)
+		}
+		return nil
+
+	case model.ComponentOpenCodeGentleLogo:
+		res, err := opencodeplugin.Install(s.homeDir, model.OpenCodePluginGentleLogo)
+		if err != nil {
+			return fmt.Errorf("sync OpenCode Gentle Logo plugin: %w", err)
+		}
+		s.countChanged(boolToInt(res.Changed), res.Files...)
+		return nil
+
 	default:
-		// Persona and any unknown components are out of sync scope.
 		return fmt.Errorf("component %q is not supported in sync runtime", s.component)
 	}
 }
