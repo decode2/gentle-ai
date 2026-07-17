@@ -909,11 +909,18 @@ args = ["mcp", "--tools=agent"]
 		`[permissions.gentle-dev.filesystem.":workspace_roots"]`,
 		"[permissions.gentle-dev.network]",
 		"[permissions.gentle-dev.network.domains]",
-		"[permissions.gentle-dev.workspace_roots]",
 	} {
 		if count := strings.Count(text, section); count != 1 {
 			t.Fatalf("section %q count = %d, want 1; got:\n%s", section, count, text)
 		}
+	}
+	homeRoots := "[permissions.gentle-dev.workspace_roots]"
+	wantHomeRoots := 0
+	if codexPermissionsGOOS != "windows" {
+		wantHomeRoots = 1
+	}
+	if got := strings.Count(text, homeRoots); got != wantHomeRoots {
+		t.Fatalf("section %q count = %d for %s; got:\n%s", homeRoots, got, codexPermissionsGOOS, text)
 	}
 	rootFilesystem := tomlSection(text, `[permissions.gentle-dev.filesystem]`)
 	for _, invalid := range []string{`"**/*.key" = "deny"`, `"**/*.pem" = "deny"`} {

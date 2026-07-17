@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -414,6 +415,9 @@ func TestCompactPreCommitGateRejectsInexactStagedIntendedTransitions(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "changed mode" {
+				t.Skip("Git worktree executable-bit transitions are POSIX-only")
+			}
 			repo := initSnapshotRepo(t)
 			intended := []string{"first.txt", "second.txt"}
 			for _, path := range intended {

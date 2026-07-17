@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,18 +123,43 @@ func TestInventoryAuthorityDistinguishesReleasedBusyAndMalformedLockTruth(t *tes
 				if err := os.WriteFile(lockPath, []byte(tt.content), 0o600); err != nil {
 					t.Fatal(err)
 				}
-			}
-			var held *storeLock
-			if tt.hold {
-				held, err = acquireStoreLock(lockPath)
-				if err != nil {
+			} else if tt.hold {
+				if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				defer held.release()
 			}
 			before, err := os.ReadFile(lockPath)
 			if err != nil {
 				t.Fatal(err)
+			}
+			var release func() error
+			if tt.hold {
+				if runtime.GOOS == "windows" {
+					file, openErr := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+					if openErr != nil {
+						t.Fatal(openErr)
+					}
+					locked, lockErr := tryLockFile(file)
+					if lockErr != nil || !locked {
+						t.Fatalf("hold advisory lock = %t, %v", locked, lockErr)
+					}
+					release = func() error { return errors.Join(unlockFile(file), file.Close()) }
+				} else {
+					held, lockErr := acquireStoreLock(lockPath)
+					if lockErr != nil {
+						t.Fatal(lockErr)
+					}
+					before, err = os.ReadFile(lockPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					release = held.release
+				}
+				defer func() {
+					if release != nil {
+						_ = release()
+					}
+				}()
 			}
 			report, err := InventoryAuthority(context.Background(), repo)
 			if err != nil {
@@ -142,6 +168,10 @@ func TestInventoryAuthorityDistinguishesReleasedBusyAndMalformedLockTruth(t *tes
 			if len(report.Locks) != 1 || report.Locks[0].Status != tt.want || report.Locks[0].Owner != nil ||
 				report.Complete != tt.complete || (report.Locks[0].Problem != "") != tt.wantProblem {
 				t.Fatalf("lock report = %#v", report)
+			}
+			if release != nil {
+				_ = release()
+				release = nil
 			}
 			after, err := os.ReadFile(lockPath)
 			if err != nil {

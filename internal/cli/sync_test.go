@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -923,6 +924,9 @@ func TestCodeGraphGuidanceSyncStepPreservesBrokenSymlinkChain(t *testing.T) {
 }
 
 func TestRestoreSyncFilesNeverWidensZeroMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exact zero-mode restoration is a POSIX permission contract")
+	}
 	tests := []struct {
 		name  string
 		setup func(t *testing.T) (string, syncFileSnapshot)

@@ -275,6 +275,8 @@ func isShellReviewPath(logicalPath string) bool {
 	switch asciiLower(path.Ext(logicalPath)) {
 	case ".sh", ".bash", ".zsh":
 		return true
+	case ".yml", ".yaml":
+		return strings.HasPrefix(logicalPath, ".github/workflows/")
 	default:
 		return false
 	}

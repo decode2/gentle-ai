@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -366,6 +367,24 @@ func TestAssessSnapshotRiskDerivesProvableShellAndExecutableModeReasons(t *testi
 			lines: 1,
 		},
 		{
+			name: "GitHub workflow YAML",
+			setup: func(t *testing.T, repo string) Target {
+				writeSnapshotFile(t, repo, ".github/workflows/ci.yml", "jobs: {}\n")
+				return Target{Kind: TargetCurrentChanges, IntendedUntracked: []string{".github/workflows/ci.yml"}}
+			},
+			want:  RiskReason{Code: RiskReasonShellSource, Signal: SignalShellProcess, Path: ".github/workflows/ci.yml"},
+			lines: 1,
+		},
+		{
+			name: "GitHub workflow YAML long extension",
+			setup: func(t *testing.T, repo string) Target {
+				writeSnapshotFile(t, repo, ".github/workflows/ci.yaml", "jobs: {}\n")
+				return Target{Kind: TargetCurrentChanges, IntendedUntracked: []string{".github/workflows/ci.yaml"}}
+			},
+			want:  RiskReason{Code: RiskReasonShellSource, Signal: SignalShellProcess, Path: ".github/workflows/ci.yaml"},
+			lines: 1,
+		},
+		{
 			name: "executable mode change",
 			setup: func(t *testing.T, repo string) Target {
 				gitSnapshot(t, repo, "config", "core.filemode", "true")
@@ -383,6 +402,9 @@ func TestAssessSnapshotRiskDerivesProvableShellAndExecutableModeReasons(t *testi
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "executable mode change" {
+				t.Skip("Git worktree executable-bit transitions are POSIX-only")
+			}
 			repo := initSnapshotRepo(t)
 			snapshot, err := (SnapshotBuilder{Repo: repo}).Build(context.Background(), tt.setup(t, repo))
 			if err != nil {
@@ -402,6 +424,8 @@ func TestAssessSnapshotRiskDerivesProvableShellAndExecutableModeReasons(t *testi
 func TestProvableRiskReasonsRejectNearMissesAndFilenameGuesses(t *testing.T) {
 	nearMisses := []DiffStat{
 		{Path: "docs/run.sh", Additions: 1, OldMode: "000000", NewMode: "100644"},
+		{Path: "docs/workflow.yml", Additions: 1, OldMode: "000000", NewMode: "100644"},
+		{Path: "config/app.yaml", Additions: 1, OldMode: "000000", NewMode: "100644"},
 		{Path: "README-run.sh", Additions: 1, OldMode: "000000", NewMode: "100644"},
 		{Path: "fixtures/run.sh", Additions: 1, OldMode: "000000", NewMode: "100644"},
 		{Path: "tools/run.sh.txt", Additions: 1, OldMode: "000000", NewMode: "100644"},

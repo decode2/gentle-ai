@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -444,16 +445,9 @@ func TestReviewFacadeStartServiceTokenSelectsCanonicalHighRiskLenses(t *testing.
 	} {
 		t.Setenv(name, value)
 	}
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	relative, err := filepath.Rel(workingDirectory, repo)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(repo)
 	want := []string{reviewtransaction.LensRisk, reviewtransaction.LensResilience, reviewtransaction.LensReadability, reviewtransaction.LensReliability}
-	for index, cwd := range []string{repo, neutral, relative} {
+	for index, cwd := range []string{repo, neutral, "."} {
 		var output bytes.Buffer
 		if err := RunReviewFacadeStart([]string{"--cwd", cwd, "--lineage", fmt.Sprintf("service-token-%d", index)}, &output); err != nil {
 			t.Fatalf("facade start from %q: %v", cwd, err)
@@ -491,6 +485,15 @@ func TestReviewFacadeStartProvableShellAndModeRiskSelectsCanonical4R(t *testing.
 			},
 		},
 		{
+			name: "GitHub workflow",
+			setup: func(t *testing.T, repo string) {
+				if err := os.MkdirAll(filepath.Join(repo, ".github", "workflows"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeReviewStartCandidate(t, repo, ".github/workflows/ci.yml", "jobs: {}\n", 0o644)
+			},
+		},
+		{
 			name: "mode only",
 			setup: func(t *testing.T, repo string) {
 				runReviewCLIGit(t, repo, "config", "core.filemode", "true")
@@ -502,6 +505,9 @@ func TestReviewFacadeStartProvableShellAndModeRiskSelectsCanonical4R(t *testing.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && tt.name == "mode only" {
+				t.Skip("Git worktree executable-bit transitions are POSIX-only")
+			}
 			repo := initReviewCLIRepo(t)
 			tt.setup(t, repo)
 			var output bytes.Buffer

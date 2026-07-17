@@ -186,6 +186,28 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 	}
 }
 
+func TestReviewTargetStatusProjectionRejectsNonCanonicalRepositoryPaths(t *testing.T) {
+	valid := ReviewTargetStatusProjection{
+		Schema: ReviewIntegrationProjectionSchema, Projection: reviewtransaction.ProjectionWorkspace,
+		BaseTree: strings.Repeat("a", 40), InitialReviewTree: strings.Repeat("b", 40), CurrentCandidateTree: strings.Repeat("c", 40),
+		PathsDigest: "sha256:" + strings.Repeat("a", 64), IntendedUntrackedProof: "sha256:" + strings.Repeat("b", 64),
+		InitialSnapshotIdentity: "sha256:" + strings.Repeat("c", 64), CurrentSnapshotIdentity: "sha256:" + strings.Repeat("d", 64),
+		Paths: []string{"nested/file.go"}, IntendedUntracked: []string{},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("canonical nested path rejected: %v", err)
+	}
+	for _, value := range []string{`nested\file.go`, `/absolute`, `C:/volume`, `C:\volume`, `//server/share`, `.`, `./file`, `../file`, `nested/../file`, `nested//file`} {
+		t.Run(value, func(t *testing.T) {
+			projection := valid
+			projection.Paths = []string{value}
+			if err := projection.Validate(); err == nil {
+				t.Fatalf("non-canonical path %q accepted", value)
+			}
+		})
+	}
+}
+
 func TestNegotiatedStatusAcceptsHistoricalApprovedOrdinary4RWithoutCompactFrozenInputs(t *testing.T) {
 	tests := []struct {
 		name          string

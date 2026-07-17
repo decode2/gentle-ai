@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -928,6 +929,9 @@ func TestCompactCorrectionRetriesWithinFrozenBudgetAndFindingScope(t *testing.T)
 }
 
 func TestCompactZeroLineFailuresReachAttemptCap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture depends solely on Git executable-bit transitions")
+	}
 	repo := initSnapshotRepo(t)
 	writeSnapshotFile(t, repo, "tracked.txt", "base\none\ntwo\nthree\nfour\n")
 	state := newCompactTestState(t, repo, "compact-zero-attempt-cap")

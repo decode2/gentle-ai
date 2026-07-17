@@ -3,7 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"reflect"
 	"strings"
 
@@ -201,9 +201,9 @@ func (projection ReviewTargetStatusProjection) Validate() error {
 		}
 	}
 	for _, paths := range [][]string{projection.Paths, projection.IntendedUntracked} {
-		for _, path := range paths {
-			if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("restart projection path %q is not repository-relative", path)
+		for _, value := range paths {
+			if value == "" || strings.Contains(value, `\`) || strings.HasPrefix(value, "/") || len(value) >= 2 && value[1] == ':' || path.IsAbs(value) || path.Clean(value) != value || value == "." || value == ".." || strings.HasPrefix(value, "../") {
+				return fmt.Errorf("restart projection path %q is not repository-relative", value)
 			}
 		}
 	}

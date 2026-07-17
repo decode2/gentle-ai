@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -631,7 +632,7 @@ func TestTuiSyncIncludesCodexPermissionsForTargetedOverrides(t *testing.T) {
 		t.Fatalf("ReadFile(%s): %v", configPath, err)
 	}
 	text := string(body)
-	if !strings.Contains(text, `":minimal" = "read"`) || !strings.Contains(text, `":tmpdir" = "write"`) || !strings.Contains(text, `":slash_tmp" = "write"`) || !strings.Contains(text, `[permissions.gentle-dev.workspace_roots]`) || !strings.Contains(text, `[permissions.gentle-dev.filesystem.":workspace_roots"]`) || !strings.Contains(text, `"**/*.key" = "deny"`) {
+	if !strings.Contains(text, `":minimal" = "read"`) || !strings.Contains(text, `":tmpdir" = "write"`) || !strings.Contains(text, `":slash_tmp" = "write"`) || runtime.GOOS != "windows" && !strings.Contains(text, `[permissions.gentle-dev.workspace_roots]`) || !strings.Contains(text, `[permissions.gentle-dev.filesystem.":workspace_roots"]`) || !strings.Contains(text, `"**/*.key" = "deny"`) {
 		t.Fatalf("targeted sync should add valid Codex permissions profile; got:\n%s", text)
 	}
 	assertCodexWorkspaceWriteRulesScoped(t, text)
@@ -1994,7 +1995,7 @@ func TestRunArgsPendingSyncRepairsCodexPermissions(t *testing.T) {
 		t.Fatalf("ReadFile(%s): %v", configPath, err)
 	}
 	text := string(body)
-	if !strings.Contains(text, `":minimal" = "read"`) || !strings.Contains(text, `":tmpdir" = "write"`) || !strings.Contains(text, `":slash_tmp" = "write"`) || !strings.Contains(text, `[permissions.gentle-dev.workspace_roots]`) || !strings.Contains(text, `[permissions.gentle-dev.filesystem.":workspace_roots"]`) || !strings.Contains(text, `"**/*.key" = "deny"`) {
+	if !strings.Contains(text, `":minimal" = "read"`) || !strings.Contains(text, `":tmpdir" = "write"`) || !strings.Contains(text, `":slash_tmp" = "write"`) || runtime.GOOS != "windows" && !strings.Contains(text, `[permissions.gentle-dev.workspace_roots]`) || !strings.Contains(text, `[permissions.gentle-dev.filesystem.":workspace_roots"]`) || !strings.Contains(text, `"**/*.key" = "deny"`) {
 		t.Fatalf("deferred sync should add valid Codex permissions profile; got:\n%s", text)
 	}
 	assertCodexWorkspaceWriteRulesScoped(t, text)
