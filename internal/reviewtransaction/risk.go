@@ -696,6 +696,9 @@ func touchesHotPath(stats []DiffStat) bool {
 
 func hotPathRiskSignals(logicalPath string) []RiskSignal {
 	signals := make([]RiskSignal, 0, 4)
+	if isNativeReviewAuthorityPath(logicalPath) {
+		signals = append(signals, SignalAuth)
+	}
 	for _, token := range strings.FieldsFunc(strings.ToLower(logicalPath), func(r rune) bool {
 		return r == '/' || r == '\\' || r == '.' || r == '-' || r == '_'
 	}) {
@@ -711,6 +714,17 @@ func hotPathRiskSignals(logicalPath string) []RiskSignal {
 		}
 	}
 	return canonicalRiskSignals(signals)
+}
+
+func isNativeReviewAuthorityPath(logicalPath string) bool {
+	switch logicalPath {
+	case "internal/reviewtransaction/compact.go", "internal/reviewtransaction/transaction.go",
+		"internal/reviewtransaction/compact_store.go", "internal/reviewtransaction/store.go",
+		"internal/reviewtransaction/compact_gate.go", "internal/reviewtransaction/gate.go":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeLogicalPath(value string) (string, error) {

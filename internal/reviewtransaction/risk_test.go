@@ -82,6 +82,46 @@ func TestClassifyRiskUsesDeterministicFirstMatch(t *testing.T) {
 	}
 }
 
+func TestNativeReviewAuthorityPathsEmitCanonicalAuthHotPath(t *testing.T) {
+	tests := []struct {
+		path      string
+		authority bool
+	}{
+		{path: "internal/reviewtransaction/compact.go", authority: true},
+		{path: "internal/reviewtransaction/transaction.go", authority: true},
+		{path: "internal/reviewtransaction/compact_store.go", authority: true},
+		{path: "internal/reviewtransaction/store.go", authority: true},
+		{path: "internal/reviewtransaction/compact_gate.go", authority: true},
+		{path: "internal/reviewtransaction/gate.go", authority: true},
+		{path: "internal/reviewtransaction/compact_test.go"},
+		{path: "docs/internal/reviewtransaction/compact.go"},
+		{path: "internal/reviewtransaction/compact_chain.go"},
+		{path: "internal/reviewtransaction/snapshot.go"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			signals := hotPathRiskSignals(tt.path)
+			if got := len(signals) == 1 && signals[0] == SignalAuth; got != tt.authority {
+				t.Fatalf("hotPathRiskSignals(%q) = %v, authority = %t", tt.path, signals, tt.authority)
+			}
+			if tt.authority {
+				want := []RiskReason{{Code: RiskReasonHotPath, Signal: SignalAuth, Path: tt.path}}
+				if got := deriveSnapshotRiskReasons([]DiffStat{{Path: tt.path, Additions: 1}}, 1); !reflect.DeepEqual(got, want) {
+					t.Fatalf("deriveSnapshotRiskReasons(%q) = %#v, want %#v", tt.path, got, want)
+				}
+			}
+			want := RiskMedium
+			if tt.authority {
+				want = RiskHigh
+			}
+			got, err := ClassifyRisk(RiskInput{Stats: []DiffStat{{Path: tt.path, Additions: 1}}})
+			if err != nil || got != want {
+				t.Fatalf("ClassifyRisk(%q) = %q, %v; want %q", tt.path, got, err, want)
+			}
+		})
+	}
+}
+
 func TestPureDocumentationReviewPathExcludesOperationalMarkdown(t *testing.T) {
 	tests := []struct {
 		path string

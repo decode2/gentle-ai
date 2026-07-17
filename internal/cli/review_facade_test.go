@@ -851,13 +851,10 @@ func TestReviewFacadeEscalatesFalseIntroducedFindingOutsideGenesis(t *testing.T)
 func TestReviewFacadeStartCannotResetActiveCorrectionBudget(t *testing.T) {
 	tests := []struct {
 		name       string
-		consumed   bool
 		negotiated bool
 	}{
 		{name: "pre-forecast raw"},
 		{name: "pre-forecast negotiated", negotiated: true},
-		{name: "consumed attempt raw", consumed: true},
-		{name: "consumed attempt negotiated", consumed: true, negotiated: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -880,29 +877,11 @@ func TestReviewFacadeStartCannotResetActiveCorrectionBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			store, _ := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
-			if tt.consumed {
-				if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--correction-lines", "2"}, io.Discard); err != nil {
-					t.Fatal(err)
-				}
-				write("first-fix")
-				validator := filepath.Join(t.TempDir(), "validator.json")
-				writeReviewCLIJSON(t, validator, facadeValidationResult{
-					OriginalCriteria:     facadeValidationCheck{Passed: false, Evidence: []string{"acceptance still fails"}},
-					CorrectionRegression: facadeValidationCheck{Passed: false, Evidence: []string{"regression still fails"}}, FollowUps: []reviewtransaction.FollowUp{},
-				})
-				if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--validation", validator}, io.Discard); err != nil {
-					t.Fatal(err)
-				}
-			}
 			before, err := store.Load()
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantAttempts, wantLines := 0, 0
-			if tt.consumed {
-				wantAttempts, wantLines = 1, 2
-			}
-			if before.State.State != reviewtransaction.StateCorrectionRequired || len(before.State.CorrectionAttempts) != wantAttempts || before.State.CumulativeCorrectionLines != wantLines {
+			if before.State.State != reviewtransaction.StateCorrectionRequired || len(before.State.CorrectionAttempts) != 0 || before.State.CumulativeCorrectionLines != 0 {
 				t.Fatalf("predecessor fixture = %#v", before.State)
 			}
 			write("second-byte-only-edit")
@@ -941,7 +920,7 @@ func TestReviewFacadeStartCannotResetActiveCorrectionBudget(t *testing.T) {
 			}
 			after, _ := store.Load()
 			stores, discoverErr := reviewtransaction.DiscoverCompactStores(context.Background(), repo)
-			if discoverErr != nil || after.Revision != before.Revision || after.State.CumulativeCorrectionLines != wantLines || len(after.State.CorrectionAttempts) != wantAttempts || len(stores) != 1 {
+			if discoverErr != nil || after.Revision != before.Revision || after.State.CumulativeCorrectionLines != 0 || len(after.State.CorrectionAttempts) != 0 || len(stores) != 1 {
 				t.Fatalf("START reset or mutated correction authority: before=%#v after=%#v stores=%d err=%v", before, after, len(stores), discoverErr)
 			}
 		})
@@ -1313,7 +1292,7 @@ func TestReviewSchemasRequireConcreteEvidenceStrings(t *testing.T) {
 	}
 }
 
-func TestReviewFacadeRejectsMalformedInputsWithoutConsumingIterativeCorrection(t *testing.T) {
+func TestReviewFacadeRejectsMalformedInputsWithoutConsumingTerminalValidator(t *testing.T) {
 	repo := initReviewCLIRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1363,24 +1342,23 @@ func TestReviewFacadeRejectsMalformedInputsWithoutConsumingIterativeCorrection(t
 		t.Fatal(err)
 	}
 	failed, _ := store.Load()
-	if failed.State.State != reviewtransaction.StateCorrectionRequired || failed.State.CumulativeCorrectionLines <= 0 || len(failed.State.LensResults) != 1 {
+	if failed.State.State != reviewtransaction.StateEscalated || failed.State.CumulativeCorrectionLines <= 0 || len(failed.State.LensResults) != 1 || failed.State.OriginalCriteria == nil || failed.State.CorrectionRegression == nil {
 		t.Fatalf("failed validation state = %#v", failed.State)
 	}
-
-	remaining := failed.State.CorrectionBudget - failed.State.CumulativeCorrectionLines
-	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--correction-lines", fmt.Sprint(remaining)}, io.Discard); err != nil {
+	receiptPayload, err := os.ReadFile(store.ReceiptPath())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n01\n02\n03\nfixed\n05\n06\n07\n08\n09\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n"), 0o644); err != nil {
+	receipt, err := reviewtransaction.ParseCompactReceipt(receiptPayload)
+	if err != nil || receipt.TerminalState != reviewtransaction.TerminalEscalated || receipt.FixDeltaHash != failed.State.FixDeltaHash {
+		t.Fatalf("failed validation receipt = %#v, %v", receipt, err)
+	}
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--correction-lines", "1"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	writeReviewCLIJSON(t, validator, facadeValidationResult{OriginalCriteria: facadeValidationCheck{Passed: true, Evidence: []string{"acceptance passes"}}, CorrectionRegression: facadeValidationCheck{Passed: true, Evidence: []string{"regression passes"}}, FollowUps: []reviewtransaction.FollowUp{}})
-	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--validation", validator}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	corrected, _ := store.Load()
-	if corrected.State.State != reviewtransaction.StateValidating || corrected.State.CumulativeCorrectionLines > corrected.State.CorrectionBudget || len(corrected.State.CorrectionAttempts) != 2 || len(corrected.State.LensResults) != 1 {
-		t.Fatalf("corrected retry state = %#v", corrected.State)
+	replayed, _ := store.Load()
+	if replayed.Revision != failed.Revision || replayed.State.State != reviewtransaction.StateEscalated || len(replayed.State.CorrectionAttempts) != 1 {
+		t.Fatalf("terminal failed validator replay = %#v", replayed)
 	}
 }
 

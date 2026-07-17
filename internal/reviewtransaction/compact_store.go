@@ -131,7 +131,7 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 	if predecessor.Revision != request.ExpectedPredecessorRevision {
 		return CompactRecord{}, fmt.Errorf("%w: expected predecessor revision %q, current %q", ErrConcurrentUpdate, request.ExpectedPredecessorRevision, predecessor.Revision)
 	}
-	if predecessor.State.State == StateCorrectionRequired && request.MaintainerAuthorization != compactRecoveryAuthorizationBinding(request.PredecessorLineageID, predecessor.Revision, request.Successor.InitialSnapshot.Identity, request.Actor, request.Reason) {
+	if predecessor.State.State == StateCorrectionRequired && request.Disposition != RecoveryEscalated && request.MaintainerAuthorization != compactRecoveryAuthorizationBinding(request.PredecessorLineageID, predecessor.Revision, request.Successor.InitialSnapshot.Identity, request.Actor, request.Reason) {
 		return CompactRecord{}, errors.New("correction-required scope recovery requires an exact maintainer authorization binding")
 	}
 	if predecessor.State.InitialSnapshot.Projection != request.Successor.InitialSnapshot.Projection {
@@ -233,16 +233,33 @@ func validateCompactRecoveryEdge(predecessor CompactRecord, successor CompactSta
 			return errors.New("recovery requires an invalidated predecessor")
 		}
 	case RecoveryEscalated:
-		if predecessor.State.State != StateEscalated {
+		historicalFailedValidator := compactHistoricalFailedValidator(predecessor.State)
+		if predecessor.State.State != StateEscalated && !historicalFailedValidator {
 			return errors.New("recovery requires an escalated predecessor")
 		}
-		if strings.TrimSpace(recovery.MaintainerAuthorization) == "" {
-			return errors.New("escalated recovery requires explicit maintainer authorization")
+		if !compactEscalatedRecoveryTargetChanged(predecessor.State.CurrentSnapshot, successor.InitialSnapshot) {
+			return errors.New("escalated recovery successor target has not changed")
+		}
+		if recovery.MaintainerAuthorization != compactRecoveryAuthorizationBinding(predecessor.State.LineageID, predecessor.Revision, successor.InitialSnapshot.Identity, recovery.Actor, recovery.Reason) {
+			return errors.New("escalated recovery requires an exact maintainer authorization binding")
 		}
 	default:
 		return errors.New("unsupported recovery disposition")
 	}
 	return nil
+}
+
+func compactEscalatedRecoveryTargetChanged(previous, next Snapshot) bool {
+	return previous.CandidateTree != next.CandidateTree && previous.Identity != next.Identity
+}
+
+func compactHistoricalFailedValidator(state CompactState) bool {
+	if state.State != StateCorrectionRequired || len(state.CorrectionAttempts) == 0 || state.ProposedCorrectionLines != nil || state.ActualCorrectionLines != nil ||
+		state.FixDeltaHash != EmptyFixDeltaHash || state.OriginalCriteria != nil || state.CorrectionRegression != nil {
+		return false
+	}
+	last := state.CorrectionAttempts[len(state.CorrectionAttempts)-1]
+	return !last.OriginalCriteria.Passed || !last.CorrectionRegression.Passed
 }
 
 func compactRecoveryAuthorizationBinding(lineage, revision, targetIdentity, actor, reason string) string {
@@ -434,6 +451,15 @@ func StartCompactAuthority(ctx context.Context, repo string, request CompactStar
 	requestedClaims := false
 	for _, store := range leaves {
 		existing := records[store.lineageID].State
+		if existing.State == StateEscalated && compactStartDeliveryScopeMatches(existing, request.State) {
+			if compactEscalatedRecoveryTargetChanged(existing.CurrentSnapshot, request.State.InitialSnapshot) {
+				recoveryCandidates = append(recoveryCandidates, store)
+			} else {
+				claimants = append(claimants, store)
+				requestedClaims = requestedClaims || store.lineageID == request.State.LineageID
+			}
+			continue
+		}
 		if existing.State == StateCorrectionRequired {
 			claim := classifyCompactCorrectionTarget(ctx, requestedStore.repo, existing, request.State)
 			switch claim {
@@ -608,6 +634,12 @@ func classifyCompactCorrectionTarget(ctx context.Context, repo string, existing,
 		existing.InitialSnapshot.BaseTree != live.BaseTree || len(live.LedgerIDs) != 0 ||
 		(SnapshotBuilder{Repo: repo}).ValidateEvidence(ctx, live) != nil {
 		return compactCorrectionTargetUnclaimed
+	}
+	if compactHistoricalFailedValidator(existing) {
+		if compactEscalatedRecoveryTargetChanged(existing.CurrentSnapshot, live) {
+			return compactCorrectionTargetRecover
+		}
+		return compactCorrectionTargetBlocked
 	}
 	if compactRecoveryAddsGenesisPath(existing, live) {
 		return compactCorrectionTargetRecover
@@ -1015,6 +1047,19 @@ func ImportCompactTransport(ctx context.Context, repo string, transport CompactT
 	if legacy, legacyErr := AuthoritativeStore(ctx, repo, validated.Record.State.LineageID); legacyErr == nil {
 		if _, loadErr := legacy.LoadChain(); loadErr == nil {
 			return CompactRecord{}, errors.New("cannot import compact authority over an existing legacy v1 lineage")
+		}
+	}
+	if recovery := validated.Record.State.Recovery; recovery != nil {
+		predecessorStore, predecessorErr := CompactAuthoritativeStore(ctx, repo, recovery.PredecessorLineageID)
+		if predecessorErr != nil {
+			return CompactRecord{}, predecessorErr
+		}
+		predecessor, predecessorErr := predecessorStore.Load()
+		if predecessorErr != nil {
+			return CompactRecord{}, fmt.Errorf("load imported recovery predecessor: %w", predecessorErr)
+		}
+		if err := validateCompactRecoveryEdge(predecessor, validated.Record.State); err != nil {
+			return CompactRecord{}, fmt.Errorf("validate imported recovery edge: %w", err)
 		}
 	}
 	if err := store.installTransportRecord(ctx, validated.Record); err != nil {

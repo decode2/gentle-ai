@@ -335,6 +335,19 @@ func TestNegotiatedRuntimeReplaysPublishedV149AuthorityReadOnly(t *testing.T) {
 	}
 }
 
+func TestNegotiatedStatusPreservesManualRecoveryAuthorityContext(t *testing.T) {
+	native := reviewtransaction.TargetStatusResult{
+		Applicability: reviewtransaction.TargetApplicabilityCurrent, AuthorityVersion: reviewtransaction.AuthorityVersionCompact,
+		LineageID: "historical-validator", State: reviewtransaction.StateCorrectionRequired, Generation: 1, Revision: "sha256:" + strings.Repeat("a", 64),
+		Action: reviewtransaction.TargetStatusActionRecover, Replayability: reviewtransaction.ReplayabilityManualActionRequired,
+	}
+	got := newReviewTargetStatusResult(native)
+	if got.Action != reviewtransaction.TargetStatusActionRecover || got.Replayability != reviewtransaction.ReplayabilityManualActionRequired ||
+		got.Authority == nil || got.Authority.LineageID != native.LineageID || got.Authority.Revision != native.Revision {
+		t.Fatalf("negotiated recovery status = %#v", got)
+	}
+}
+
 func TestNegotiatedLegacyReceiptStatusNeverUsesCompactPublicationPending(t *testing.T) {
 	native := reviewtransaction.TargetStatusResult{
 		Applicability:    reviewtransaction.TargetApplicabilityCurrent,

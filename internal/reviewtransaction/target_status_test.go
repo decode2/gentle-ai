@@ -249,6 +249,33 @@ func TestAssessTargetStatusRecognizesAuthorizedCorrection(t *testing.T) {
 	}
 }
 
+func TestHistoricalFailedValidatorRequiresChangedTargetRecovery(t *testing.T) {
+	repo, state, record, before := historicalFailedValidatorFixture(t, "historical-status")
+	target := Target{Kind: TargetCurrentChanges, IntendedUntracked: []string{}}
+	requested := newCompactTestState(t, repo, "historical-status-new")
+	started, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: requested})
+	if err != nil || started.Action != CompactStartBlocked || started.Record.Revision != record.Revision {
+		t.Fatalf("same-target historical START = %#v, %v", started, err)
+	}
+	status, err := AssessTargetStatus(context.Background(), repo, TargetStatusRequest{Target: target, LineageID: state.LineageID})
+	if err != nil || status.Applicability != TargetApplicabilityCurrent || status.Action != TargetStatusActionStop ||
+		status.Replayability != ReplayabilityManualActionRequired || status.LineageID != state.LineageID || status.Revision != record.Revision {
+		t.Fatalf("same-target historical status = %#v, %v", status, err)
+	}
+	writeSnapshotFile(t, repo, "tracked.txt", "changed recovery target\n")
+	requested = newCompactTestState(t, repo, "historical-status-changed")
+	started, err = StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: requested})
+	status, statusErr := AssessTargetStatus(context.Background(), repo, TargetStatusRequest{Target: target, LineageID: state.LineageID})
+	if err != nil || statusErr != nil || started.Action != CompactStartRecover || status.Action != TargetStatusActionRecover || status.Replayability != ReplayabilityManualActionRequired {
+		t.Fatalf("changed-target recovery: START=%#v status=%#v errors=%v/%v", started, status, err, statusErr)
+	}
+	store, _ := CompactAuthoritativeStore(context.Background(), repo, state.LineageID)
+	after, _ := os.ReadFile(store.StatePath())
+	if !bytes.Equal(before, after) {
+		t.Fatal("START/status migrated historical authority")
+	}
+}
+
 func TestCorrectionScopeExpansionGuidesStatusAndStartToRecovery(t *testing.T) {
 	repo, predecessor, _, _ := correctionScopeRecoveryFixture(t, "review-correction-expansion")
 	writeSnapshotFile(t, repo, "process_helper.go", "package processhelper\n")

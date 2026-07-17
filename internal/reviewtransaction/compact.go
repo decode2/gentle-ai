@@ -648,6 +648,9 @@ func (state *CompactState) BeginCorrection(proposed int) error {
 	if state.State != StateCorrectionRequired || state.ProposedCorrectionLines != nil {
 		return fmt.Errorf("cannot begin correction from compact state %q", state.State)
 	}
+	if len(state.CorrectionAttempts) != 0 {
+		return errors.New("compact correction validator was already consumed; use authorized successor recovery")
+	}
 	if proposed <= 0 {
 		return errors.New("compact correction requires a positive changed-line forecast")
 	}
@@ -688,24 +691,13 @@ func (state *CompactState) CompleteCorrection(snapshot Snapshot, actual int, val
 	state.CumulativeCorrectionLines += actual
 	state.CurrentSnapshot = snapshot
 	state.FollowUps = append(state.FollowUps, validation.FollowUps...)
-	if state.CumulativeCorrectionLines > state.CorrectionBudget {
-		state.FixDeltaHash, state.ActualCorrectionLines = fixHash, &actual
-		original, regression := validation.OriginalCriteria, validation.CorrectionRegression
-		state.OriginalCriteria, state.CorrectionRegression = &original, &regression
+	state.FixDeltaHash, state.ActualCorrectionLines = fixHash, &actual
+	original, regression := validation.OriginalCriteria, validation.CorrectionRegression
+	state.OriginalCriteria, state.CorrectionRegression = &original, &regression
+	if state.CumulativeCorrectionLines > state.CorrectionBudget || !original.Passed || !regression.Passed {
 		state.State = StateEscalated
-	} else if validation.OriginalCriteria.Passed && validation.CorrectionRegression.Passed {
-		state.FixDeltaHash, state.ActualCorrectionLines = fixHash, &actual
-		original, regression := validation.OriginalCriteria, validation.CorrectionRegression
-		state.OriginalCriteria, state.CorrectionRegression = &original, &regression
-		state.State = StateValidating
 	} else {
-		state.State = StateCorrectionRequired
-		if len(state.CorrectionAttempts) >= MaxCompactCorrectionAttempts {
-			state.State = StateEscalated
-		}
-		state.ProposedCorrectionLines, state.ActualCorrectionLines = nil, nil
-		state.FixDeltaHash = EmptyFixDeltaHash
-		state.OriginalCriteria, state.CorrectionRegression = nil, nil
+		state.State = StateValidating
 	}
 	return state.Validate()
 }

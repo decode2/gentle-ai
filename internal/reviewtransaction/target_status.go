@@ -176,7 +176,15 @@ func AssessTargetStatus(ctx context.Context, repo string, request TargetStatusRe
 			continue
 		}
 		state := candidate.compact.State
-		if state.State == StateCorrectionRequired {
+		if state.State == StateEscalated {
+			requested := state
+			requested.InitialSnapshot = live
+			if compactStartDeliveryScopeMatches(state, requested) {
+				candidate.correctionRecovery = compactEscalatedRecoveryTargetChanged(state.CurrentSnapshot, live)
+				candidates = append(candidates, candidate)
+				continue
+			}
+		} else if state.State == StateCorrectionRequired {
 			requested := candidate.compact.State
 			requested.InitialSnapshot = live
 			switch classifyCompactCorrectionTarget(ctx, repo, state, requested) {
@@ -294,6 +302,10 @@ func targetStatusForCandidate(result TargetStatusResult, candidate targetStatusC
 		result.ReceiptIdentity = candidate.receiptIdentity
 		if candidate.correctionRecovery {
 			result.Action, result.Replayability = TargetStatusActionRecover, ReplayabilityManualActionRequired
+			return result
+		}
+		if state.State == StateEscalated || compactHistoricalFailedValidator(state) {
+			result.Action, result.Replayability = TargetStatusActionStop, ReplayabilityManualActionRequired
 			return result
 		}
 		if !candidate.receiptPublished && candidate.receiptReplayable {
