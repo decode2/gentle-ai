@@ -940,9 +940,10 @@ func TestResolveEngramRoutesStaleVerifyEvidenceToVerifyUnderApprovedCompactAutho
 	}
 }
 
-func TestResolveKeepsFailedVerdictRemediationRoutingUnderApprovedCompactAuthority(t *testing.T) {
+func TestResolveKeepsFailedVerdictWithCurrentSpecTotalsMismatchOnRemediationRouting(t *testing.T) {
 	root := t.TempDir()
 	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
+	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Auth\n#### Scenario: Valid login\n#### Scenario: Added after verification\n")
 	write(t, filepath.Join(changeRoot, "verify-report.md"), boundedVerifyEnvelope(shaID("d"), "fail"))
 	writeApprovedCompactAuthorityForChange(t, root, changeRoot, "compact-thin")
 
@@ -953,7 +954,7 @@ func TestResolveKeepsFailedVerdictRemediationRoutingUnderApprovedCompactAuthorit
 	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "resolve-review" {
 		t.Fatalf("verify=%q next=%q, want blocked/resolve-review for failed verdict", status.Dependencies.Verify, status.NextRecommended)
 	}
-	want := "verify evidence cannot enter remediation: verdict requires remediation; bounded review transaction is missing"
+	want := "verify evidence cannot enter remediation: verify result total 1 does not match actual scenario count 2; bounded review transaction is missing"
 	if !strings.Contains(strings.Join(status.BlockedReasons, "\n"), want) {
 		t.Fatalf("BlockedReasons = %v, want containing %q", status.BlockedReasons, want)
 	}

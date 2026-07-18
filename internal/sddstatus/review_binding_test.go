@@ -475,10 +475,10 @@ func TestBoundReviewRoutesStaleVerifyEvidenceToVerify(t *testing.T) {
 	}
 }
 
-func TestBoundReviewKeepsFailedVerdictRemediationRouting(t *testing.T) {
+func TestBoundReviewKeepsFailedVerdictWithCurrentSpecTotalsMismatchOnRemediationRouting(t *testing.T) {
 	root := t.TempDir()
 	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
-	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Binding\n#### Scenario: Exact authority\n")
+	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Binding\n#### Scenario: Exact authority\n#### Scenario: Added after verification\n")
 	writeApprovedCompactAuthorityForChange(t, root, changeRoot, "approved-thin")
 	if _, err := BindApprovedReview(context.Background(), root, "thin", "approved-thin", ""); err != nil {
 		t.Fatal(err)
@@ -492,7 +492,7 @@ func TestBoundReviewKeepsFailedVerdictRemediationRouting(t *testing.T) {
 	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "resolve-review" {
 		t.Fatalf("verify=%q next=%q, want blocked/resolve-review for failed verdict", status.Dependencies.Verify, status.NextRecommended)
 	}
-	want := "verify evidence cannot enter remediation: verdict requires remediation; bounded review transaction is missing"
+	want := "verify evidence cannot enter remediation: verify result total 1 does not match actual scenario count 2; bounded review transaction is missing"
 	if !strings.Contains(strings.Join(status.BlockedReasons, "\n"), want) {
 		t.Fatalf("BlockedReasons = %v, want containing %q", status.BlockedReasons, want)
 	}
