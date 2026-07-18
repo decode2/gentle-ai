@@ -430,6 +430,46 @@ func TestResolveEngramBridgesCompactAuthorityOverIncompatibleTransactionArtifact
 	}
 }
 
+func TestResolveEngramDoesNotBridgeCompactAuthorityOverMalformedJSONTransaction(t *testing.T) {
+	root := t.TempDir()
+	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
+	writeApprovedCompactAuthorityForChange(t, root, changeRoot, "compact-thin")
+	mkdir(t, filepath.Join(root, ".engram"))
+	project := strings.ToLower(filepath.Base(root))
+	observation := func(title, path string) engramObservation {
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return engramObservation{Title: title, Content: string(payload), Project: project, Scope: "project"}
+	}
+	observations := []engramObservation{
+		observation("sdd/thin/proposal", filepath.Join(changeRoot, "proposal.md")),
+		observation("sdd/thin/spec", filepath.Join(changeRoot, "specs", "auth", "spec.md")),
+		observation("sdd/thin/design", filepath.Join(changeRoot, "design.md")),
+		observation("sdd/thin/tasks", filepath.Join(changeRoot, "tasks.md")),
+		{Title: "sdd/thin/apply-progress", Content: "all work units complete", Project: project, Scope: "project"},
+		{Title: "sdd/thin/review/transaction", Content: `{"state":`, Project: project, Scope: "project"},
+	}
+	restore := stubEngramExport(t, observations)
+	defer restore()
+
+	status, ok, err := resolveEngramStatus(root, "thin", false)
+	if err != nil {
+		t.Fatalf("resolveEngramStatus() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("resolveEngramStatus() did not retain the Engram change")
+	}
+	reasons := strings.Join(status.BlockedReasons, "\n")
+	if status.Dependencies.Verify != DependencyBlocked || status.NextRecommended != "review" {
+		t.Fatalf("verify=%q next=%q reasons=%v, want malformed JSON to remain blocked on review", status.Dependencies.Verify, status.NextRecommended, status.BlockedReasons)
+	}
+	if !strings.Contains(reasons, "bounded review transaction is invalid") {
+		t.Fatalf("BlockedReasons = %v, want malformed JSON reason", status.BlockedReasons)
+	}
+}
+
 func TestResolveEngramFailsClosedOnIncompatibleTransactionWithoutNativeAuthority(t *testing.T) {
 	root := t.TempDir()
 	mkdir(t, filepath.Join(root, ".engram"))

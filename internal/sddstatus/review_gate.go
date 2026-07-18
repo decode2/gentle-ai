@@ -151,6 +151,8 @@ func readText(path string) string {
 	return string(content)
 }
 
+const incompatibleReviewTransactionReason = "bounded review transaction artifact is not a native JSON review transaction; regenerate it from native review authority"
+
 func readReviewTransaction(path, content string) (*reviewtransaction.Transaction, string) {
 	if path == "" && strings.TrimSpace(content) == "" {
 		return nil, "bounded review transaction is missing"
@@ -164,7 +166,7 @@ func readReviewTransaction(path, content string) (*reviewtransaction.Transaction
 		payload = read
 	}
 	if !strings.HasPrefix(strings.TrimSpace(string(payload)), "{") {
-		return nil, "bounded review transaction artifact is not a native JSON review transaction; regenerate it from native review authority"
+		return nil, incompatibleReviewTransactionReason
 	}
 	transaction, err := reviewtransaction.ParseTransaction(payload)
 	if err != nil {
