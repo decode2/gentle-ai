@@ -26,6 +26,17 @@ var compactStartLockPollInterval = 25 * time.Millisecond
 
 var ErrLegacyReadOnly = errors.New("legacy v1 review lineage is read-only")
 
+// ErrHistoricalCompatReadOnly denies ordinary mutation of authority loaded
+// through the retired-field compatibility path.
+var ErrHistoricalCompatReadOnly = errors.New("historical compatibility authority is read-only")
+
+// compactRetiredStateFields lists top-level compact state fields persisted by
+// older builds and removed from the current schema. Historical records that
+// carry them load read-only; new authority state never persists them.
+var compactRetiredStateFields = map[string]struct{}{
+	"zero_edit_escalation": {},
+}
+
 // LegacyReadOnlyError is the typed ordinary-mutation denial for historical
 // legacy-v1 authority. Legacy authority remains available for read-only
 // compatibility and explicit maintenance transport operations only.
@@ -50,6 +61,9 @@ type CompactRecord struct {
 	Schema   string       `json:"schema"`
 	Revision string       `json:"revision"`
 	State    CompactState `json:"state"`
+	// HistoricalCompat marks a record loaded through the retired-field
+	// compatibility path; such authority is read-only.
+	HistoricalCompat bool `json:"-"`
 }
 
 type CompactStore struct {
@@ -950,6 +964,9 @@ func (store CompactStore) ReplaceContext(ctx context.Context, expectedRevision, 
 		if parseErr != nil {
 			return "", parseErr
 		}
+		if loaded.HistoricalCompat {
+			return "", fmt.Errorf("%w: %s for lineage %q", ErrHistoricalCompatReadOnly, operation, loaded.State.LineageID)
+		}
 		current = &loaded
 	} else if !os.IsNotExist(err) {
 		return "", err
@@ -1127,12 +1144,21 @@ func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error)
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var record CompactRecord
-	if err := decoder.Decode(&record); err != nil {
-		return CompactRecord{}, err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return CompactRecord{}, errors.New("multiple JSON values in compact review state")
+	if strictErr := decoder.Decode(&record); strictErr != nil {
+		if !retiredCompactFieldError(strictErr) {
+			return CompactRecord{}, strictErr
+		}
+		historical, historicalErr := parseHistoricalCompactRecord(payload)
+		if historicalErr != nil {
+			// Preserve the original strict decode wording for callers.
+			return CompactRecord{}, strictErr
+		}
+		record = historical
+	} else {
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return CompactRecord{}, errors.New("multiple JSON values in compact review state")
+		}
 	}
 	if record.Schema != compactRecordSchema || !validSHA256(record.Revision) {
 		return CompactRecord{}, errors.New("invalid compact review state record")
@@ -1143,11 +1169,87 @@ func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error)
 	if lineageID != "" && record.State.LineageID != lineageID {
 		return CompactRecord{}, errors.New("compact state lineage does not match its directory")
 	}
-	want, _, err := makeCompactRecord(record.State)
-	if err != nil || want.Revision != record.Revision {
-		return CompactRecord{}, errors.New("compact review state checksum mismatch")
+	if !record.HistoricalCompat {
+		want, _, err := makeCompactRecord(record.State)
+		if err != nil || want.Revision != record.Revision {
+			return CompactRecord{}, errors.New("compact review state checksum mismatch")
+		}
 	}
 	return record, nil
+}
+
+// retiredCompactFieldError reports whether a strict decode failure names a
+// retired compatibility field, so only genuine historical records pay the
+// tolerant second parse.
+func retiredCompactFieldError(err error) bool {
+	message := err.Error()
+	if !strings.Contains(message, "unknown field") {
+		return false
+	}
+	for name := range compactRetiredStateFields {
+		if strings.Contains(message, `"`+name+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseHistoricalCompactRecord tolerates only retired top-level state fields
+// from older builds. The persisted revision must bind the exact historical
+// state bytes, so loading preserves revisions and provenance without ever
+// rewriting or re-hashing persisted authority.
+func parseHistoricalCompactRecord(payload []byte) (CompactRecord, error) {
+	var envelope struct {
+		Schema   string          `json:"schema"`
+		Revision string          `json:"revision"`
+		State    json.RawMessage `json:"state"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return CompactRecord{}, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return CompactRecord{}, errors.New("multiple JSON values in compact review state")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.State, &fields); err != nil {
+		return CompactRecord{}, err
+	}
+	retired := false
+	for name := range compactRetiredStateFields {
+		if _, exists := fields[name]; exists {
+			retired = true
+			delete(fields, name)
+		}
+	}
+	if !retired {
+		return CompactRecord{}, errors.New("compact review state has no tolerated retired fields")
+	}
+	remaining, err := json.Marshal(fields)
+	if err != nil {
+		return CompactRecord{}, err
+	}
+	stateDecoder := json.NewDecoder(bytes.NewReader(remaining))
+	stateDecoder.DisallowUnknownFields()
+	var state CompactState
+	if err := stateDecoder.Decode(&state); err != nil {
+		return CompactRecord{}, err
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, envelope.State); err != nil {
+		return CompactRecord{}, err
+	}
+	// makeCompactRecord hashes json.Marshal(state) while the record file is
+	// written with json.MarshalIndent, which is marshal-then-indent; Compact
+	// only inverts the added whitespace, so this reproduces the historical
+	// writer's exact revision preimage without re-marshaling the struct.
+	sum := sha256.Sum256(append([]byte(CompactStateSchema+"\x00"), compacted.Bytes()...))
+	if envelope.Revision != "sha256:"+hex.EncodeToString(sum[:]) {
+		return CompactRecord{}, errors.New("compact review state checksum mismatch")
+	}
+	return CompactRecord{Schema: envelope.Schema, Revision: envelope.Revision, State: state, HistoricalCompat: true}, nil
 }
 
 func appendCompactTrace(path string, entry CompactTraceEntry) error {
@@ -1173,6 +1275,12 @@ func (store CompactStore) ExportTransport() (CompactTransport, error) {
 	record, err := store.Load()
 	if err != nil {
 		return CompactTransport{}, err
+	}
+	if record.HistoricalCompat {
+		// Transport re-marshals the typed record, which cannot reproduce the
+		// retired historical bytes or their revision; refuse before a
+		// checksum failure would mask the cause.
+		return CompactTransport{}, fmt.Errorf("%w: lineage %q cannot be exported as compact transport", ErrHistoricalCompatReadOnly, record.State.LineageID)
 	}
 	transport := CompactTransport{Schema: CompactTransportSchema, Record: record}
 	if payload, readErr := os.ReadFile(store.ReceiptPath()); readErr == nil {
