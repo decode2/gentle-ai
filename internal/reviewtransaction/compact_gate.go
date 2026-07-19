@@ -189,6 +189,15 @@ func EvaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 	if receipt.TerminalState == TerminalEscalated {
 		return NativeGateEvaluation{Result: GateEscalated, Reason: nativeGateReason(GateEscalated)}
 	}
+	if (input.Gate == GatePrePush || input.Gate == GatePrePR) && record.State.InitialSnapshot.Kind == TargetCurrentChanges {
+		emptyTree, emptyTreeErr := (SnapshotBuilder{Repo: repo}).emptyTree(ctx)
+		if emptyTreeErr != nil {
+			return invalid("repository empty tree cannot be derived: "+emptyTreeErr.Error(), emptyTreeErr)
+		}
+		if record.State.InitialSnapshot.UnbornHead && record.State.InitialSnapshot.BaseTree == emptyTree {
+			return invalid("first publication from an empty-base review receipt is not supported")
+		}
+	}
 	request, nextSliceIntended, err := buildCompactGateRequest(ctx, repo, record.State, input)
 	if err != nil && input.Gate == GatePrePush && record.State.Recovery != nil && record.State.InitialSnapshot.Kind == TargetCurrentChanges {
 		// A scope_changed recovery successor created after its predecessor's
@@ -479,7 +488,7 @@ func buildCompactGateRequestWithPushBase(ctx context.Context, repo string, state
 			request.Target = Target{Kind: TargetBaseWorkspaceOverlay, Projection: projection, BaseRef: current.BaseTree, IntendedUntracked: intended}
 			break
 		}
-		headTree, err := (SnapshotBuilder{Repo: repo}).resolveTree(ctx, "HEAD")
+		headTree, _, err := (SnapshotBuilder{Repo: repo}).resolveCurrentChangesBase(ctx, projection)
 		if err != nil {
 			return GateRequest{}, nil, err
 		}
