@@ -928,6 +928,31 @@ func classifyCompactCorrectionTarget(ctx context.Context, repo string, existing,
 	return compactCorrectionTargetBlocked
 }
 
+// compactCorrectionRecoveryDisposition names the `review recover --disposition`
+// value the recovery rules accept for a correction-required predecessor that
+// classifyCompactCorrectionTarget already classified as
+// compactCorrectionTargetRecover. It re-evaluates the very predicates that
+// authorize each recovery — compactHistoricalFailedValidator for the escalated
+// disposition, and the genesis-scope expansion/contraction pair for the
+// scope-changed disposition — in the same order, so status can never name a
+// disposition ValidateCompactRecovery would reject. It authorizes nothing on
+// its own and returns "" when no disposition applies.
+func compactCorrectionRecoveryDisposition(existing CompactState, live Snapshot) RecoveryDisposition {
+	if existing.State != StateCorrectionRequired {
+		return ""
+	}
+	if compactHistoricalFailedValidator(existing) {
+		if compactEscalatedRecoveryTargetChanged(existing.CurrentSnapshot, live) {
+			return RecoveryEscalated
+		}
+		return ""
+	}
+	if compactRecoveryAddsGenesisPath(existing, live) || compactRecoveryContractsGenesisPaths(existing, live) {
+		return RecoveryScopeChanged
+	}
+	return ""
+}
+
 func compactStartInitialSnapshotsEqual(existing, requested CompactState) bool {
 	return compactStartDeliveryScopeMatches(existing, requested) &&
 		existing.InitialSnapshot.CandidateTree == requested.InitialSnapshot.CandidateTree
