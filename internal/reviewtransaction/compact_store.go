@@ -152,6 +152,7 @@ type CompactRecoveryRequest struct {
 	Actor                       string
 	RecoveredAt                 time.Time
 	MaintainerAuthorization     string
+	CarryPredecessorEvidence    bool
 }
 
 const ReleaseScopeRecoveryAuthorization = "gentle-ai.release-scope-recovery/v1"
@@ -253,8 +254,38 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 	if err := request.Successor.Validate(); err != nil {
 		return CompactRecord{}, err
 	}
-	if !compactPristineReviewing(request.Successor) || len(request.Successor.CorrectionAttempts) != 0 || request.Successor.CumulativeCorrectionLines != 0 {
-		return CompactRecord{}, errors.New("recovery successor must start as a fresh reviewing authority")
+	if !request.CarryPredecessorEvidence {
+		if !compactPristineReviewing(request.Successor) || len(request.Successor.CorrectionAttempts) != 0 || request.Successor.CumulativeCorrectionLines != 0 {
+			return CompactRecord{}, errors.New("recovery successor must start as a fresh reviewing authority")
+		}
+	} else if predecessor.State.CurrentSnapshot.CandidateTree == request.Successor.InitialSnapshot.CandidateTree && len(predecessor.State.CorrectionAttempts) > 0 {
+		request.Successor.LensResults = predecessor.State.LensResults
+		request.Successor.Classifications = predecessor.State.Classifications
+		request.Successor.Outcomes = predecessor.State.Outcomes
+		request.Successor.FixFindingIDs = predecessor.State.FixFindingIDs
+		request.Successor.FollowUps = predecessor.State.FollowUps
+
+		request.Successor.FixDeltaHash = predecessor.State.FixDeltaHash
+		request.Successor.ActualCorrectionLines = predecessor.State.ActualCorrectionLines
+		request.Successor.ProposedCorrectionLines = predecessor.State.ProposedCorrectionLines
+		if request.Successor.ProposedCorrectionLines != nil && *request.Successor.ProposedCorrectionLines > request.Successor.CorrectionBudget {
+			budget := request.Successor.CorrectionBudget
+			request.Successor.ProposedCorrectionLines = &budget
+		}
+		request.Successor.OriginalCriteria = predecessor.State.OriginalCriteria
+		request.Successor.CorrectionRegression = predecessor.State.CorrectionRegression
+		request.Successor.CurrentSnapshot = predecessor.State.CurrentSnapshot
+		request.Successor.EvidenceHash = predecessor.State.EvidenceHash
+
+		if (request.Successor.ActualCorrectionLines != nil && *request.Successor.ActualCorrectionLines > request.Successor.CorrectionBudget) ||
+			(request.Successor.OriginalCriteria != nil && !request.Successor.OriginalCriteria.Passed) ||
+			(request.Successor.CorrectionRegression != nil && !request.Successor.CorrectionRegression.Passed) {
+			request.Successor.State = StateEscalated
+		} else {
+			request.Successor.State = StateValidating
+		}
+	} else {
+		return CompactRecord{}, errors.New("cannot carry predecessor evidence when candidate trees differ or no correction attempts exist")
 	}
 	if err := validateCompactRecoveryEdge(predecessor, request.Successor); err != nil {
 		return CompactRecord{}, err

@@ -443,6 +443,7 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	baseRef := flags.String("base-ref", "", "optional base revision for immutable base-to-HEAD review")
 	committedOnly := flags.Bool("committed-only", false, "acknowledge that --base-ref excludes dirty tracked changes")
 	releaseScope := flags.Bool("release-scope", false, "recover an approved current-changes review into the immutable HEAD first-parent release scope")
+	carryEvidence := flags.Bool("carry-predecessor-evidence", false, "import predecessor evidence into recovered successor")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
 	}
@@ -545,6 +546,7 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	record, err := reviewtransaction.RecoverCompactAuthority(context.Background(), root, reviewtransaction.CompactRecoveryRequest{
 		PredecessorLineageID: *predecessor, ExpectedPredecessorRevision: *expected, Successor: state,
 		Disposition: reviewtransaction.RecoveryDisposition(*disposition), Reason: *reason, Actor: *actor, MaintainerAuthorization: *authorization,
+		CarryPredecessorEvidence: *carryEvidence,
 	})
 	if err != nil {
 		return err
