@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/gentleman-programming/gentle-ai/internal/model"
+	"github.com/gentleman-programming/gentle-ai/internal/sysproc"
 )
 
 // GenerationEngine abstracts the AI CLI tool used to generate a skill.
@@ -48,6 +49,7 @@ func (e *ClaudeEngine) Available() bool {
 
 func (e *ClaudeEngine) Generate(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, "claude", "--print", "-p", prompt)
+	sysproc.HideConsole(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -69,6 +71,7 @@ func (e *OpenCodeEngine) Available() bool {
 
 func (e *OpenCodeEngine) Generate(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, "opencode", "run", prompt)
+	sysproc.HideConsole(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -90,6 +93,7 @@ func (e *GeminiEngine) Available() bool {
 
 func (e *GeminiEngine) Generate(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gemini", "-p", prompt)
+	sysproc.HideConsole(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -111,6 +115,7 @@ func (e *CodexEngine) Available() bool {
 
 func (e *CodexEngine) Generate(ctx context.Context, prompt string) (string, error) {
 	cmd := exec.CommandContext(ctx, "codex", "exec", prompt)
+	sysproc.HideConsole(cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

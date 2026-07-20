@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/model"
+	"github.com/gentleman-programming/gentle-ai/internal/sysproc"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/versions"
 )
@@ -18,7 +19,9 @@ var cmdLookPath = exec.LookPath
 var osStat = os.Stat
 var osGetenv = os.Getenv
 var cmdGoVersion = func() ([]byte, error) {
-	return exec.Command("go", "version").Output()
+	cmd := exec.Command("go", "version")
+	sysproc.HideConsole(cmd)
+	return cmd.Output()
 }
 
 // CommandSequence represents an ordered list of commands to run in sequence.

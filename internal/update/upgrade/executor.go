@@ -28,6 +28,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/components/skills"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
+	"github.com/gentleman-programming/gentle-ai/internal/sysproc"
 	"github.com/gentleman-programming/gentle-ai/internal/system"
 	"github.com/gentleman-programming/gentle-ai/internal/update"
 )
@@ -35,7 +36,11 @@ import (
 // Package-level vars for testability — same pattern as internal/update/detect.go.
 // execCommand is used as: execCommand(name, args...) — identical signature to exec.Command.
 // Swapping this var in tests controls which commands are actually run.
-var execCommand = exec.Command
+var execCommand = func(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	sysproc.HideConsole(cmd)
+	return cmd
+}
 
 // snapshotCreator is the function used to create a backup snapshot before
 // upgrade execution. Swapping this var in tests allows forcing snapshot

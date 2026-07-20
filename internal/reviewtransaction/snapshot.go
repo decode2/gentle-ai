@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gentleman-programming/gentle-ai/internal/sysproc"
 )
 
 type TargetKind string
@@ -994,6 +996,7 @@ func runGit(ctx context.Context, repo string, extraEnv []string, stdin []byte, a
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := gitCommandContext(commandContext, "git", append([]string{"--no-replace-objects", "-C", repo}, args...)...)
+	sysproc.HideConsole(command)
 	command.Cancel = nil
 	command.WaitDelay = gitCommandWaitDelay
 	command.Env = sanitizedGitEnvironment(os.Environ(), extraEnv)
