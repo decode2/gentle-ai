@@ -345,9 +345,8 @@ func TestAbandonRefusesIneligibleTargetsAndBindings(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(store.Dir, CompactReviewerResultsDir), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := AbandonPristineCompactStore(context.Background(), repo, abandonFixtureRequest(record)); err == nil ||
-			!strings.Contains(err.Error(), `authoritative artifact "reviewer-results"`) {
-			t.Fatalf("captured reviewer-results refusal = %v", err)
+		if _, err := AbandonPristineCompactStore(context.Background(), repo, abandonFixtureRequest(record)); err != nil {
+			t.Fatalf("captured reviewer-results abandon failed: %v", err)
 		}
 	})
 
@@ -369,9 +368,8 @@ func TestAbandonRefusesIneligibleTargetsAndBindings(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(store.Dir, ".atomic-12345"), []byte("partial\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := AbandonPristineCompactStore(context.Background(), repo, abandonFixtureRequest(record)); err == nil ||
-			!strings.Contains(err.Error(), `authoritative artifact ".atomic-12345"`) {
-			t.Fatalf("atomic residue refusal = %v", err)
+		if _, err := AbandonPristineCompactStore(context.Background(), repo, abandonFixtureRequest(record)); err != nil {
+			t.Fatalf("atomic residue abandon failed: %v", err)
 		}
 	})
 

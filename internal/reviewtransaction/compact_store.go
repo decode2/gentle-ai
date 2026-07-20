@@ -1333,6 +1333,44 @@ func CompactRevisionForState(state CompactState) (string, error) {
 	return record.Revision, err
 }
 
+func RecoverStaleLock(ctx context.Context, repo string) error {
+	base, _, err := reviewAuthorityRoot(ctx, repo)
+	if err != nil {
+		return err
+	}
+	versionRoot := filepath.Join(base, "v2")
+	lockPath := filepath.Join(versionRoot, "LOCK")
+
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var owner storeLockOwner
+	if err := json.Unmarshal(data, &owner); err != nil {
+		return os.Remove(lockPath)
+	}
+
+	if owner.PID == 0 {
+		return nil
+	}
+
+	// We can check if the host matches the local host to be safe
+	host, err := os.Hostname()
+	if err == nil && owner.Host != "unknown" && owner.Host != host {
+		return fmt.Errorf("lock is held by host %q; cannot recover on %q", owner.Host, host)
+	}
+
+	if isProcessRunning(owner.PID) {
+		return fmt.Errorf("lock is currently held by running process %d", owner.PID)
+	}
+
+	return os.Remove(lockPath)
+}
+
 func parseCompactRecord(payload []byte, lineageID string) (CompactRecord, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()

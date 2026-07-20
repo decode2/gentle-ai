@@ -28,3 +28,11 @@ func tryLockFileMode(file *os.File, exclusive bool) (bool, error) {
 func unlockFile(file *os.File) error {
 	return syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }
+
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}

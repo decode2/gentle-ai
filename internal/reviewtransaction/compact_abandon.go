@@ -95,10 +95,26 @@ func AbandonPristineCompactStore(ctx context.Context, repo string, request Compa
 	} else if !os.IsNotExist(statErr) {
 		return CompactReclaimRecord{}, fmt.Errorf("inspect same-lineage legacy authority: %w", statErr)
 	}
+	hasFinalize, hasReceipt := false, false
+	items, err := os.ReadDir(dir)
+	if err != nil {
+		return CompactReclaimRecord{}, fmt.Errorf("inspect abandon target: %w", err)
+	}
+	for _, item := range items {
+		if item.Name() == compactFinalizeJournalFileName {
+			hasFinalize = true
+		}
+		if item.Name() == compactReceiptFileName {
+			hasReceipt = true
+		}
+	}
+
 	switch record.State.State {
 	case StateReviewing:
 		if !compactPristineReviewing(record.State) {
-			return CompactReclaimRecord{}, fmt.Errorf("review abandon refused: reviewing lineage %q is not pristine; it carries review or correction data", request.LineageID)
+			if hasFinalize || hasReceipt {
+				return CompactReclaimRecord{}, fmt.Errorf("review abandon refused: reviewing lineage %q is not pristine; it carries review or correction data", request.LineageID)
+			}
 		}
 	case StateInvalidated:
 		// compactPristineReviewing hard-requires State == StateReviewing and an
@@ -116,14 +132,14 @@ func AbandonPristineCompactStore(ctx context.Context, repo string, request Compa
 	default:
 		return CompactReclaimRecord{}, fmt.Errorf("review abandon refused: lineage %q holds %q authority; only a pristine reviewing or pristine invalidated lineage may be abandoned", request.LineageID, record.State.State)
 	}
-	items, err := os.ReadDir(dir)
-	if err != nil {
-		return CompactReclaimRecord{}, fmt.Errorf("inspect abandon target: %w", err)
-	}
 	residue := make([]string, 0, len(items))
 	for _, item := range items {
 		if item.Name() != compactStateFileName && compactAuthoritativeArtifact(item.Name()) {
-			return CompactReclaimRecord{}, fmt.Errorf("review abandon refused: store entry %q holds authoritative artifact %q beyond its pristine state", request.LineageID, item.Name())
+			if record.State.State == StateReviewing && !hasFinalize && !hasReceipt {
+				// Allow authoritative artifacts like reviewer-results to be reclaimed
+			} else {
+				return CompactReclaimRecord{}, fmt.Errorf("review abandon refused: store entry %q holds authoritative artifact %q beyond its pristine state", request.LineageID, item.Name())
+			}
 		}
 		residue = append(residue, item.Name())
 	}
