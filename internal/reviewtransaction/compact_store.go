@@ -801,6 +801,14 @@ func resumeExplicitCompactStart(ctx context.Context, store CompactStore, record 
 		}
 		return blocked()
 	}
+	if existing.Recovery != nil && existing.State == StateReviewing {
+		if existing.PolicyHash != requested.PolicyHash || existing.InitialSnapshot.Identity != requested.InitialSnapshot.Identity ||
+			(SnapshotBuilder{Repo: store.repo}).ValidateEvidence(ctx, requested.InitialSnapshot) != nil {
+			return blocked()
+		}
+		return CompactStartResult{Record: record, Action: CompactStartResumed,
+			LensesRequired: len(existing.LensResults) < len(existing.SelectedLenses)}, nil
+	}
 	currentTarget := existing.State == StateCorrectionRequired || existing.State == StateValidating || existing.State == StateApproved
 	want := existing.InitialSnapshot
 	if currentTarget {
