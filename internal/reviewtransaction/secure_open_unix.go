@@ -43,7 +43,7 @@ func secureOpenLocalStoreLock(path string) (*os.File, error) {
 }
 
 func secureOpenLockParent(path string) (int, error) {
-	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(string(filepath.Separator), secureDirectoryOpenFlags(), 0)
 	if err != nil {
 		return -1, err
 	}
@@ -51,7 +51,7 @@ func secureOpenLockParent(path string) (int, error) {
 		if component == "" {
 			continue
 		}
-		nextFD, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		nextFD, err := unix.Openat(fd, component, secureDirectoryOpenFlags()|unix.O_NOFOLLOW, 0)
 		if err != nil {
 			_ = unix.Close(fd)
 			return -1, err

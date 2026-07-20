@@ -12,6 +12,15 @@ import (
 	"testing"
 )
 
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func TestAcquireLocalStoreLockRejectsSymlinkAndPreservesTarget(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "external-target")
 	want := []byte("external data must not be lock metadata\n")
@@ -121,7 +130,7 @@ func TestAcquireLocalStoreLockRejectsNonRegularUnixObject(t *testing.T) {
 }
 
 func TestAcquireLocalStoreLockCreatesAndReopensWithoutChangingPermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "review-store", "LOCK")
+	path := filepath.Join(canonicalTempDir(t), "review-store", "LOCK")
 	first, err := acquireLocalStoreLock(path)
 	if err != nil {
 		t.Fatal(err)
@@ -149,8 +158,33 @@ func TestAcquireLocalStoreLockCreatesAndReopensWithoutChangingPermissions(t *tes
 	}
 }
 
+func TestAcquireLocalStoreLockAllowsSearchOnlyAncestor(t *testing.T) {
+	root := canonicalTempDir(t)
+	ancestor := filepath.Join(root, "search-only")
+	path := filepath.Join(ancestor, "review-store", "LOCK")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(ancestor, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+
+	lock, err := acquireLocalStoreLock(path)
+	if err != nil {
+		t.Fatalf("acquireLocalStoreLock(search-only ancestor): %v", err)
+	}
+	if err := lock.release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBusyStoreLockProbePreservesExistingUnixInodeAndMetadata(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "review-store", "LOCK")
+	path := filepath.Join(canonicalTempDir(t), "review-store", "LOCK")
 	held, err := acquireStoreLock(path)
 	if err != nil {
 		t.Fatal(err)

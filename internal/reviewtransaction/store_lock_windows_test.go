@@ -10,6 +10,43 @@ import (
 	"testing"
 )
 
+func TestNTPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "drive path",
+			path: `C:\review-store\LOCK`,
+			want: `\??\C:\review-store\LOCK`,
+		},
+		{
+			name: "UNC path",
+			path: `\\server\share\review-store\LOCK`,
+			want: `\??\UNC\server\share\review-store\LOCK`,
+		},
+		{
+			name: "extended drive path",
+			path: `\\?\C:\review-store\LOCK`,
+			want: `\??\C:\review-store\LOCK`,
+		},
+		{
+			name: "extended UNC path",
+			path: `\\?\UNC\server\share\review-store\LOCK`,
+			want: `\??\UNC\server\share\review-store\LOCK`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ntPath(tt.path); got != tt.want {
+				t.Fatalf("ntPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWindowsSecureStoreLockRejectsReparsePointAndPreservesTarget(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "external-target")
 	want := []byte("external data must not be lock metadata\n")

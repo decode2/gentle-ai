@@ -66,6 +66,12 @@ func secureOpenLocalStoreLock(path string) (*os.File, error) {
 }
 
 func ntPath(path string) string {
+	if strings.HasPrefix(path, `\\?\UNC\`) {
+		return `\??\UNC\` + strings.TrimPrefix(path, `\\?\UNC\`)
+	}
+	if strings.HasPrefix(path, `\\?\`) {
+		return `\??\` + strings.TrimPrefix(path, `\\?\`)
+	}
 	if strings.HasPrefix(path, `\\`) {
 		return `\??\UNC\` + strings.TrimPrefix(path, `\\`)
 	}
