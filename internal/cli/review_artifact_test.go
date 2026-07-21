@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -373,4 +374,128 @@ func TestReviewCaptureResultRejectsNestedEnvelope(t *testing.T) {
 	if !strings.Contains(err.Error(), "nested_envelope") && !strings.Contains(err.Error(), "envelope") {
 		t.Fatalf("expected nested_envelope in error, got: %v", err)
 	}
+}
+
+func TestReviewFacadeFinalizeResultArtifactTransport(t *testing.T) {
+	t.Run("finalize with file path manifest", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(t.TempDir(), "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		manifestFile := filepath.Join(t.TempDir(), "manifest.json")
+		if err := os.WriteFile(manifestFile, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		
+		if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result-artifact", manifestFile}, io.Discard); err != nil {
+			t.Fatalf("finalize with file path error = %v", err)
+		}
+	})
+
+	t.Run("finalize with @file path manifest", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(t.TempDir(), "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		manifestFile := filepath.Join(t.TempDir(), "manifest.json")
+		if err := os.WriteFile(manifestFile, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		
+		if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result-artifact", "@" + manifestFile}, io.Discard); err != nil {
+			t.Fatalf("finalize with @file path error = %v", err)
+		}
+	})
+}
+
+func TestPowerShellBinaryAcceptance(t *testing.T) {
+	psPath, err := exec.LookPath("powershell")
+	if err != nil {
+		psPath, err = exec.LookPath("pwsh")
+	}
+	if err != nil {
+		t.Skip("powershell/pwsh not found; skipping binary acceptance test")
+	}
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "gentle-ai")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
+	buildCmd := exec.Command("go", "build", "-o", binPath, "github.com/gentleman-programming/gentle-ai/cmd/gentle-ai")
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build failed: %v\noutput: %s", err, string(output))
+	}
+
+	t.Run("powershell finalize with file path", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(tmpDir, "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		manifestFile := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestFile, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		psCmd := exec.Command(psPath, "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf(`& "%s" review finalize --cwd "%s" --lineage "%s" --result-artifact "%s"`,
+				binPath, repo, started.LineageID, manifestFile))
+		if out, err := psCmd.CombinedOutput(); err != nil {
+			t.Fatalf("PowerShell finalize with file path failed: %v\noutput: %s", err, string(out))
+		}
+	})
+
+	t.Run("powershell finalize with @file path", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(tmpDir, "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		manifestFile := filepath.Join(tmpDir, "manifest.json")
+		if err := os.WriteFile(manifestFile, []byte(manifest), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		psCmd := exec.Command(psPath, "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf(`& "%s" review finalize --cwd "%s" --lineage "%s" --result-artifact "@%s"`,
+				binPath, repo, started.LineageID, manifestFile))
+		if out, err := psCmd.CombinedOutput(); err != nil {
+			t.Fatalf("PowerShell finalize with @file path failed: %v\noutput: %s", err, string(out))
+		}
+	})
 }

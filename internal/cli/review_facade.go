@@ -986,7 +986,16 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	if (*actionEligibility || *nextTransition) && !negotiated {
 		return errors.New("--action-eligibility and --next-transition require --contract")
 	}
-	if countFacadeStdin(resultPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
+	var allPaths []string
+	allPaths = append(allPaths, resultPaths...)
+	for _, val := range resultArtifacts {
+		if strings.HasPrefix(val, "@") {
+			allPaths = append(allPaths, strings.TrimPrefix(val, "@"))
+		} else if !strings.HasPrefix(strings.TrimSpace(val), "{") {
+			allPaths = append(allPaths, val)
+		}
+	}
+	if countFacadeStdin(allPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
 		return reviewPreflightError(errors.New("review finalize accepts stdin for only one input"))
 	}
 	if (len(resultPaths) != 0 && len(resultArtifacts) != 0) || (*capturedResults && (len(resultPaths) != 0 || len(resultArtifacts) != 0)) || (*capturedEvidence && strings.TrimSpace(*evidencePath) != "") {

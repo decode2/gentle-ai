@@ -108,7 +108,7 @@ Missing context is different from a valid empty candidate: the latter is encoded
 
 Reviewer results may omit the top-level `lens`; when present, it must match the selected-lens position returned by start. Both the short names (`risk`, `resilience`, `readability`, `reliability`) and the negotiated facade names (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) map to the same native lenses. A mismatch is rejected before authority mutation instead of being overwritten.
 
-Durable controllers capture each result with exact lineage, target, lens, and selected order, then pass the emitted manifests to FINALIZE as ordered `--result-artifact` values. Legacy `--result` files remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
+Durable controllers capture each result with exact lineage, target, lens, and selected order, then pass the emitted manifests to FINALIZE as ordered `--result-artifact` values (passed either as inline JSON, direct file path, or file path prefixed with `@` to be safe under Windows PowerShell which strips embedded quotes). Legacy `--result` files remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
 
 Proof and evidence strings accept ordinary technical notation, including `HEAD^{tree}`, `{}`, `<A>`, and `=>`. Blank values and exact non-evidence sentinels such as `n/a`, `none`, `todo`, `tbd`, `pass`, `passed`, `success`, and `placeholder` remain invalid.
 
@@ -242,6 +242,22 @@ scripts/test-review-contract-package.sh dist
 ```
 
 The archive assertion compares every packaged contract file with the repository source by SHA-256 and verifies each platform archive against `checksums.txt`.
+
+### Windows PowerShell Usage
+
+When executing `review finalize` inside Windows PowerShell 5.1+, passing dynamic JSON inline via `--result-artifact '<json>'` can result in parsing errors because PowerShell strips outer and inner quotes when invoking native binaries.
+
+To avoid this, you can save the manifest JSON output from `capture-result` into a temporary file and pass the path to `--result-artifact`:
+
+```powershell
+# Save manifest to a file
+$manifest | Out-File -Encoding utf8 -FilePath .\manifest.json
+
+# Pass the file path (optionally prefixed with @)
+gga review finalize --cwd . --lineage <lineage> --result-artifact .\manifest.json
+# Or using the @ prefix:
+gga review finalize --cwd . --lineage <lineage> --result-artifact @.\manifest.json
+```
 
 ### Next steps
 

@@ -362,21 +362,35 @@ func readFacadeReviewerArtifacts(raw []string, storeDir string, state reviewtran
 	}
 	results := make([]facadeReviewerResult, len(raw))
 	for index := range raw {
+		val := raw[index]
+		var payload []byte
+		var err error
+		if strings.HasPrefix(val, "@") {
+			payload, err = readFacadeBytes(strings.TrimPrefix(val, "@"))
+		} else if !strings.HasPrefix(strings.TrimSpace(val), "{") {
+			payload, err = readFacadeBytes(val)
+		} else {
+			payload = []byte(val)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read reviewer artifact %d: %w", index+1, err)
+		}
+
 		var artifact reviewResultArtifact
-		if err := decodeFacadeJSONBytes([]byte(raw[index]), &artifact); err != nil {
+		if err := decodeFacadeJSONBytes(payload, &artifact); err != nil {
 			return nil, fmt.Errorf("decode reviewer artifact %d: %w", index+1, err)
 		}
 		if artifact.SelectedOrder != index {
 			return nil, fmt.Errorf("reviewer artifact %d is out of selected-lens order", index+1)
 		}
-		payload, err := readVerifiedReviewerArtifact(artifact, storeDir, state)
+		artifactPayload, err := readVerifiedReviewerArtifact(artifact, storeDir, state)
 		if err != nil {
 			return nil, fmt.Errorf("verify reviewer artifact %d: %w", index+1, err)
 		}
-		if err := validateReviewerResultPayload(payload); err != nil {
+		if err := validateReviewerResultPayload(artifactPayload); err != nil {
 			return nil, fmt.Errorf("reviewer artifact %d payload invalid: %w", index+1, err)
 		}
-		if err := decodeFacadeJSONBytes(payload, &results[index]); err != nil {
+		if err := decodeFacadeJSONBytes(artifactPayload, &results[index]); err != nil {
 			return nil, fmt.Errorf("parse reviewer artifact %d: %w", index+1, err)
 		}
 		if results[index].Findings == nil || results[index].Evidence == nil {
