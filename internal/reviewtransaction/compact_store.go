@@ -549,6 +549,253 @@ func CompactAuthoritativeStore(ctx context.Context, repo, lineageID string) (Com
 	return CompactStore{Dir: dir, lineageID: lineageID, repo: root, lockPath: filepath.Join(versionRoot, "LOCK"), maintenanceLockPath: compactMaintenanceLockPath(base)}, nil
 }
 
+type piSnapshot struct {
+	BaseTree          string   `json:"base_tree"`
+	InitialReviewTree string   `json:"initial_review_tree"`
+	IntendedUntracked []string `json:"intended_untracked"`
+	GenesisPaths      []string `json:"genesis_paths"`
+	ReviewProjection  struct {
+		Kind string `json:"kind"`
+	} `json:"review_projection"`
+}
+
+type piCompactState struct {
+	Schema               string            `json:"schema"`
+	LineageID            string            `json:"lineage_id"`
+	Generation           int               `json:"generation"`
+	State                string            `json:"state"`
+	InitialSnapshot      piSnapshot        `json:"initial_snapshot"`
+	CurrentCandidateTree string            `json:"current_candidate_tree"`
+	GenesisPaths         []string          `json:"genesis_paths"`
+	IntendedUntracked    []string          `json:"intended_untracked"`
+	PolicyHash           string            `json:"policy_hash"`
+	RiskTier             string            `json:"risk_tier"`
+	SelectedLenses       []string          `json:"selected_lenses"`
+	OriginalChangedLines int               `json:"original_changed_lines"`
+	CorrectionBudget     int               `json:"correction_budget"`
+	LensResults          []LensResult      `json:"lens_results"`
+	Findings             []Finding         `json:"findings"`
+	Outcomes             map[string]string `json:"outcomes"`
+	CorrectionIDs        []string          `json:"correction_ids"`
+	FollowUps            []FollowUp        `json:"follow_ups"`
+	FinalEvidenceHash    string            `json:"final_evidence_hash,omitempty"`
+}
+
+type piCompactStateRecord struct {
+	Schema   string         `json:"schema"`
+	Revision string         `json:"revision"`
+	State    piCompactState `json:"state"`
+}
+
+type piCompactReceiptBody struct {
+	Schema                string   `json:"schema"`
+	LineageID             string   `json:"lineage_id"`
+	Generation            int      `json:"generation"`
+	AuthorityRevision     string   `json:"authority_revision"`
+	BaseTree              string   `json:"base_tree"`
+	InitialReviewTree     string   `json:"initial_review_tree"`
+	FinalCandidateTree    string   `json:"final_candidate_tree"`
+	GenesisPathsHash      string   `json:"genesis_paths_hash"`
+	IntendedUntrackedHash string   `json:"intended_untracked_hash"`
+	PolicyHash            string   `json:"policy_hash"`
+	RiskTier              string   `json:"risk_tier"`
+	SelectedLenses        []string `json:"selected_lenses"`
+	OriginalChangedLines  int      `json:"original_changed_lines"`
+	CorrectionBudget      int      `json:"correction_budget"`
+	CorrectionIDs         []string `json:"correction_ids"`
+	FixDiffHash           string   `json:"fix_diff_hash"`
+	EvidenceHash          string   `json:"evidence_hash"`
+	TerminalState         string   `json:"terminal_state"`
+}
+
+type piCompactReceipt struct {
+	Body        piCompactReceiptBody `json:"body"`
+	ReceiptHash string               `json:"receipt_hash"`
+}
+
+func ensureSHA256Prefix(hash string) string {
+	if hash == "" {
+		return ""
+	}
+	if strings.HasPrefix(hash, "sha256:") {
+		return hash
+	}
+	return "sha256:" + hash
+}
+
+func BridgePiCompactAuthority(ctx context.Context, repo, lineage string) error {
+	base, root, err := reviewAuthorityRoot(ctx, repo)
+	if err != nil {
+		return err
+	}
+	piStorePath := filepath.Join(filepath.Dir(filepath.Dir(base)), "gentle-ai", "reviews", "compact-v2", lineage)
+	if _, err := os.Stat(piStorePath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	piStateBytes, err := os.ReadFile(filepath.Join(piStorePath, compactStateFileName))
+	if err != nil {
+		return fmt.Errorf("read Pi review-state.json: %w", err)
+	}
+	piReceiptBytes, err := os.ReadFile(filepath.Join(piStorePath, compactReceiptFileName))
+	if err != nil {
+		return fmt.Errorf("read Pi review-receipt.json: %w", err)
+	}
+
+	var piStateRecord piCompactStateRecord
+	if err := json.Unmarshal(piStateBytes, &piStateRecord); err != nil {
+		return fmt.Errorf("decode Pi review-state.json: %w", err)
+	}
+	var piReceipt piCompactReceipt
+	if err := json.Unmarshal(piReceiptBytes, &piReceipt); err != nil {
+		return fmt.Errorf("decode Pi review-receipt.json: %w", err)
+	}
+
+	if piStateRecord.State.State != "approved" || piReceipt.Body.TerminalState != "approved" {
+		return fmt.Errorf("explicit compact authority is not approved: state=%q, receipt=%q", piStateRecord.State.State, piReceipt.Body.TerminalState)
+	}
+
+	var proj Projection
+	if piStateRecord.State.InitialSnapshot.ReviewProjection.Kind == "intended-commit" {
+		proj = ProjectionStaged
+	}
+
+	builder := SnapshotBuilder{Repo: root}
+	initialSnapshot := Snapshot{
+		Kind:              TargetCurrentChanges,
+		Projection:        proj,
+		BaseTree:          piStateRecord.State.InitialSnapshot.BaseTree,
+		CandidateTree:     piStateRecord.State.InitialSnapshot.InitialReviewTree,
+		IntendedUntracked: piStateRecord.State.InitialSnapshot.IntendedUntracked,
+		Paths:             piStateRecord.State.InitialSnapshot.GenesisPaths,
+	}
+	initialSnapshot.PathsDigest = digestPaths(initialSnapshot.Paths)
+	initialSnapshot.IntendedUntrackedProof, err = builder.untrackedProof(ctx, initialSnapshot.CandidateTree, initialSnapshot.IntendedUntracked)
+	if err != nil {
+		return err
+	}
+	initialSnapshot.Identity = snapshotIdentityForProjection(
+		initialSnapshot.Kind, initialSnapshot.Projection,
+		initialSnapshot.BaseTree, initialSnapshot.CandidateTree,
+		initialSnapshot.PathsDigest, initialSnapshot.IntendedUntrackedProof,
+		initialSnapshot.IntendedUntracked, initialSnapshot.LedgerIDs,
+	)
+
+	currentSnapshot := Snapshot{
+		Kind:              TargetCurrentChanges,
+		Projection:        proj,
+		BaseTree:          piStateRecord.State.InitialSnapshot.BaseTree,
+		CandidateTree:     piStateRecord.State.CurrentCandidateTree,
+		IntendedUntracked: piStateRecord.State.IntendedUntracked,
+		Paths:             piStateRecord.State.GenesisPaths,
+	}
+	currentSnapshot.PathsDigest = digestPaths(currentSnapshot.Paths)
+	currentSnapshot.IntendedUntrackedProof, err = builder.untrackedProof(ctx, currentSnapshot.CandidateTree, currentSnapshot.IntendedUntracked)
+	if err != nil {
+		return err
+	}
+	currentSnapshot.Identity = snapshotIdentityForProjection(
+		currentSnapshot.Kind, currentSnapshot.Projection,
+		currentSnapshot.BaseTree, currentSnapshot.CandidateTree,
+		currentSnapshot.PathsDigest, currentSnapshot.IntendedUntrackedProof,
+		currentSnapshot.IntendedUntracked, currentSnapshot.LedgerIDs,
+	)
+
+	lensResults := make([]LensResult, len(piStateRecord.State.LensResults))
+	for idx, lr := range piStateRecord.State.LensResults {
+		canonical, err := CanonicalCompactLensResult(lr)
+		if err != nil {
+			return fmt.Errorf("canonicalize lens result: %w", err)
+		}
+		lensResults[idx] = canonical
+	}
+
+	goState := CompactState{
+		Schema:               CompactStateSchema,
+		LineageID:            piStateRecord.State.LineageID,
+		Generation:           piStateRecord.State.Generation,
+		State:                State(piStateRecord.State.State),
+		InitialSnapshot:      initialSnapshot,
+		CurrentSnapshot:      currentSnapshot,
+		GenesisPaths:         piStateRecord.State.GenesisPaths,
+		PolicyHash:           ensureSHA256Prefix(piStateRecord.State.PolicyHash),
+		RiskLevel:            RiskLevel(piStateRecord.State.RiskTier),
+		SelectedLenses:       piStateRecord.State.SelectedLenses,
+		OriginalChangedLines: piStateRecord.State.OriginalChangedLines,
+		CorrectionBudget:     piStateRecord.State.CorrectionBudget,
+		LensResults:          lensResults,
+		Findings:             piStateRecord.State.Findings,
+		Classifications:      make(map[string]FindingEvidence),
+		Outcomes:             make(map[string]EvidenceOutcome),
+		FixFindingIDs:        piStateRecord.State.CorrectionIDs,
+		FollowUps:            piStateRecord.State.FollowUps,
+		FixDeltaHash:         ensureSHA256Prefix(piReceipt.Body.FixDiffHash),
+		EvidenceHash:         ensureSHA256Prefix(piReceipt.Body.EvidenceHash),
+	}
+
+	for k, v := range piStateRecord.State.Outcomes {
+		goState.Outcomes[k] = EvidenceOutcome(v)
+	}
+
+	goRecord, goRecordBytes, err := makeCompactRecord(goState)
+	if err != nil {
+		return fmt.Errorf("make Go compact record: %w", err)
+	}
+
+	goReceipt := CompactReceipt{
+		Schema:             CompactReceiptSchema,
+		LineageID:          piReceipt.Body.LineageID,
+		Projection:         initialSnapshot.Projection,
+		Generation:         piReceipt.Body.Generation,
+		BaseTree:           piReceipt.Body.BaseTree,
+		InitialReviewTree:  piReceipt.Body.InitialReviewTree,
+		FinalCandidateTree: piReceipt.Body.FinalCandidateTree,
+		PathsDigest:        initialSnapshot.PathsDigest,
+		FixDeltaHash:       ensureSHA256Prefix(piReceipt.Body.FixDiffHash),
+		PolicyHash:         ensureSHA256Prefix(piReceipt.Body.PolicyHash),
+		EvidenceHash:       ensureSHA256Prefix(piReceipt.Body.EvidenceHash),
+		RiskLevel:          RiskLevel(piReceipt.Body.RiskTier),
+		SelectedLenses:     piReceipt.Body.SelectedLenses,
+		ResolvedFindingIDs: piReceipt.Body.CorrectionIDs,
+		TerminalState:      TerminalState(piReceipt.Body.TerminalState),
+	}
+	goReceiptBytes, err := json.MarshalIndent(goReceipt, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal Go compact receipt: %w", err)
+	}
+	goReceiptBytes = append(goReceiptBytes, '\n')
+
+	versionRoot := filepath.Join(base, "v2")
+	goStoreDir := filepath.Join(versionRoot, lineage)
+	lock, err := acquireStoreLock(filepath.Join(versionRoot, "LOCK"))
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+
+	if existingRecord, err := os.ReadFile(filepath.Join(goStoreDir, compactStateFileName)); err == nil {
+		var existing CompactRecord
+		if json.Unmarshal(existingRecord, &existing) == nil && existing.Revision != goRecord.Revision {
+			return errors.New("conflicting existing native Go authority revision")
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(goStoreDir, 0o755); err != nil {
+		return fmt.Errorf("create Go store directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(goStoreDir, compactStateFileName), goRecordBytes, 0o644); err != nil {
+		return fmt.Errorf("write Go compact state: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(goStoreDir, compactReceiptFileName), goReceiptBytes, 0o644); err != nil {
+		return fmt.Errorf("write Go compact receipt: %w", err)
+	}
+
+	return nil
+}
+
 func compactMaintenanceLockPath(authorityRoot string) string {
 	return filepath.Join(filepath.Dir(authorityRoot), "REVIEW-MAINTENANCE.lock")
 }

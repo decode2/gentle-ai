@@ -2,8 +2,10 @@ package sddstatus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -570,5 +572,216 @@ func TestBindApprovedReviewSanitizesHostileGitEnvironmentFromSubdirectory(t *tes
 	}
 	if _, err := os.Stat(bindingPath(store, "thin")); err != nil {
 		t.Fatalf("binding was not stored in the selected repository common dir: %v", err)
+	}
+}
+
+func TestBindApprovedReviewPiBridge(t *testing.T) {
+	root := t.TempDir()
+	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
+	write(t, filepath.Join(changeRoot, "specs", "auth", "spec.md"), "### Requirement: Binding\n#### Scenario: Exact authority\n")
+	writeApprovedPiCompactAuthorityForChange(t, root, changeRoot, "pi-approved-thin")
+
+	binding, err := BindApprovedReview(context.Background(), root, "thin", "pi-approved-thin", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Schema != reviewBindingSchema || binding.Lineage != "pi-approved-thin" || binding.ReceiptHash == "" {
+		t.Fatalf("invalid binding: %#v", binding)
+	}
+
+	// Idempotency: replaying doesn't fail
+	if _, err := BindApprovedReview(context.Background(), root, "thin", "pi-approved-thin", binding.Revision); err != nil {
+		t.Fatalf("idempotent retry failed: %v", err)
+	}
+
+	// Conflict validation: changing the base/candidate tree in Pi receipt makes it fail
+	piStoreRoot := filepath.Join(root, ".git", "gentle-ai", "reviews", "compact-v2", "pi-approved-thin")
+	piReceiptBytes, err := os.ReadFile(filepath.Join(piStoreRoot, "review-receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var piReceipt map[string]interface{}
+	if err := json.Unmarshal(piReceiptBytes, &piReceipt); err == nil {
+		if body, ok := piReceipt["body"].(map[string]interface{}); ok {
+			body["final_candidate_tree"] = "0000000000000000000000000000000000000000"
+		}
+		corruptedBytes, _ := json.MarshalIndent(piReceipt, "", "  ")
+		_ = os.WriteFile(filepath.Join(piStoreRoot, "review-receipt.json"), corruptedBytes, 0o644)
+	}
+
+	// Since we corrupted the Pi files, if we run it again with a new expected revision or if we attempt to re-bridge a conflict, it should fail
+	// Let's clear the native Go store to force re-bridging
+	_ = os.RemoveAll(filepath.Join(root, ".git", "gentle-ai", "review-transactions", "v2", "pi-approved-thin"))
+	if _, err := BindApprovedReview(context.Background(), root, "thin", "pi-approved-thin", ""); err == nil {
+		t.Fatal("expected conflict or validation failure on corrupted Pi receipt, but succeeded")
+	}
+}
+
+func runGitCommandOutput(ctx context.Context, repo string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+func writeApprovedPiCompactAuthorityForChange(t *testing.T, repo, changeRoot, lineage string) {
+	t.Helper()
+	runSDDStatusGit(t, repo, "init", "-q")
+	runSDDStatusGit(t, repo, "config", "user.email", "status@example.com")
+	runSDDStatusGit(t, repo, "config", "user.name", "Status Test")
+	runSDDStatusGit(t, repo, "add", ".")
+	runSDDStatusGit(t, repo, "commit", "-qm", "base")
+	write(t, filepath.Join(changeRoot, "tasks.md"), "- [x] 1.1 Done\n# approved compact scope\n")
+
+	snapshot, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).Build(context.Background(), reviewtransaction.Target{Kind: reviewtransaction.TargetCurrentChanges, IntendedUntracked: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	risk, lines, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).ClassifySnapshotRisk(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := lines/2 + lines%2
+	if budget > 200 {
+		budget = 200
+	}
+
+	lenses := []string{}
+	if risk == reviewtransaction.RiskMedium {
+		lenses = []string{string(reviewtransaction.LensReliability)}
+	} else if risk == reviewtransaction.RiskHigh {
+		lenses = []string{string(reviewtransaction.LensRisk), string(reviewtransaction.LensResilience), string(reviewtransaction.LensReadability), string(reviewtransaction.LensReliability)}
+	}
+
+	results := []interface{}{}
+	for _, lens := range lenses {
+		results = append(results, map[string]interface{}{
+			"lens":     lens,
+			"findings": []interface{}{},
+			"evidence": []string{"review complete"},
+		})
+	}
+
+	commonDirOutput, err := runGitCommandOutput(context.Background(), repo, "rev-parse", "--git-common-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonDir := strings.TrimSpace(commonDirOutput)
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repo, commonDir)
+	}
+	commonDir, _ = filepath.Abs(commonDir)
+
+	piStoreRoot := filepath.Join(commonDir, "gentle-ai", "reviews", "compact-v2", lineage)
+	if err := os.MkdirAll(piStoreRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	piState := map[string]interface{}{
+		"schema":     "gentle-ai.review-state/v2",
+		"lineage_id": lineage,
+		"generation": 1,
+		"mode":       "ordinary",
+		"state":      "approved",
+		"initial_snapshot": map[string]interface{}{
+			"schema":                 "gentle-ai.review-snapshot/v1",
+			"mode":                   "ordinary",
+			"repository_root":        repo,
+			"base_tree":              snapshot.BaseTree,
+			"complete_snapshot_tree": snapshot.CandidateTree,
+			"review_projection": map[string]interface{}{
+				"kind": "complete",
+			},
+			"initial_review_tree": snapshot.CandidateTree,
+			"genesis_paths":       snapshot.Paths,
+			"intended_untracked":  []string{},
+			"diff_evidence": map[string]interface{}{
+				"event":        "commit",
+				"changedLines": lines,
+				"triviality":   "non-trivial",
+			},
+			"route":                  "verify",
+			"lenses":                 lenses,
+			"risk_tier":              string(risk),
+			"original_changed_lines": lines,
+			"correction_budget":      budget,
+			"policy_hash":            shaID("c"),
+			"object_store": map[string]interface{}{
+				"snapshot_directory":         ".git/gentle-ai/reviews",
+				"object_directory":           ".git/objects",
+				"alternate_object_directory": "",
+				"metadata_path":              "",
+				"sensitivity":                "workspace-content",
+			},
+		},
+		"current_candidate_tree": snapshot.CandidateTree,
+		"genesis_paths":          snapshot.Paths,
+		"intended_untracked":     []string{},
+		"policy_hash":            shaID("c"),
+		"risk_tier":              string(risk),
+		"selected_lenses":        lenses,
+		"original_changed_lines": lines,
+		"correction_budget":      budget,
+		"lens_results":           results,
+		"findings":               []interface{}{},
+		"outcomes":               map[string]string{},
+		"correction_ids":         []string{},
+		"follow_ups":             []interface{}{},
+		"runtime_identity": map[string]interface{}{
+			"schema":             "gentle-ai.review-runtime-identity/v1",
+			"compact_contract":   "v2",
+			"operation_contract": "v2",
+			"state_schema":       "gentle-ai.review-state/v2",
+			"record_schema":      "gentle-ai.review-state-record/v2",
+			"receipt_schema":     "gentle-ai.review-receipt/v2",
+			"canonicalization":   "canonical-json/v1",
+			"identity_hash":      "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		},
+		"escalation_reasons": []string{},
+	}
+
+	piRecord := map[string]interface{}{
+		"schema":   "gentle-ai.review-state-record/v2",
+		"revision": "ec089d36258560776b4969ca2ee7eee3a1463e43b98acf0556b9d325d1ab465a",
+		"state":    piState,
+	}
+
+	piRecordBytes, err := json.MarshalIndent(piRecord, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piStoreRoot, "review-state.json"), piRecordBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	piReceipt := map[string]interface{}{
+		"body": map[string]interface{}{
+			"schema":                  "gentle-ai.review-receipt-body/v2",
+			"lineage_id":              lineage,
+			"generation":              1,
+			"authority_revision":      "ec089d36258560776b4969ca2ee7eee3a1463e43b98acf0556b9d325d1ab465a",
+			"base_tree":               snapshot.BaseTree,
+			"initial_review_tree":     snapshot.CandidateTree,
+			"final_candidate_tree":    snapshot.CandidateTree,
+			"genesis_paths_hash":      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"intended_untracked_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"policy_hash":             shaID("c"),
+			"risk_tier":               string(risk),
+			"selected_lenses":         lenses,
+			"original_changed_lines":  lines,
+			"correction_budget":       budget,
+			"correction_ids":          []string{},
+			"fix_diff_hash":           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"evidence_hash":           "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			"terminal_state":          "approved",
+		},
+		"receipt_hash": "d2383394d076ee3b15d80d7d124e45840bfdd2a3e7b2dd29446f69077eb0073b",
+	}
+
+	piReceiptBytes, err := json.MarshalIndent(piReceipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piStoreRoot, "review-receipt.json"), piReceiptBytes, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

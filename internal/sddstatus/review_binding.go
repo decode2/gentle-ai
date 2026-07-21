@@ -52,6 +52,9 @@ func BindApprovedReview(ctx context.Context, repo, change, lineage, expected str
 	if err != nil {
 		return ReviewBinding{}, err
 	}
+	if err := reviewtransaction.BridgePiCompactAuthority(ctx, root, lineage); err != nil {
+		return ReviewBinding{}, err
+	}
 	changeRoot, err := resolveBindingChangeRoot(root, repo, change)
 	if err != nil {
 		return ReviewBinding{}, err
