@@ -681,7 +681,7 @@ func TestResolveComponentInstall(t *testing.T) {
 			component: model.ComponentGGA,
 			want: CommandSequence{
 				{"rm", "-rf", "/tmp/gentleman-guardian-angel"},
-				{"git", "clone", "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", "/tmp/gentleman-guardian-angel"},
+				{"git", "clone", "--depth=1", "--branch", "v" + versions.GGAVersion, "https://github.com/Gentleman-Programming/gentleman-guardian-angel.git", "/tmp/gentleman-guardian-angel"},
 				{"bash", "/tmp/gentleman-guardian-angel/install.sh"},
 			},
 		},
