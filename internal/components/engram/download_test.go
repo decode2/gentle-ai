@@ -1433,3 +1433,25 @@ func TestSHA256ChecksumContract(t *testing.T) {
 	t.Logf("SHA256 contract: Go produces %q format (64 lowercase hex chars)", goDigest)
 	t.Logf("PowerShell fallback must produce identical format using .NET SHA256")
 }
+
+func TestStopEngramProcessesFallsBackAfterPwshFailure(t *testing.T) {
+	originalLookPath, originalRun := engramLookPathFn, engramRunCommandFn
+	t.Cleanup(func() { engramLookPathFn, engramRunCommandFn = originalLookPath, originalRun })
+
+	engramLookPathFn = func(string) (string, error) { return "pwsh", nil }
+	var hosts []string
+	engramRunCommandFn = func(name string, _ ...string) ([]byte, error) {
+		hosts = append(hosts, name)
+		if name == "pwsh" {
+			return nil, errors.New("launch failed")
+		}
+		return nil, nil
+	}
+
+	if err := stopEngramProcesses(); err != nil {
+		t.Fatalf("stopEngramProcesses() error = %v, want nil", err)
+	}
+	if got, want := strings.Join(hosts, ","), "pwsh,powershell.exe"; got != want {
+		t.Fatalf("PowerShell hosts = %q, want %q", got, want)
+	}
+}

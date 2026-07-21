@@ -587,6 +587,19 @@ func extractZipBinary(data []byte, binaryName, outPath string) error {
 	return fmt.Errorf("binary %q not found in zip archive", binaryName)
 }
 
+var engramLookPathFn = exec.LookPath
+
+// resolvePowerShell returns the name of the PowerShell executable to use for
+// Windows-specific tasks. It prefers "pwsh" (PowerShell Core 6+) when it is
+// available in PATH because it is the modern cross-platform shell. Falls back
+// to "powershell.exe" (Windows PowerShell 5.1) when pwsh is not found.
+func resolvePowerShell() string {
+	if _, err := engramLookPathFn("pwsh"); err == nil {
+		return "pwsh"
+	}
+	return "powershell.exe"
+}
+
 // engramStopScript returns the PowerShell script that stops running Engram
 // processes so Windows can replace engram.exe during an upgrade.
 //
@@ -618,24 +631,40 @@ exit 0
 `
 }
 
+var engramRunCommandFn = func(name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = nil
+	return cmd.CombinedOutput()
+}
+
 // stopEngramProcesses runs the defensive stop script (see engramStopScript) and
-// returns a non-nil error only when powershell.exe itself fails to launch or
+// returns a non-nil error only when the PowerShell host itself fails to launch or
 // exits non-zero. A WARNING line (processes found but not all stopped) is
 // surfaced to stderr but is treated as non-fatal.
+//
+// pwsh (PowerShell Core 6+) is preferred over powershell.exe (Windows PowerShell
+// 5.1) because it is the modern shell and may be the only PowerShell available on
+// newer Windows Server editions or developer machines that install only Core.
+// If pwsh fails to launch or execute, it falls back to powershell.exe.
 func stopEngramProcesses() error {
-	cmd := exec.Command("powershell.exe",
+	psExe := resolvePowerShell()
+	args := []string{
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
 		engramStopScript(),
-	)
-	cmd.Stdin = nil
-	out, err := cmd.CombinedOutput()
+	}
+	out, err := engramRunCommandFn(psExe, args...)
+	if err != nil && psExe == "pwsh" {
+		pwshErr := err
+		psExe = "powershell.exe"
+		out, err = engramRunCommandFn(psExe, args...)
+		if err != nil {
+			return fmt.Errorf("pwsh Stop-Process engram: %v; %s Stop-Process engram: %w (output: %s)", pwshErr, psExe, err, strings.TrimSpace(string(out)))
+		}
+	}
 	if err != nil {
-		// powershell itself failed to launch or returned non-zero despite
-		// our SilentlyContinue guards — surface the raw output so the user
-		// has something actionable.
-		return fmt.Errorf("powershell Stop-Process engram: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s Stop-Process engram: %w (output: %s)", psExe, err, strings.TrimSpace(string(out)))
 	}
 	// If the script emitted a WARNING line, surface it but do not fail.
 	// The caller decides whether to abort based on the returned error being nil.

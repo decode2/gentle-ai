@@ -577,6 +577,18 @@ func binaryUpgrade(ctx context.Context, r update.UpdateResult, profile system.Pl
 	return downloadAndReplace(ctx, r, profile)
 }
 
+// detectPowerShell returns the name of the PowerShell executable available on
+// the current Windows system. It prefers "pwsh" (PowerShell Core 6+) over the
+// legacy "powershell" (Windows PowerShell 5.1) because pwsh is faster, has
+// better UTF-8 support, and is the modern cross-platform shell. Falls back to
+// "powershell" when pwsh is not found in PATH.
+func detectPowerShell() string {
+	if _, err := lookPathFn("pwsh"); err == nil {
+		return "pwsh"
+	}
+	return "powershell"
+}
+
 // installerUpgradeArgs builds the PowerShell command argument list for launching
 // install.ps1 as a detached process. When beta is true, "-Channel beta" is
 // appended after "-File <tmpPath>" so install.ps1 routes to go install @main
@@ -586,7 +598,7 @@ func installerUpgradeArgs(tmpPath string, beta bool) []string {
 		"/C",
 		"start",
 		"",
-		"powershell",
+		detectPowerShell(),
 		"-NoProfile",
 		"-NoExit",
 		"-ExecutionPolicy", "Bypass",

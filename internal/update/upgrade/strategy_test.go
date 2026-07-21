@@ -1792,6 +1792,54 @@ func TestInstallerUpgradeArgs(t *testing.T) {
 	}
 }
 
+// TestDetectPowerShell verifies that detectPowerShell prefers pwsh when present
+// and falls back to powershell when pwsh is not found in PATH.
+func TestDetectPowerShell(t *testing.T) {
+	origLookPath := lookPathFn
+	t.Cleanup(func() { lookPathFn = origLookPath })
+
+	t.Run("pwsh present", func(t *testing.T) {
+		lookPathFn = func(cmd string) (string, error) {
+			if cmd == "pwsh" {
+				return "/usr/bin/pwsh", nil
+			}
+			return "", errors.New("not found")
+		}
+		if got := detectPowerShell(); got != "pwsh" {
+			t.Errorf("detectPowerShell() = %q, want \"pwsh\"", got)
+		}
+	})
+
+	t.Run("pwsh absent", func(t *testing.T) {
+		lookPathFn = func(cmd string) (string, error) {
+			return "", errors.New("not found")
+		}
+		if got := detectPowerShell(); got != "powershell" {
+			t.Errorf("detectPowerShell() = %q, want \"powershell\"", got)
+		}
+	})
+}
+
+// TestInstallerUpgradeArgsPwshPreferred verifies that installerUpgradeArgs places
+// the PowerShell binary returned by detectPowerShell() at the correct position
+// in the command-line slice, so the detached start command targets the right
+// shell regardless of whether pwsh or the legacy powershell is installed.
+func TestInstallerUpgradeArgsPwshPreferred(t *testing.T) {
+	const tmpPath = `C:\Temp\gentle-ai-install.ps1`
+	args := installerUpgradeArgs(tmpPath, false)
+	// args layout: ["/C", "start", "", <psExe>, "-NoProfile", "-NoExit", ...]
+	if len(args) < 4 {
+		t.Fatalf("installerUpgradeArgs returned too few args: %v", args)
+	}
+	psExe := args[3]
+	if psExe != "pwsh" && psExe != "powershell" {
+		t.Errorf("installerUpgradeArgs args[3] = %q, want \"pwsh\" or \"powershell\"", psExe)
+	}
+	if psExe != detectPowerShell() {
+		t.Errorf("installerUpgradeArgs args[3] = %q but detectPowerShell() = %q — must be consistent", psExe, detectPowerShell())
+	}
+}
+
 // TestRunStrategy_BetaGentleAIWindowsInstallerIncludesChannelBeta verifies the
 // full runStrategy path: on Windows, a beta gentle-ai upgrade via InstallInstaller
 // must pass -Channel beta to the PowerShell installer command.
