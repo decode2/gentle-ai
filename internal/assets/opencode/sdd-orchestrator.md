@@ -234,6 +234,16 @@ This ensures:
 
 Do NOT skip this check. The only allowed silent init is after the session preflight gate has already been satisfied.
 
+### Question Tool Protocol
+
+When making user-facing decisions, the orchestrator should observe the following guidelines for using the `question` tool:
+- **Use the `question` tool for:** Forking decisions with 2–6 discrete options and meaningful tradeoffs (e.g. Execution Mode, Artifact Store Mode, Delivery Strategy, Chain Strategy, Review Workload Guard split decisions, or resolving skill conflicts).
+- **One question at a time:** Do not ask multiple questions simultaneously unless grouped in a single structured layout (such as the Session Preflight grouped questions).
+- **Do NOT use the `question` tool for:**
+  - Open-ended questions (e.g., "What should I do next?") — keep these as plain chat text.
+  - Trivial yes/no decisions with one obvious default — auto-decide instead.
+  - Questions that can be resolved by reading the codebase — investigate the codebase instead.
+
 ### Execution Mode
 
 This is collected by `SDD Session Preflight`. If missing, enforce the hard gate before any phase work. Ask which execution mode they prefer:
