@@ -618,7 +618,7 @@ func TestBindApprovedReviewPiBridge(t *testing.T) {
 }
 
 func runGitCommandOutput(ctx context.Context, repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	out, err := cmd.Output()
 	return string(out), err
 }

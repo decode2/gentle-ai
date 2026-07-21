@@ -781,16 +781,20 @@ func BridgePiCompactAuthority(ctx context.Context, repo, lineage string) error {
 			return errors.New("conflicting existing native Go authority revision")
 		}
 		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read existing Go compact state: %w", err)
 	}
 
 	if err := os.MkdirAll(goStoreDir, 0o755); err != nil {
 		return fmt.Errorf("create Go store directory: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(goStoreDir, compactStateFileName), goRecordBytes, 0o644); err != nil {
-		return fmt.Errorf("write Go compact state: %w", err)
-	}
+	// Write receipt before state so the state file acts as the completion marker:
+	// a reader that finds the state file can be sure the receipt is also present.
 	if err := os.WriteFile(filepath.Join(goStoreDir, compactReceiptFileName), goReceiptBytes, 0o644); err != nil {
 		return fmt.Errorf("write Go compact receipt: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(goStoreDir, compactStateFileName), goRecordBytes, 0o644); err != nil {
+		return fmt.Errorf("write Go compact state: %w", err)
 	}
 
 	return nil
