@@ -721,7 +721,7 @@ func TestTuiSyncModelConfigPropagatesAssignmentWriteFailure(t *testing.T) {
 	}
 
 	_, err := tuiSync(home)(&model.SyncOverrides{
-		TargetAgents: []model.AgentID{model.AgentClaudeCode},
+		TargetAgents:     []model.AgentID{model.AgentClaudeCode},
 		DeselectedAgents: []model.AgentID{model.AgentOpenCode},
 		ClaudeModelAssignments: map[string]model.ClaudeModelAlias{
 			"sdd-apply": model.ClaudeModelSonnet,
