@@ -7,162 +7,292 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 const (
-	reviewRepositoryLocatorSchema   = "gentle-ai.review-repository-locator/v1"
-	reviewRepositoryLocatorMaxBytes = 64 << 10
+	ReviewRepositoryContextCapability = "review.opaque_repository_context"
+	ReviewRepositoryContextSchema     = "gentle-ai.review-repository-context/v1"
+
+	reviewRepositoryContextHandlePrefix = "rctx1_"
+	reviewRepositoryLocatorMaxBytes     = 64 << 10
 )
 
-// ReviewRepositoryLocator keeps the unchanged four-field reviewer binding.
-type ReviewRepositoryLocator struct {
-	Lineage string `json:"lineage"`
-	Target  string `json:"target"`
-	Lens    string `json:"lens"`
-	Order   int    `json:"order"`
+// ReviewRepositoryContextBinding is the public, path-free portion of a
+// provider-issued repository context. The handle is discovery only: current
+// compact authority remains the sole authorization source.
+type ReviewRepositoryContextBinding struct {
+	LineageID      string `json:"lineage_id"`
+	TargetIdentity string `json:"target_identity"`
+	Revision       string `json:"revision"`
 }
 
-type reviewRepositoryLocatorFile struct {
-	Schema         string `json:"schema"`
-	Lineage        string `json:"lineage"`
-	Target         string `json:"target"`
-	Lens           string `json:"lens"`
-	Order          int    `json:"order"`
-	RepositoryRoot string `json:"repository_root"`
-	GitCommonDir   string `json:"git_common_dir"`
+type reviewRepositoryIdentityRecord struct {
+	RepositoryRoot     string `json:"repository_root"`
+	GitCommonDir       string `json:"git_common_dir"`
+	GitDir             string `json:"git_dir"`
+	RepositoryIdentity string `json:"repository_identity"`
 }
 
-// PublishReviewRepositoryLocators writes private, immutable discovery hints.
-// Hints are not authority and are revalidated by the deferred resolver.
-func PublishReviewRepositoryLocators(ctx context.Context, repo string, locators []ReviewRepositoryLocator) error {
-	root, commonDir, err := reviewRepositoryIdentity(ctx, repo)
-	if err != nil {
-		return err
+type reviewRepositoryContextFile struct {
+	Schema             string `json:"schema"`
+	Handle             string `json:"handle"`
+	LineageID          string `json:"lineage_id"`
+	TargetIdentity     string `json:"target_identity"`
+	Revision           string `json:"revision"`
+	RepositoryIdentity string `json:"repository_identity"`
+	RepositoryRoot     string `json:"repository_root"`
+	GitCommonDir       string `json:"git_common_dir"`
+	GitDir             string `json:"git_dir"`
+}
+
+// DeriveReviewRepositoryContextHandle derives the path-free handle that START
+// will publish after compact authority creation. It performs no filesystem
+// publication and does not treat the handle as authorization.
+func DeriveReviewRepositoryContextHandle(ctx context.Context, repo string, binding ReviewRepositoryContextBinding) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	for _, locator := range locators {
-		if err := validateReviewRepositoryLocator(locator); err != nil {
-			return err
-		}
-		path, err := reviewRepositoryLocatorPath(locator, root, commonDir)
-		if err != nil {
-			return err
-		}
-		if err := ensurePrivateLocatorDirectory(filepath.Dir(path)); err != nil {
-			return err
-		}
-		payload, err := json.Marshal(reviewRepositoryLocatorFile{reviewRepositoryLocatorSchema, locator.Lineage, locator.Target, locator.Lens, locator.Order, root, commonDir})
-		if err != nil {
-			return err
-		}
-		if err := publishReviewRepositoryLocator(path, append(payload, '\n')); err != nil {
-			return err
-		}
+	if err := validateReviewRepositoryContextBinding(binding); err != nil {
+		return "", err
+	}
+	identity, err := reviewRepositoryIdentity(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	return reviewRepositoryContextHandle(binding, identity), nil
+}
+
+// ValidateReviewRepositoryContextHandle validates only the opaque transport
+// shape. Resolution still performs repository and authority validation.
+func ValidateReviewRepositoryContextHandle(handle string) error {
+	if !validReviewRepositoryContextHandle(handle) {
+		return errors.New("invalid review repository context handle")
 	}
 	return nil
 }
 
-// ResolveReviewRepository returns the sole repository whose untrusted locator
-// and live compact authority both match the exact four-field binding.
-func ResolveReviewRepository(ctx context.Context, locator ReviewRepositoryLocator) (string, error) {
-	if err := validateReviewRepositoryLocator(locator); err != nil {
+// PublishReviewRepositoryContext publishes a private immutable locator and
+// returns its opaque, deterministic handle. The record contains paths only in
+// provider-private storage and is not authority.
+func PublishReviewRepositoryContext(ctx context.Context, repo string, binding ReviewRepositoryContextBinding) (string, error) {
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	dir, err := reviewRepositoryLocatorBucket(locator)
+	if err := validateReviewRepositoryContextBinding(binding); err != nil {
+		return "", err
+	}
+	identity, err := reviewRepositoryIdentity(ctx, repo)
 	if err != nil {
 		return "", err
 	}
-	entries, err := readReviewRepositoryLocatorBucket(dir)
+	if err := validateLiveReviewRepositoryContext(ctx, identity.RepositoryRoot, binding); err != nil {
+		return "", err
+	}
+	handle := reviewRepositoryContextHandle(binding, identity)
+	path, err := reviewRepositoryContextPath(handle)
 	if err != nil {
 		return "", err
 	}
-	valid := make([]string, 0, 1)
-	for _, entry := range entries {
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".json" {
-			return "", errors.New("review repository locator bucket is unsafe")
-		}
-		root, err := resolveReviewRepositoryCandidate(ctx, filepath.Join(dir, entry.Name()), locator)
-		if err != nil {
-			return "", err
-		}
-		valid = append(valid, root)
+	home, err := reviewRepositoryContextHome()
+	if err != nil {
+		return "", err
 	}
-	if len(valid) != 1 {
-		return "", errors.New("review repository locator resolution requires exactly one candidate")
+	storageRoot, err := ensureReviewRepositoryContextStorageRoot(home, true)
+	if err != nil {
+		return "", err
 	}
-	return valid[0], nil
+	if err := ensurePrivateLocatorDirectory(storageRoot, filepath.Dir(path)); err != nil {
+		return "", err
+	}
+	record := reviewRepositoryContextFile{
+		Schema: ReviewRepositoryContextSchema, Handle: handle,
+		LineageID: binding.LineageID, TargetIdentity: binding.TargetIdentity, Revision: binding.Revision,
+		RepositoryIdentity: identity.RepositoryIdentity, RepositoryRoot: identity.RepositoryRoot,
+		GitCommonDir: identity.GitCommonDir, GitDir: identity.GitDir,
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := publishReviewRepositoryContext(path, append(payload, '\n')); err != nil {
+		return "", err
+	}
+	return handle, nil
 }
 
-func resolveReviewRepositoryCandidate(ctx context.Context, path string, want ReviewRepositoryLocator) (string, error) {
-	payload, err := readReviewRepositoryLocator(path)
+// ResolveReviewRepositoryContext resolves one provider-issued handle from any
+// process cwd, then revalidates its repository and current compact authority.
+func ResolveReviewRepositoryContext(ctx context.Context, handle string, binding ReviewRepositoryContextBinding) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := ValidateReviewRepositoryContextHandle(handle); err != nil {
+		return "", err
+	}
+	if err := validateReviewRepositoryContextBinding(binding); err != nil {
+		return "", err
+	}
+	path, err := reviewRepositoryContextPath(handle)
 	if err != nil {
 		return "", err
 	}
-	var candidate reviewRepositoryLocatorFile
-	if err := decodeReviewRepositoryLocator(payload, &candidate); err != nil ||
-		candidate.Lineage != want.Lineage || candidate.Target != want.Target || candidate.Lens != want.Lens || candidate.Order != want.Order ||
-		filepath.Base(path) != identityHash(candidate.RepositoryRoot+"\x00"+candidate.GitCommonDir)+".json" {
-		return "", errors.New("review repository locator binding is invalid")
-	}
-	root, commonDir, err := reviewRepositoryIdentity(ctx, candidate.RepositoryRoot)
-	if err != nil || !sameLocatorDirectory(root, candidate.RepositoryRoot) || !sameLocatorDirectory(commonDir, candidate.GitCommonDir) {
-		return "", errors.New("review repository locator identity changed")
-	}
-	store, err := CompactAuthoritativeStore(ctx, root, want.Lineage)
+	home, err := reviewRepositoryContextHome()
 	if err != nil {
 		return "", err
+	}
+	storageRoot, err := ensureReviewRepositoryContextStorageRoot(home, false)
+	if err != nil {
+		return "", err
+	}
+	if err := validatePrivateLocatorDirectory(storageRoot, filepath.Dir(path)); err != nil {
+		return "", err
+	}
+	payload, err := readReviewRepositoryContext(path)
+	if err != nil {
+		return "", err
+	}
+	var record reviewRepositoryContextFile
+	if err := decodeReviewRepositoryContext(payload, &record); err != nil {
+		return "", err
+	}
+	if record.Handle != handle || record.LineageID != binding.LineageID ||
+		record.TargetIdentity != binding.TargetIdentity || record.Revision != binding.Revision {
+		return "", errors.New("review repository context binding is invalid")
+	}
+	stored := reviewRepositoryIdentityRecord{
+		RepositoryRoot: record.RepositoryRoot, GitCommonDir: record.GitCommonDir,
+		GitDir: record.GitDir, RepositoryIdentity: record.RepositoryIdentity,
+	}
+	if reviewRepositoryIdentityHash(stored) != stored.RepositoryIdentity ||
+		reviewRepositoryContextHandle(binding, stored) != handle {
+		return "", errors.New("review repository context identity is invalid")
+	}
+	live, err := reviewRepositoryIdentity(ctx, stored.RepositoryRoot)
+	if err != nil || !sameLocatorDirectory(stored.RepositoryRoot, live.RepositoryRoot) ||
+		!sameLocatorDirectory(stored.GitCommonDir, live.GitCommonDir) ||
+		!sameLocatorDirectory(stored.GitDir, live.GitDir) || live.RepositoryIdentity != stored.RepositoryIdentity {
+		return "", errors.New("review repository context identity changed")
+	}
+	if err := validateLiveReviewRepositoryContext(ctx, live.RepositoryRoot, binding); err != nil {
+		return "", err
+	}
+	return live.RepositoryRoot, nil
+}
+
+func validateLiveReviewRepositoryContext(ctx context.Context, repo string, binding ReviewRepositoryContextBinding) error {
+	store, err := CompactAuthoritativeStore(ctx, repo, binding.LineageID)
+	if err != nil {
+		return err
 	}
 	record, err := store.Load()
-	if err != nil || record.State.State != StateReviewing || record.State.LineageID != want.Lineage ||
-		record.State.InitialSnapshot.Identity != want.Target || want.Order >= len(record.State.SelectedLenses) ||
-		record.State.SelectedLenses[want.Order] != want.Lens || len(record.State.LensResults) != want.Order {
-		return "", errors.New("review repository locator has no live matching authority")
+	if err != nil {
+		return err
 	}
-	return root, nil
+	if record.Revision != binding.Revision || record.State.State != StateReviewing ||
+		record.State.LineageID != binding.LineageID || record.State.InitialSnapshot.Identity != binding.TargetIdentity {
+		return errors.New("review repository context is stale or has no live matching authority")
+	}
+	return nil
 }
 
-func reviewRepositoryLocatorBucket(locator ReviewRepositoryLocator) (string, error) {
+func validateReviewRepositoryContextBinding(binding ReviewRepositoryContextBinding) error {
+	if validateLineageID(binding.LineageID) != nil || !validSHA256(binding.TargetIdentity) || !validSHA256(binding.Revision) {
+		return errors.New("invalid review repository context binding")
+	}
+	return nil
+}
+
+func reviewRepositoryContextHandle(binding ReviewRepositoryContextBinding, identity reviewRepositoryIdentityRecord) string {
+	preimage := struct {
+		Schema             string `json:"schema"`
+		LineageID          string `json:"lineage_id"`
+		TargetIdentity     string `json:"target_identity"`
+		Revision           string `json:"revision"`
+		RepositoryIdentity string `json:"repository_identity"`
+	}{
+		Schema: ReviewRepositoryContextSchema, LineageID: binding.LineageID,
+		TargetIdentity: binding.TargetIdentity, Revision: binding.Revision,
+		RepositoryIdentity: identity.RepositoryIdentity,
+	}
+	payload, _ := json.Marshal(preimage)
+	return reviewRepositoryContextHandlePrefix + identityHash(string(payload))
+}
+
+func validReviewRepositoryContextHandle(handle string) bool {
+	if !strings.HasPrefix(handle, reviewRepositoryContextHandlePrefix) || len(handle) != len(reviewRepositoryContextHandlePrefix)+64 {
+		return false
+	}
+	suffix := strings.TrimPrefix(handle, reviewRepositoryContextHandlePrefix)
+	if suffix != strings.ToLower(suffix) {
+		return false
+	}
+	_, err := hex.DecodeString(suffix)
+	return err == nil
+}
+
+func reviewRepositoryContextPath(handle string) (string, error) {
+	if err := ValidateReviewRepositoryContextHandle(handle); err != nil {
+		return "", err
+	}
+	home, err := reviewRepositoryContextHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".gentle-ai", "review-contexts", "v1", handle+".json"), nil
+}
+
+func reviewRepositoryContextHome() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".gentle-ai", "review-locators", "v1", locatorHash(locator)), nil
+	return canonicalLocatorDirectory(home)
 }
 
-func readReviewRepositoryLocatorBucket(path string) ([]fs.DirEntry, error) {
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, errors.New("review repository locator bucket is unsafe")
+func ensureReviewRepositoryContextStorageRoot(home string, create bool) (string, error) {
+	root := filepath.Join(home, ".gentle-ai")
+	if !locatorPathWithin(home, root) {
+		return "", errors.New("review repository context storage root escapes HOME")
 	}
-	dir, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-	opened, err := dir.Stat()
-	if err != nil || !opened.IsDir() || !os.SameFile(info, opened) {
-		return nil, errors.New("review repository locator bucket changed while opening")
-	}
-	return dir.ReadDir(-1)
-}
-
-func publishReviewRepositoryLocator(path string, payload []byte) error {
-	existing, err := readReviewRepositoryLocator(path)
-	if err == nil {
-		if !bytes.Equal(existing, payload) {
-			return errors.New("existing review repository locator differs")
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) && create {
+		if err := os.Mkdir(root, 0o700); err != nil && !os.IsExist(err) {
+			return "", err
 		}
-		return nil
+		info, err = os.Lstat(root)
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("review repository context storage root is unsafe")
+	}
+	if create {
+		if err := SyncReviewDirectory(home); err != nil {
+			return "", err
+		}
+	}
+	return root, nil
+}
+
+func publishReviewRepositoryContext(path string, payload []byte) error {
+	existing, err := readReviewRepositoryContext(path)
+	if err == nil {
+		if !reviewRepositoryContextPayloadEqual(existing, payload) {
+			return errors.New("existing review repository context differs")
+		}
+		return SyncReviewDirectory(filepath.Dir(path))
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".locator-")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".repository-context-")
 	if err != nil {
 		return err
 	}
@@ -179,23 +309,28 @@ func publishReviewRepositoryLocator(path string, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	if err = PublishFileNoReplace(temp.Name(), path); !errors.Is(err, fs.ErrExist) {
+	if err = PublishFileNoReplace(temp.Name(), path); err != nil && !errors.Is(err, fs.ErrExist) {
 		return err
 	}
-	existing, err = readReviewRepositoryLocator(path)
-	if err != nil || !bytes.Equal(existing, payload) {
-		return errors.New("concurrent review repository locator differs")
+	existing, err = readReviewRepositoryContext(path)
+	if err != nil || !reviewRepositoryContextPayloadEqual(existing, payload) {
+		return errors.New("concurrent review repository context differs")
 	}
-	return nil
+	return SyncReviewDirectory(filepath.Dir(path))
 }
 
-func readReviewRepositoryLocator(path string) ([]byte, error) {
+func reviewRepositoryContextPayloadEqual(left, right []byte) bool {
+	leftHash, rightHash := sha256.Sum256(left), sha256.Sum256(right)
+	return leftHash == rightHash && bytes.Equal(left, right)
+}
+
+func readReviewRepositoryContext(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, errors.New("review repository locator is not a regular file")
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !privateLocatorFileModeSafe(info.Mode()) {
+		return nil, errors.New("review repository context is not a private regular file")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -203,102 +338,181 @@ func readReviewRepositoryLocator(path string) ([]byte, error) {
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
-		return nil, errors.New("review repository locator changed while opening")
+	if err != nil || !opened.Mode().IsRegular() || !privateLocatorFileModeSafe(opened.Mode()) || !os.SameFile(info, opened) {
+		return nil, errors.New("review repository context changed while opening")
 	}
 	payload, err := io.ReadAll(io.LimitReader(file, reviewRepositoryLocatorMaxBytes+1))
 	if err != nil || len(payload) > reviewRepositoryLocatorMaxBytes {
-		return nil, errors.New("review repository locator is oversized")
+		return nil, errors.New("review repository context is oversized")
 	}
-	var locator reviewRepositoryLocatorFile
-	if err := decodeReviewRepositoryLocator(payload, &locator); err != nil {
+	var record reviewRepositoryContextFile
+	if err := decodeReviewRepositoryContext(payload, &record); err != nil {
 		return nil, err
 	}
 	return payload, nil
 }
 
-func decodeReviewRepositoryLocator(payload []byte, target *reviewRepositoryLocatorFile) error {
+func decodeReviewRepositoryContext(payload []byte, target *reviewRepositoryContextFile) error {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) || target.Schema != reviewRepositoryLocatorSchema ||
-		validateReviewRepositoryLocator(ReviewRepositoryLocator{target.Lineage, target.Target, target.Lens, target.Order}) != nil ||
-		!filepath.IsAbs(target.RepositoryRoot) || !filepath.IsAbs(target.GitCommonDir) {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) ||
+		target.Schema != ReviewRepositoryContextSchema || !validReviewRepositoryContextHandle(target.Handle) ||
+		validateReviewRepositoryContextBinding(ReviewRepositoryContextBinding{
+			LineageID: target.LineageID, TargetIdentity: target.TargetIdentity, Revision: target.Revision,
+		}) != nil || !validSHA256(target.RepositoryIdentity) || !filepath.IsAbs(target.RepositoryRoot) ||
+		!filepath.IsAbs(target.GitCommonDir) || !filepath.IsAbs(target.GitDir) {
 		return fs.ErrInvalid
 	}
 	return nil
 }
 
-func reviewRepositoryIdentity(ctx context.Context, repo string) (string, string, error) {
+func reviewRepositoryIdentity(ctx context.Context, repo string) (reviewRepositoryIdentityRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
 	root, err := (SnapshotBuilder{Repo: repo}).ResolveRepositoryRoot(ctx)
 	if err != nil {
-		return "", "", err
+		return reviewRepositoryIdentityRecord{}, err
 	}
-	common, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	root, err = canonicalLocatorDirectory(root)
 	if err != nil {
-		return "", "", err
+		return reviewRepositoryIdentityRecord{}, err
 	}
-	commonDir, err := filepath.EvalSymlinks(strings.TrimSpace(string(common)))
+	topPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel")
 	if err != nil {
-		return "", "", err
+		return reviewRepositoryIdentityRecord{}, err
 	}
-	if !sameLocatorDirectory(root, root) || !sameLocatorDirectory(commonDir, commonDir) {
-		return "", "", errors.New("repository identity is not a directory")
+	top, err := canonicalLocatorDirectory(strings.TrimSpace(string(topPayload)))
+	if err != nil || !sameLocatorDirectory(root, top) {
+		return reviewRepositoryIdentityRecord{}, errors.New("repository root identity changed")
 	}
-	return root, filepath.Clean(commonDir), nil
+	commonPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	commonDir, err := canonicalLocatorDirectory(strings.TrimSpace(string(commonPayload)))
+	if err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	gitPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	gitDir, err := canonicalLocatorDirectory(strings.TrimSpace(string(gitPayload)))
+	if err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	if !sameLocatorDirectory(gitDir, commonDir) && !locatorPathWithin(commonDir, gitDir) {
+		return reviewRepositoryIdentityRecord{}, errors.New("Git directory escapes its common directory")
+	}
+	identity := reviewRepositoryIdentityRecord{RepositoryRoot: root, GitCommonDir: commonDir, GitDir: gitDir}
+	identity.RepositoryIdentity = reviewRepositoryIdentityHash(identity)
+	return identity, nil
 }
 
-func reviewRepositoryLocatorPath(locator ReviewRepositoryLocator, root, commonDir string) (string, error) {
-	dir, err := reviewRepositoryLocatorBucket(locator)
+func reviewRepositoryIdentityHash(identity reviewRepositoryIdentityRecord) string {
+	preimage := struct {
+		RepositoryRoot string `json:"repository_root"`
+		GitCommonDir   string `json:"git_common_dir"`
+		GitDir         string `json:"git_dir"`
+	}{RepositoryRoot: filepath.Clean(identity.RepositoryRoot), GitCommonDir: filepath.Clean(identity.GitCommonDir), GitDir: filepath.Clean(identity.GitDir)}
+	payload, _ := json.Marshal(preimage)
+	return "sha256:" + identityHash(string(payload))
+}
+
+func canonicalLocatorDirectory(path string) (string, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(path))
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, identityHash(root+"\x00"+commonDir)+".json"), nil
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("review repository identity path is not a directory")
+	}
+	return filepath.Clean(resolved), nil
 }
 
-func locatorHash(locator ReviewRepositoryLocator) string {
-	return identityHash(locator.Lineage + "\x00" + locator.Target + "\x00" + locator.Lens + "\x00" + fmt.Sprint(locator.Order))
+func ensurePrivateLocatorDirectory(base, dir string) error {
+	return walkPrivateLocatorDirectory(base, dir, true)
 }
 
-func identityHash(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+func validatePrivateLocatorDirectory(base, dir string) error {
+	return walkPrivateLocatorDirectory(base, dir, false)
 }
 
-func validateReviewRepositoryLocator(locator ReviewRepositoryLocator) error {
-	if validateLineageID(locator.Lineage) != nil || !validSHA256(locator.Target) || !isSupportedLens(locator.Lens) || locator.Order < 0 {
-		return errors.New("invalid review repository locator binding")
+func walkPrivateLocatorDirectory(base, dir string, create bool) error {
+	baseAbs, err := filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(filepath.Clean(baseAbs), filepath.Clean(dirAbs))
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return errors.New("review repository context directory escapes its private root")
+	}
+	baseInfo, err := os.Lstat(baseAbs)
+	if err != nil || baseInfo.Mode()&os.ModeSymlink != 0 || !baseInfo.IsDir() {
+		return errors.New("review repository context private root is unsafe")
+	}
+	current := filepath.Clean(baseAbs)
+	if relative == "." {
+		return nil
+	}
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "" || part == "." || part == ".." {
+			return errors.New("review repository context directory is invalid")
+		}
+		parent := current
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) && create {
+			if err := os.Mkdir(current, 0o700); err != nil && !os.IsExist(err) {
+				return err
+			}
+			info, statErr = os.Lstat(current)
+		}
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !privateLocatorDirectoryModeSafe(info.Mode()) {
+			return errors.New("review repository context directory is unsafe")
+		}
+		if create {
+			if err := SyncReviewDirectory(parent); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-func ensurePrivateLocatorDirectory(dir string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	base := filepath.Join(home, ".gentle-ai")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	for current := dir; ; current = filepath.Dir(current) {
-		info, err := os.Lstat(current)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return errors.New("review repository locator directory is unsafe")
-		}
-		if err := os.Chmod(current, 0o700); err != nil {
-			return err
-		}
-		if current == base {
-			return nil
-		}
-	}
+func privateLocatorDirectoryModeSafe(mode fs.FileMode) bool {
+	return runtime.GOOS == "windows" || mode.Perm()&0o077 == 0
+}
+
+func privateLocatorFileModeSafe(mode fs.FileMode) bool {
+	return runtime.GOOS == "windows" || mode.Perm() == 0o600
+}
+
+func locatorPathWithin(base, candidate string) bool {
+	relative, err := filepath.Rel(filepath.Clean(base), filepath.Clean(candidate))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
 func sameLocatorDirectory(left, right string) bool {
 	leftInfo, leftErr := os.Stat(left)
 	rightInfo, rightErr := os.Stat(right)
 	return leftErr == nil && rightErr == nil && leftInfo.IsDir() && rightInfo.IsDir() && os.SameFile(leftInfo, rightInfo)
+}
+
+func identityHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }

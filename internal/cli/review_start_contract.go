@@ -35,9 +35,19 @@ type ReviewIntegrationStartResult struct {
 	RiskReasons         []reviewtransaction.RiskReason                `json:"risk_reasons"`
 	CandidateDiff       *reviewtransaction.FrozenCandidateDiff        `json:"candidate_diff,omitempty"`
 	ChangedPathManifest *[]reviewtransaction.ChangedPathManifestEntry `json:"changed_path_manifest,omitempty"`
+	RepositoryContext   *ReviewRepositoryContextReference             `json:"repository_context,omitempty"`
 }
 
-func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment reviewtransaction.RiskAssessment, targetMode reviewtransaction.TargetKind, frozenContext *reviewtransaction.FrozenCandidateContext) (ReviewIntegrationStartResult, error) {
+// ReviewRepositoryContextReference is the path-free provider context that a
+// capture transition can carry across process cwd boundaries.
+type ReviewRepositoryContextReference struct {
+	Capability     string `json:"capability"`
+	Handle         string `json:"handle"`
+	Revision       string `json:"revision"`
+	TargetIdentity string `json:"target_identity"`
+}
+
+func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment reviewtransaction.RiskAssessment, targetMode reviewtransaction.TargetKind, frozenContext *reviewtransaction.FrozenCandidateContext, repositoryContext *ReviewRepositoryContextReference) (ReviewIntegrationStartResult, error) {
 	assessment, err := reviewStartAssessmentForFrozenAuthority(legacy, assessment)
 	if err != nil {
 		return ReviewIntegrationStartResult{}, err
@@ -51,6 +61,7 @@ func newReviewIntegrationStartResult(legacy ReviewFacadeStartResult, assessment 
 		State: legacy.State, RiskLevel: legacy.RiskLevel, SelectedLenses: append([]string{}, legacy.SelectedLenses...),
 		Projection: legacy.Projection, ChangedFiles: legacy.ChangedFiles, ChangedLines: legacy.ChangedLines,
 		CorrectionBudget: legacy.CorrectionBudget, RiskReasons: append([]reviewtransaction.RiskReason{}, assessment.Reasons...),
+		RepositoryContext: repositoryContext,
 	}
 	if targetMode == reviewtransaction.TargetBaseWorkspaceOverlay {
 		result.TargetMode = targetMode
@@ -150,6 +161,20 @@ func (result ReviewIntegrationStartResult) Validate() error {
 	}
 	if len(result.SelectedLenses) > 0 && !hasDiff {
 		return errors.New("negotiated START selected lenses require frozen candidate context")
+	}
+	needsRepositoryContext := result.State == reviewtransaction.StateReviewing &&
+		(result.Action == string(reviewtransaction.CompactStartCreated) || result.Action == string(reviewtransaction.CompactStartResumed))
+	if needsRepositoryContext != (result.RepositoryContext != nil) {
+		return errors.New("negotiated START repository context does not match the active reviewing authority")
+	}
+	if result.RepositoryContext != nil {
+		if result.RepositoryContext.Capability != reviewtransaction.ReviewRepositoryContextCapability ||
+			reviewtransaction.ValidateReviewRepositoryContextHandle(result.RepositoryContext.Handle) != nil ||
+			!validReviewCapabilitySHA256(result.RepositoryContext.Revision) ||
+			!validReviewCapabilitySHA256(result.RepositoryContext.TargetIdentity) ||
+			result.TargetIdentity != "" && result.RepositoryContext.TargetIdentity != result.TargetIdentity {
+			return errors.New("negotiated START repository context is invalid")
+		}
 	}
 	if hasManifest {
 		diffBytes, err := result.CandidateDiff.Bytes()

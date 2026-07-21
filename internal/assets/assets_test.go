@@ -428,6 +428,10 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 		`spawn("gentle-ai"`,
 		`"review", "capture-result"`,
 		`"review", "preserve-result"`,
+		`"--repository-context", binding.repository_context`,
+		`"--expected-revision", binding.revision`,
+		`return ["--cwd", cwd]`,
+		`const current = fields === "lens,lineage,order,repository_context,revision,target"`,
 		`"--lineage", binding.lineage`,
 		`"--target", binding.target`,
 		`"--lens", binding.lens`,
@@ -451,6 +455,9 @@ func TestReviewResultArtifactsPluginContract(t *testing.T) {
 		// Envelope extraction itself can fail; only then is the raw envelope
 		// preserved, under a distinct extraction-failure cause.
 		`throw await preservedCaptureFailure(cwd, binding, output.output, cause)`,
+		`function sessionErrorMessage(binding: ReviewBinding, cause: unknown, code: string): string`,
+		`sessionErrorMessage(binding, cause, "repository_context_preflight_failed")`,
+		`parsed.reference`,
 		`raw reviewer result preserved for recovery`,
 		`raw reviewer result could not be preserved`,
 		// Double failure (capture and preserve both failed) must embed the

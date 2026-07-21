@@ -110,13 +110,18 @@ func TestReviewPreserveResultDurableIncidentArtifact(t *testing.T) {
 	if err := os.WriteFile(input, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{
+	wrongRepositoryArgs := []string{
 		"--cwd", parent, "--lineage", started.LineageID, "--target", record.State.InitialSnapshot.Identity,
 		"--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input,
 	}
+	if err := RunReviewPreserveResult(wrongRepositoryArgs, io.Discard); err == nil {
+		t.Fatal("preserve-result accepted a repository without the live reviewing authority")
+	}
+	args := append([]string{}, wrongRepositoryArgs...)
+	args[1] = child
 	var first, replay bytes.Buffer
 	if err := RunReviewPreserveResult(args, &first); err != nil {
-		t.Fatalf("preserve under the non-reviewing repository failed: %v", err)
+		t.Fatalf("preserve under the reviewing repository failed: %v", err)
 	}
 	var artifact reviewIncidentArtifact
 	decodeStrictReviewJSON(t, first.Bytes(), &artifact)

@@ -55,6 +55,7 @@
     "gentle-ai.review-receipt/v1",
     "gentle-ai.review-receipt/v2",
     "gentle-ai.review-result-artifact/v1",
+    "gentle-ai.review-targeted-validation-request/v1",
     "https://gentle-ai.dev/schema/review/refuter/v1",
     "https://gentle-ai.dev/schema/review/reviewer/v1",
     "https://gentle-ai.dev/schema/review/validator/v1"
@@ -168,6 +169,22 @@
         "supported": true,
         "requires": [
           "target_scoped_status"
+        ]
+      },
+      {
+        "name": "opaque_repository_context",
+        "supported": true,
+        "requires": [
+          "compact_v2_authority",
+          "native_next_transition"
+        ]
+      },
+      {
+        "name": "provider_targeted_validation_request",
+        "supported": true,
+        "requires": [
+          "compact_v2_authority",
+          "native_next_transition"
         ]
       },
       {

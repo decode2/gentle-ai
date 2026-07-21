@@ -387,6 +387,8 @@ func TestReviewCapabilitiesFeatureRequirementsAreExplicit(t *testing.T) {
 		{Name: "native_frozen_candidate_context", Supported: true, Requires: []string{"immutable_snapshot"}},
 		{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
 		{Name: "native_next_transition", Supported: true, Requires: []string{"target_scoped_status"}},
+		{Name: "opaque_repository_context", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
+		{Name: "provider_targeted_validation_request", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
 		{Name: "risk_reasons", Supported: true, Requires: []string{"repository_independent_capabilities"}},
 		{Name: "scope_change_diagnostics", Supported: true, Requires: []string{"uniform_failure_envelope"}},
 	}
@@ -427,10 +429,11 @@ func TestReviewIntegrationDocumentationMatchesRuntimeContract(t *testing.T) {
 	document := string(payload)
 	for _, required := range []string{
 		"`stop`", "`legacy_v1_read_only`", "`mutation_outcome`", "`not_started`", "`unknown`", "`committed`",
-		"nine strict JSON Schemas", "eleven deterministic conformance fixtures",
+		"ten strict JSON Schemas", "eleven deterministic conformance fixtures",
 		"Legacy-v1 never reports `publication_pending`", "retry and replay disabled",
 		"Historical `ordinary_4r` legacy status omits `frozen`", "START, finalize, BIND-SDD, invalidation, and direct append",
 		"`native_frozen_candidate_context`", "`candidate_diff`", "`changed_path_manifest`",
+		"`opaque_repository_context`", "`provider_targeted_validation_request`",
 		"`native_low_risk_verification`", "`selected_lenses: []`", "`receipt_scope_changed`",
 		"25-second aggregate budget", "15-second budget", "20-second budget", "one-second wait delay",
 		"Persistent compact `LOCK` JSON is advisory diagnostics", "`context.scope_change`", "`review.recover`",
@@ -439,7 +442,7 @@ func TestReviewIntegrationDocumentationMatchesRuntimeContract(t *testing.T) {
 			t.Fatalf("review integration documentation is missing %q", required)
 		}
 	}
-	for _, stale := range []string{"five strict JSON Schemas", "four deterministic conformance fixtures"} {
+	for _, stale := range []string{"five strict JSON Schemas", "nine strict JSON Schemas", "four deterministic conformance fixtures"} {
 		if strings.Contains(document, stale) {
 			t.Fatalf("review integration documentation retains stale claim %q", stale)
 		}

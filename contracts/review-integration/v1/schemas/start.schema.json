@@ -19,6 +19,17 @@
         "required": ["selected_lenses"]
       },
       "then": {"required": ["candidate_diff", "changed_path_manifest"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {"enum": ["created", "resumed"]},
+          "state": {"const": "reviewing"}
+        },
+        "required": ["action", "state"]
+      },
+      "then": {"required": ["repository_context"]},
+      "else": {"not": {"required": ["repository_context"]}}
     }
   ],
   "required": [
@@ -87,6 +98,17 @@
       "type": "array",
       "uniqueItems": true,
       "items": {"$ref": "#/$defs/changed_path"}
+    },
+    "repository_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "handle", "revision", "target_identity"],
+      "properties": {
+        "capability": {"const": "review.opaque_repository_context"},
+        "handle": {"type": "string", "pattern": "^rctx1_[0-9a-f]{64}$"},
+        "revision": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "target_identity": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
     }
   },
   "$defs": {

@@ -739,13 +739,14 @@ type ReviewIntegrationOperationResult struct {
 // ReviewIntegrationFinalizeResult preserves the existing finalize semantics
 // while excluding the provider-private receipt path from negotiated output.
 type ReviewIntegrationFinalizeResult struct {
-	Operation      string                   `json:"operation"`
-	LineageID      string                   `json:"lineage_id"`
-	State          reviewtransaction.State  `json:"state"`
-	Action         string                   `json:"action"`
-	StoreRevision  string                   `json:"store_revision"`
-	Eligibility    *ReviewActionEligibility `json:"eligibility,omitempty"`
-	NextTransition *ReviewNextTransition    `json:"next_transition,omitempty"`
+	Operation         string                                       `json:"operation"`
+	LineageID         string                                       `json:"lineage_id"`
+	State             reviewtransaction.State                      `json:"state"`
+	Action            string                                       `json:"action"`
+	StoreRevision     string                                       `json:"store_revision"`
+	Eligibility       *ReviewActionEligibility                     `json:"eligibility,omitempty"`
+	NextTransition    *ReviewNextTransition                        `json:"next_transition,omitempty"`
+	ValidationRequest *reviewtransaction.TargetedValidationRequest `json:"validation_request,omitempty"`
 }
 
 func reviewIntegrationNegotiation(flags *flag.FlagSet, contract string) (bool, error) {
@@ -816,6 +817,19 @@ func (result ReviewIntegrationOperationResult) Validate() error {
 		if finalized.NextTransition != nil {
 			if err := finalized.NextTransition.Validate(); err != nil {
 				return fmt.Errorf("negotiated finalize result next transition: %w", err)
+			}
+			transitionRequest := reviewTransitionValidationRequest(finalized.NextTransition)
+			if (transitionRequest == nil) != (finalized.ValidationRequest == nil) ||
+				transitionRequest != nil && !reflect.DeepEqual(*transitionRequest, *finalized.ValidationRequest) {
+				return errors.New("negotiated finalize validation request copies differ")
+			}
+		}
+		if finalized.ValidationRequest != nil {
+			if finalized.State != reviewtransaction.StateCorrectionRequired ||
+				finalized.ValidationRequest.LineageID != finalized.LineageID ||
+				finalized.ValidationRequest.ExpectedRevision != finalized.StoreRevision ||
+				reviewtransaction.ValidateTargetedValidationRequest(*finalized.ValidationRequest) != nil {
+				return errors.New("negotiated finalize result validation request is invalid")
 			}
 		}
 	case ReviewIntegrationOperationValidate:

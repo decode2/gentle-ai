@@ -15,7 +15,7 @@ gentle-ai review capabilities \
 
 The response identifies the protocol major, package and build identity, executable SHA-256, operations, five gates, projections, schemas, mandatory and optional features, and compatibility window. The executable digest is self-reported evidence; compare it with the published release manifest before trusting the binary.
 
-Protocol v1.2 advertises the distinct `gentle-ai.review-integration.capabilities/v1.2` schema and the additive optional feature `native_frozen_candidate_context`. That feature requires immutable snapshots and tells consumers, before START creates authority, that selected lenses will receive the frozen `candidate_diff` and typed `changed_path_manifest`. Protocol v1.0 and v1.1 schemas and fixtures remain packaged unchanged. Consumers must reject an unknown schema/minor identity they do not support; v1.2 consumers validate the v1.2 schema before relying on frozen context.
+Protocol v1.2 advertises the distinct `gentle-ai.review-integration.capabilities/v1.2` schema and three additive optional features: `native_frozen_candidate_context`, `opaque_repository_context`, and `provider_targeted_validation_request`. Frozen context supplies the exact candidate diff and changed-path manifest. Opaque repository context lets an external actor return results without receiving or rediscovering a repository path. Provider-targeted validation supplies the exact corrected candidate and frozen finding IDs to validate. Protocol v1.0 and v1.1 schemas and fixtures remain packaged unchanged. Consumers must reject an unknown schema/minor identity they do not support; v1.2 consumers validate the v1.2 schema before relying on these features.
 
 The v1.1 artifact remains the compatibility record for `base_ref_workspace_overlay`, `bounded_process_waits`, `exact_gate_receipt_discovery`, `native_low_risk_verification`, `native_next_transition`, `risk_reasons`, and `scope_change_diagnostics`. The overlay feature requires immutable snapshots and restart-safe projection.
 
@@ -47,7 +47,8 @@ Append a target selector only when its type is already known: `--projection stag
 | --- | --- |
 | Git-derived immutable snapshot identity and projection | User interaction and explicit maintainer confirmation |
 | Deterministic risk reasons, tier, lenses, and correction budget | Reviewer, validator, and correction actor execution |
-| Compact-v2 authority transitions, lock, and expected-revision CAS | Process invocation, cancellation, and transport diagnostics |
+| Compact-v2 authority transitions, opaque repository context, lock, and expected-revision CAS | Process invocation, cancellation, and transport diagnostics |
+| Corrected-candidate identity and targeted-validation request | Running the requested validator and returning its typed result |
 | Receipt derivation and exact receipt publication replay | Rendering native outcomes without weakening them |
 | Target applicability, replayability, and gate evaluation | Rechecking command intent immediately before execution |
 | Approved-receipt binding for SDD | Derived worktree and temporary-view lifecycle |
@@ -60,14 +61,14 @@ Consumers MUST NOT reconstruct receipts, derive canonical hashes, inspect the Gi
 | --- | --- | --- |
 | `review.capabilities` | None | Reports the deterministic repository-independent provider surface. |
 | `review.start` | Compact authority | Freezes one target, tier, lens set, and correction budget; negotiated selected-lens responses also return context derived from that exact authority. It never starts because a gate was invoked. |
-| `review.status` | None | Reconstructs target-scoped applicability, projection, lifecycle, and one next action. |
+| `review.status` | Provider-private derived context only | Reconstructs target-scoped applicability, projection, lifecycle, and one next action without mutating authority. |
 | `review.finalize` | Compact authority and derived receipt | Accepts selected lens results and bounded correction evidence, performs deterministic native verification for an eligible low-risk zero-lens target, or performs an exact receipt-publication replay. |
 | `review.validate` | None | Revalidates one existing content-bound receipt at a named lifecycle gate. |
 | `review.bind_sdd` | SDD binding artifact | Binds only an approved receipt to an SDD change. |
 
 `review.start` is the only ordinary entry point that creates a review budget. Finalize continues that frozen lifecycle. Status, validation, and gates are read-only and never allocate a reviewer, actor, lineage, or correction budget.
 
-`gentle-ai review capture-result` is an additive headless command, not a negotiated `review-integration/v1` repository operation. It accepts no `--contract` and emits a manifest with capability `review.native_result_artifact` and schema `gentle-ai.review-result-artifact/v1`; that native artifact schema remains advertised for consumer validation.
+`gentle-ai review capture-result` is an additive headless command, not a negotiated `review-integration/v1` repository operation. It accepts no `--contract` and emits a manifest with capability `review.native_result_artifact` and schema `gentle-ai.review-result-artifact/v1`; that native artifact schema remains advertised for consumer validation. A negotiated capture transition carries `--repository-context <opaque-handle>` plus `--expected-revision <revision>`, so the consumer can invoke capture from an unrelated working directory without learning the repository path. In that mode the manifest contains a provider-issued opaque `reference`, not a filesystem `path`; explicit `--cwd` remains the legacy path-manifest mode and cannot be combined with a repository-context handle.
 
 ### Choose the target explicitly
 
@@ -108,7 +109,7 @@ Missing context is different from a valid empty candidate: the latter is encoded
 
 Reviewer results may omit the top-level `lens`; when present, it must match the selected-lens position returned by start. Both the short names (`risk`, `resilience`, `readability`, `reliability`) and the negotiated facade names (`review-risk`, `review-resilience`, `review-readability`, `review-reliability`) map to the same native lenses. A mismatch is rejected before authority mutation instead of being overwritten.
 
-Durable controllers capture each result with exact lineage, target, lens, and selected order, then pass the emitted manifests to FINALIZE as ordered `--result-artifact` values. Legacy `--result` files remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
+Durable controllers capture each result with exact lineage, target, lens, selected order, authority revision, and provider-issued repository context, then pass the emitted pathless manifests to FINALIZE as ordered `--result-artifact` values or let the provider discover every canonical result with `--captured-results`. The context and artifact references are opaque capabilities, not serialized paths: the provider resolves them from private storage, revalidates repository identity and Git directory containment, and rejects them when lineage, target, revision, selected lens/order, or live authority no longer match. Legacy `--result` files and path manifests remain compatible but cannot be mixed with artifact manifests and are not a durable cross-agent handoff.
 
 Proof and evidence strings accept ordinary technical notation, including `HEAD^{tree}`, `{}`, `<A>`, and `=>`. Blank values and exact non-evidence sentinels such as `n/a`, `none`, `todo`, `tbd`, `pass`, `passed`, `success`, and `placeholder` remain invalid.
 
@@ -138,6 +139,8 @@ There is no `archive` gate. An advisory preflight is not delivery authorization;
 | `corrupted` | Authority required for classification cannot be validated safely. |
 
 The provider returns one historical action from `start`, `finalize`, `validate`, `recover`, `maintainer_action`, `select_lineage`, `repair_authority`, `reconcile_finalize`, or `stop`. A consumer that negotiates `native_next_transition` requests `--next-transition` with STATUS or FINALIZE and MUST route only from its single `next_transition`. `execute` contains one native operation, every exact argument, immutable lineage/revision/target binding, and path-free native artifact identities; execute those values unchanged. `collect` names the exact missing input, schema, capture operation, and content-bound arguments. `stop` has exactly one reason code and contains no command, binding, or template. Existing v1 consumers that do not request the flag retain their historical strict payload; `eligibility` remains a compatibility detail and is never a routing authority. Missing worktrees, refs, targets, lineage, revisions, ambiguous/corrupt authority, and unverifiable materiality never yield an executable partial operation. Applicable non-terminal legacy-v1 authority always stops. A consumer MUST NOT infer an authorization, command binding, template, recovery disposition, or target selector from prose, state, eligibility, or a statusline.
+
+After a correction forecast and an actual candidate change, FINALIZE or STATUS may collect `targeted_validation` with a strict `gentle-ai.review-targeted-validation-request/v1` object. Execute that request unchanged. Its provider-derived hash binds the lineage, expected authority revision, original target, exact frozen finding IDs, projection, corrected candidate tree and identity, and the exact canonical correction-path subset plus its digest. That subset is distinct from the complete current projection manifest and digest. If the candidate did not materially change, no request is issued and routing stops with `corrected_candidate_unavailable`; consumers must not invent a validator request or another correction forecast.
 
 When the action is `recover`, negotiated status also returns `action_disposition` — the exact `review recover --disposition` value the recovery rules accept for that predecessor: `scope_changed` for a correction-required lineage whose live scope expands beyond or is a pure contraction of frozen genesis paths, `escalated` for a historically failed scoped validator whose target has changed, and `invalidated` for an invalidated authority. The field is present exactly when the action is `recover` and is absent otherwise. It names the accepted disposition; it does not authorize recovery, which still enforces its own predicates and maintainer authorization. A materially changed escalated candidate exposes only `review.recover` with `disposition: escalated` and the required inputs. An unchanged escalated candidate exposes only `stop`. Terminal escalated authority with reviewer artifacts or a receipt always forbids `review.abandon`; no abandonment authorization template is emitted. A consumer MUST NOT substitute a different disposition.
 
@@ -230,7 +233,7 @@ Pi adoption, fallback retirement, package pinning, and Pi release sequencing are
 
 Each release archive contains:
 
-- `contracts/review-integration/v1/schemas/` — nine strict JSON Schemas, including preserved capability protocols v1.0/v1.1 and current v1.2.
+- `contracts/review-integration/v1/schemas/` — ten strict JSON Schemas, including preserved capability protocols v1.0/v1.1, current v1.2, and the provider-targeted validation request.
 - `contracts/review-integration/v1/fixtures/` — eleven deterministic conformance fixtures, including all three capability minors and all four target-applicability states.
 - `docs/review-integration.md` — this ownership and consumption guide.
 

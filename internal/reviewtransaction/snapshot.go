@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -549,6 +550,30 @@ func canonicalRepositoryPath(path string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
+func readSnapshotIndex(path string) ([]byte, time.Time, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	defer file.Close()
+	before, err := file.Stat()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	payload, err := io.ReadAll(file)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if before.Size() != after.Size() || before.ModTime() != after.ModTime() || int64(len(payload)) != after.Size() {
+		return nil, time.Time{}, errors.New("real index changed while being copied")
+	}
+	return payload, after.ModTime(), nil
+}
+
 func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intended []string, allowStagedIntended bool, projection Projection) (string, string, string, error) {
 	baseTree, unborn, err := builder.resolveCurrentChangesBase(ctx, projection)
 	if err != nil {
@@ -563,7 +588,7 @@ func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intende
 	if !filepath.IsAbs(indexPath) {
 		indexPath = filepath.Join(builder.Repo, indexPath)
 	}
-	indexContent, err := os.ReadFile(indexPath)
+	indexContent, indexModTime, err := readSnapshotIndex(indexPath)
 	missingIndex := errors.Is(err, os.ErrNotExist)
 	if err != nil && !missingIndex {
 		return "", "", "", fmt.Errorf("read real index: %w", err)
@@ -612,8 +637,17 @@ func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intende
 		if _, err := runGit(ctx, builder.Repo, env, nil, "read-tree", "--empty"); err != nil {
 			return "", "", "", err
 		}
-	} else if err := os.WriteFile(tempIndex, indexContent, 0o600); err != nil {
-		return "", "", "", err
+	} else {
+		if err := os.WriteFile(tempIndex, indexContent, 0o600); err != nil {
+			return "", "", "", err
+		}
+		// Git's racily-clean check compares cached entry timestamps with the
+		// index timestamp. Preserve the real index timestamp: leaving the copied
+		// index freshly dated can make a rapid same-stat rewrite look safely old
+		// and let `git add -u` reuse stale cached content.
+		if err := os.Chtimes(tempIndex, indexModTime, indexModTime); err != nil {
+			return "", "", "", err
+		}
 	}
 	if projection != ProjectionStaged {
 		if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {

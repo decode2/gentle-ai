@@ -43,6 +43,17 @@ assert features["native_frozen_candidate_context"] == {
     "supported": True,
     "requires": ["immutable_snapshot"],
 }
+assert features["opaque_repository_context"] == {
+    "name": "opaque_repository_context",
+    "supported": True,
+    "requires": ["compact_v2_authority", "native_next_transition"],
+}
+assert features["provider_targeted_validation_request"] == {
+    "name": "provider_targeted_validation_request",
+    "supported": True,
+    "requires": ["compact_v2_authority", "native_next_transition"],
+}
+assert "gentle-ai.review-targeted-validation-request/v1" in document["schemas"]
 assert list(outside.iterdir()) == []
 
 def keys(value):

@@ -11,6 +11,8 @@ type ReviewBinding = {
   target: string
   lens: string
   order: number
+  revision?: string
+  repository_context?: string
 }
 
 function parseBinding(prompt: unknown, lens: string): ReviewBinding {
@@ -28,9 +30,13 @@ function parseBinding(prompt: unknown, lens: string): ReviewBinding {
   }
   const value = binding as Record<string, unknown>
   const fields = Object.keys(value).sort().join(",")
-  if (fields !== "lens,lineage,order,target" ||
+  const legacy = fields === "lens,lineage,order,target"
+  const current = fields === "lens,lineage,order,repository_context,revision,target"
+  if ((!legacy && !current) ||
       typeof value.lineage !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.lineage) ||
       typeof value.target !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.target) ||
+      (current && (typeof value.revision !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.revision) ||
+        typeof value.repository_context !== "string" || !/^rctx1_[a-f0-9]{64}$/.test(value.repository_context))) ||
       value.lens !== lens || !Number.isSafeInteger(value.order) || (value.order as number) < 0) {
     throw new Error("review task binding does not match the selected lens")
   }
@@ -77,9 +83,16 @@ function runNative(cwd: string, args: string[], stdin: string): Promise<string> 
   })
 }
 
+function repositoryBindingArgs(cwd: string, binding: ReviewBinding): string[] {
+  if (binding.repository_context && binding.revision) {
+    return ["--repository-context", binding.repository_context, "--expected-revision", binding.revision]
+  }
+  return ["--cwd", cwd]
+}
+
 function captureResult(cwd: string, binding: ReviewBinding, result: string): Promise<string> {
   return runNative(cwd, [
-    "review", "capture-result", "--cwd", cwd,
+    "review", "capture-result", ...repositoryBindingArgs(cwd, binding),
     "--lineage", binding.lineage, "--target", binding.target,
     "--lens", binding.lens, "--order", String(binding.order), "--input", "-",
   ], result)
@@ -88,7 +101,7 @@ function captureResult(cwd: string, binding: ReviewBinding, result: string): Pro
 async function preflightCapture(cwd: string, binding: ReviewBinding): Promise<void> {
   try {
     await runNative(cwd, [
-      "review", "capture-result", "--cwd", cwd,
+      "review", "capture-result", ...repositoryBindingArgs(cwd, binding),
       "--lineage", binding.lineage, "--target", binding.target,
       "--lens", binding.lens, "--order", String(binding.order), "--preflight",
     ], "")
@@ -99,18 +112,23 @@ async function preflightCapture(cwd: string, binding: ReviewBinding): Promise<vo
     // behave exactly as it did before preflight existed.
     const message = errorMessage(cause)
     if (message.includes("flag provided but not defined") && message.includes("-preflight")) return
+    const scope = binding.repository_context ? "the provider-issued repository context" : cwd
+    const recovery = binding.repository_context
+      ? `Refresh the exact native next_transition for lineage ${binding.lineage} before relaunching the lens.`
+      : `If lineage ${binding.lineage} was started in a different repository (for example a nested one), ` +
+        `set GENTLE_AI_REVIEW_CWD to that repository and relaunch the lens.`
     throw new Error(
-      `review capture preflight failed for lens ${binding.lens} under ${cwd}: ${errorMessage(cause)}. ` +
+      `review capture preflight failed for lens ${binding.lens} under ${scope}: ` +
+      `${sessionErrorMessage(binding, cause, "repository_context_preflight_failed")}. ` +
       `The reviewer was not launched, so its exactly-once invocation is preserved. ` +
-      `If lineage ${binding.lineage} was started in a different repository (for example a nested one), ` +
-      `set GENTLE_AI_REVIEW_CWD to that repository and relaunch the lens.`,
+      recovery,
     )
   }
 }
 
 function preserveResult(cwd: string, binding: ReviewBinding, raw: string): Promise<string> {
   return runNative(cwd, [
-    "review", "preserve-result", "--cwd", cwd,
+    "review", "preserve-result", ...repositoryBindingArgs(cwd, binding),
     "--lineage", binding.lineage, "--target", binding.target,
     "--lens", binding.lens, "--order", String(binding.order), "--input", "-",
   ], raw)
@@ -120,10 +138,18 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
 
+function sessionErrorMessage(binding: ReviewBinding, cause: unknown, code: string): string {
+  return binding.repository_context
+    ? `${code}: provider-owned review operation failed; refresh the exact native next_transition or retry the same opaque binding`
+    : errorMessage(cause)
+}
+
 function preservedReference(manifest: string): string {
   try {
-    const parsed = JSON.parse(manifest) as { path?: unknown }
+    const parsed = JSON.parse(manifest) as { reference?: unknown; path?: unknown; sha256?: unknown }
+    if (parsed && typeof parsed.reference === "string" && parsed.reference !== "") return parsed.reference
     if (parsed && typeof parsed.path === "string" && parsed.path !== "") return parsed.path
+    if (parsed && typeof parsed.sha256 === "string" && parsed.sha256 !== "") return parsed.sha256
   } catch {
     // fall through to the full manifest
   }
@@ -141,17 +167,24 @@ function embeddedRawPayload(raw: string): string {
 }
 
 async function preservedCaptureFailure(cwd: string, binding: ReviewBinding, raw: unknown, cause: unknown): Promise<Error> {
+  const captureFailure = sessionErrorMessage(binding, cause, "repository_context_capture_failed")
   if (typeof raw !== "string" || raw.trim() === "") {
-    return new Error(`${errorMessage(cause)}; no raw reviewer result was available to preserve`)
+    return new Error(`${captureFailure}; no raw reviewer result was available to preserve`)
   }
   try {
     const manifest = await preserveResult(cwd, binding, raw)
-    return new Error(`${errorMessage(cause)}; raw reviewer result preserved for recovery at ${preservedReference(manifest)}`)
+    return new Error(`${captureFailure}; raw reviewer result preserved for recovery as ${preservedReference(manifest)}`)
   } catch (preserveCause) {
+    const preserveFailure = sessionErrorMessage(binding, preserveCause, "repository_context_preserve_failed")
+    if (binding.repository_context) {
+      return new Error(
+        `${captureFailure}; ${preserveFailure}; the reviewer task output remains the manual recovery source`,
+      )
+    }
     // Double failure: durable preservation itself failed, so the transcript
     // is the only remaining copy — embed the bounded payload in the error.
     return new Error(
-      `${errorMessage(cause)}; raw reviewer result could not be preserved: ${errorMessage(preserveCause)}; ` +
+      `${captureFailure}; raw reviewer result could not be preserved: ${preserveFailure}; ` +
       `raw reviewer result follows for manual recovery:\n${embeddedRawPayload(raw)}`,
     )
   }

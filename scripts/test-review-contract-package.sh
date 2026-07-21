@@ -36,6 +36,7 @@ expected_contract = [
     contract_root / "schemas/result-artifact.schema.json",
     contract_root / "schemas/start.schema.json",
     contract_root / "schemas/status.schema.json",
+    contract_root / "schemas/targeted-validation-request.schema.json",
 ]
 expected_names = sorted(path.as_posix() for path in expected_contract)
 

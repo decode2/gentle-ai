@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/internal/reviewtransaction"
@@ -34,15 +35,16 @@ type ReviewTargetStatusResult struct {
 	Action        reviewtransaction.TargetStatusAction  `json:"action"`
 	// ActionDisposition names the `review recover --disposition` value the
 	// recovery rules accept. It is present exactly when Action is recover.
-	ActionDisposition reviewtransaction.RecoveryDisposition `json:"action_disposition,omitempty"`
-	Replayability     reviewtransaction.Replayability       `json:"replayability"`
-	Frozen            *ReviewTargetStatusFrozen             `json:"frozen,omitempty"`
-	TargetIdentity    string                                `json:"target_identity"`
-	Projection        ReviewTargetStatusProjection          `json:"projection"`
-	Candidates        []string                              `json:"candidates"`
-	Reconciliation    *ReviewFinalizeReconciliation         `json:"reconciliation,omitempty"`
-	Eligibility       *ReviewActionEligibility              `json:"eligibility,omitempty"`
-	NextTransition    *ReviewNextTransition                 `json:"next_transition,omitempty"`
+	ActionDisposition reviewtransaction.RecoveryDisposition        `json:"action_disposition,omitempty"`
+	Replayability     reviewtransaction.Replayability              `json:"replayability"`
+	Frozen            *ReviewTargetStatusFrozen                    `json:"frozen,omitempty"`
+	TargetIdentity    string                                       `json:"target_identity"`
+	Projection        ReviewTargetStatusProjection                 `json:"projection"`
+	Candidates        []string                                     `json:"candidates"`
+	Reconciliation    *ReviewFinalizeReconciliation                `json:"reconciliation,omitempty"`
+	Eligibility       *ReviewActionEligibility                     `json:"eligibility,omitempty"`
+	NextTransition    *ReviewNextTransition                        `json:"next_transition,omitempty"`
+	ValidationRequest *reviewtransaction.TargetedValidationRequest `json:"validation_request,omitempty"`
 }
 
 // ReviewActionEligibility remains an additive compatibility detail for older
@@ -258,6 +260,9 @@ func (result ReviewTargetStatusResult) Validate() error {
 	if err := result.Projection.Validate(); err != nil {
 		return err
 	}
+	if result.TargetIdentity != result.Projection.CurrentSnapshotIdentity {
+		return errors.New("negotiated review target identity differs from its current projection")
+	}
 	if result.Eligibility != nil {
 		if err := result.Eligibility.Validate(result); err != nil {
 			return err
@@ -266,6 +271,14 @@ func (result ReviewTargetStatusResult) Validate() error {
 	if result.NextTransition != nil {
 		if err := result.NextTransition.Validate(); err != nil {
 			return err
+		}
+		if err := result.validateNextTransitionTargets(); err != nil {
+			return err
+		}
+		transitionRequest := reviewTransitionValidationRequest(result.NextTransition)
+		if (transitionRequest == nil) != (result.ValidationRequest == nil) ||
+			transitionRequest != nil && !reflect.DeepEqual(*transitionRequest, *result.ValidationRequest) {
+			return errors.New("negotiated status validation request copies differ")
 		}
 	}
 	switch result.Applicability {
@@ -337,6 +350,18 @@ func (result ReviewTargetStatusResult) Validate() error {
 	default:
 		return errors.New("unsupported review status replayability")
 	}
+	if result.ValidationRequest != nil {
+		if result.Authority == nil || result.Authority.State != reviewtransaction.StateCorrectionRequired ||
+			result.ValidationRequest.LineageID != result.Authority.LineageID ||
+			result.ValidationRequest.ExpectedRevision != result.Authority.Revision ||
+			result.ValidationRequest.TargetIdentity != result.Projection.InitialSnapshotIdentity ||
+			result.ValidationRequest.Projection != result.Projection.Projection ||
+			result.ValidationRequest.CorrectionCandidateTree != result.Projection.CurrentCandidateTree ||
+			!reviewStatusPathsContain(result.Projection.Paths, result.ValidationRequest.CorrectionPaths) ||
+			reviewtransaction.ValidateTargetedValidationRequest(*result.ValidationRequest) != nil {
+			return errors.New("negotiated status validation request is invalid")
+		}
+	}
 	switch result.ActionDisposition {
 	case "":
 		if result.Action == reviewtransaction.TargetStatusActionRecover {
@@ -350,6 +375,48 @@ func (result ReviewTargetStatusResult) Validate() error {
 		return errors.New("unsupported review status recovery disposition")
 	}
 	return nil
+}
+
+func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
+	if result.NextTransition == nil {
+		return nil
+	}
+	if result.NextTransition.Execute != nil && result.NextTransition.Execute.Binding.TargetIdentity != result.TargetIdentity {
+		return errors.New("negotiated status execution target differs from the current target identity")
+	}
+	if result.NextTransition.Collect == nil {
+		return nil
+	}
+	for _, input := range result.NextTransition.Collect.Inputs {
+		if input.CaptureOperation != "review.capture-result" {
+			continue
+		}
+		arguments, err := reviewTransitionArgumentMap(input.Arguments)
+		if err != nil || arguments["target"] != result.Projection.InitialSnapshotIdentity {
+			return errors.New("negotiated status capture target differs from the frozen target identity")
+		}
+	}
+	return nil
+}
+
+func reviewStatusPathsContain(candidate, correction []string) bool {
+	available := make(map[string]struct{}, len(candidate))
+	for _, value := range candidate {
+		available[value] = struct{}{}
+	}
+	for _, value := range correction {
+		if _, exists := available[value]; !exists {
+			return false
+		}
+	}
+	return len(correction) > 0
+}
+
+func reviewTransitionValidationRequest(transition *ReviewNextTransition) *reviewtransaction.TargetedValidationRequest {
+	if transition == nil || transition.Collect == nil || len(transition.Collect.Inputs) != 1 {
+		return nil
+	}
+	return transition.Collect.Inputs[0].ValidationRequest
 }
 
 func (transition ReviewNextTransition) Validate() error {
@@ -374,6 +441,29 @@ func (transition ReviewNextTransition) Validate() error {
 					return errors.New("collection transition has an incomplete argument")
 				}
 			}
+			arguments, err := reviewTransitionArgumentMap(input.Arguments)
+			if err != nil {
+				return err
+			}
+			if input.CaptureOperation == "review.capture-result" {
+				order, orderErr := strconv.Atoi(arguments["order"])
+				if len(arguments) != 6 || !reviewStartSupportedLens(arguments["lens"]) || orderErr != nil || order < 0 ||
+					!validReviewCapabilitySHA256(arguments["expected-revision"]) || !validReviewCapabilitySHA256(arguments["target"]) ||
+					strings.TrimSpace(arguments["lineage"]) == "" || reviewtransaction.ValidateReviewRepositoryContextHandle(arguments["repository-context"]) != nil {
+					return errors.New("review capture transition lacks an exact repository and authority binding")
+				}
+			}
+			if input.CaptureOperation == "external.run_targeted_validation" && input.ValidationRequest == nil {
+				return errors.New("targeted validation transition lacks its provider-owned request")
+			}
+			if input.ValidationRequest != nil {
+				request := input.ValidationRequest
+				if input.Schema != reviewtransaction.TargetedValidationRequestSchema || input.CaptureOperation != "external.run_targeted_validation" ||
+					arguments["lineage"] != request.LineageID || arguments["expected-revision"] != request.ExpectedRevision ||
+					arguments["target"] != request.CorrectionTargetIdentity || reviewtransaction.ValidateTargetedValidationRequest(*request) != nil {
+					return errors.New("targeted validation transition request is invalid")
+				}
+			}
 		}
 	case reviewNextTransitionExecute:
 		if transition.Collect != nil || transition.Execute == nil || transition.Execute.Arguments == nil || len(transition.Execute.Preconditions) == 0 || !validReviewCapabilitySHA256(transition.Execute.Binding.TargetIdentity) {
@@ -381,6 +471,9 @@ func (transition ReviewNextTransition) Validate() error {
 		}
 		if transition.Execute.Operation != "review.start" && transition.Execute.Operation != "review.finalize" && transition.Execute.Operation != "review.recover" && transition.Execute.Operation != "review.validate" || transition.Execute.Operation != "review.start" && (strings.TrimSpace(transition.Execute.Binding.LineageID) == "" || !validReviewCapabilitySHA256(transition.Execute.Binding.Revision)) {
 			return errors.New("execution transition operation or binding is invalid")
+		}
+		if transition.Execute.Binding.RepositoryContext != "" && reviewtransaction.ValidateReviewRepositoryContextHandle(transition.Execute.Binding.RepositoryContext) != nil {
+			return errors.New("execution transition repository context is invalid")
 		}
 		for _, argument := range transition.Execute.Arguments {
 			if strings.TrimSpace(argument.Name) == "" || strings.TrimSpace(argument.Value) == "" {
@@ -396,6 +489,17 @@ func (transition ReviewNextTransition) Validate() error {
 		return errors.New("unsupported review next transition kind")
 	}
 	return nil
+}
+
+func reviewTransitionArgumentMap(arguments []ReviewTransitionArgument) (map[string]string, error) {
+	values := make(map[string]string, len(arguments))
+	for _, argument := range arguments {
+		if _, duplicate := values[argument.Name]; duplicate {
+			return nil, errors.New("review transition repeats an argument")
+		}
+		values[argument.Name] = argument.Value
+	}
+	return values, nil
 }
 
 func (eligibility ReviewActionEligibility) Validate(status ReviewTargetStatusResult) error {

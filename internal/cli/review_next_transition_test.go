@@ -144,6 +144,9 @@ func TestReviewNextTransitionStateTable(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			input := reviewNextTransitionInput{}
+			if tt.status.Authority != nil && tt.status.Authority.State == reviewtransaction.StateReviewing {
+				input.RepositoryContext = "rctx1_" + strings.Repeat("d", 64)
+			}
 			if tt.status.Authority.State == reviewtransaction.StateApproved {
 				tt.status.Receipt.Status = ReviewReceiptPresent
 			}

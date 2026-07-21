@@ -116,6 +116,7 @@
           "gentle-ai.review-receipt/v1",
           "gentle-ai.review-receipt/v2",
           "gentle-ai.review-result-artifact/v1",
+          "gentle-ai.review-targeted-validation-request/v1",
           "https://gentle-ai.dev/schema/review/refuter/v1",
           "https://gentle-ai.dev/schema/review/reviewer/v1",
           "https://gentle-ai.dev/schema/review/validator/v1"
@@ -135,8 +136,8 @@
         },
         "optional": {
           "type": "array",
-          "minItems": 8,
-          "maxItems": 8,
+          "minItems": 10,
+          "maxItems": 10,
           "items": {"$ref": "#/$defs/feature"}
         }
       }
@@ -203,6 +204,8 @@
             "legacy_v1_target_scoped_read_only",
             "native_frozen_candidate_context",
             "native_low_risk_verification",
+            "opaque_repository_context",
+            "provider_targeted_validation_request",
             "repository_independent_capabilities",
             "restart_safe_projection",
             "risk_reasons",

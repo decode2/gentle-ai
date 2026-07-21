@@ -117,7 +117,7 @@ func TestNegotiatedReviewStartResumesFrozenMediumAuthorityAfterClassifierUpgrade
 		t.Fatal(err)
 	}
 	contextResult := reviewtransaction.FrozenCandidateContext{CandidateDiff: diff, ChangedPathManifest: []reviewtransaction.ChangedPathManifestEntry{{Path: "process_helper.go", Status: reviewtransaction.CandidatePathAdded, OldMode: "000000", NewMode: "100644"}}}
-	result, err := newReviewIntegrationStartResult(legacy, assessment, "", &contextResult)
+	result, err := newReviewIntegrationStartResult(legacy, assessment, "", &contextResult, nil)
 	if err != nil || result.RiskLevel != reviewtransaction.RiskMedium || !reflect.DeepEqual(result.SelectedLenses, legacy.SelectedLenses) {
 		t.Fatalf("resumed authority = risk %q lenses %v error %v, want frozen medium %v", result.RiskLevel, result.SelectedLenses, err, legacy.SelectedLenses)
 	}
