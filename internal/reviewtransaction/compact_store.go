@@ -120,6 +120,10 @@ type CompactStartRequest struct {
 	State           CompactState
 	TracePath       string
 	ExplicitLineage bool
+	// BeforeCreate runs under the START lock only after existing-authority
+	// selection is exhausted and immediately before a new record is built. It
+	// may validate derived response material without running for resumes.
+	BeforeCreate func() error
 }
 
 type CompactStartResult struct {
@@ -742,6 +746,11 @@ func StartCompactAuthority(ctx context.Context, repo string, request CompactStar
 	}
 	if err := validateCompactRepositoryEvidence(ctx, requestedStore.repo, nil, request.State, "review/start"); err != nil {
 		return CompactStartResult{}, fmt.Errorf("validate compact start repository evidence: %w", err)
+	}
+	if request.BeforeCreate != nil {
+		if err := request.BeforeCreate(); err != nil {
+			return CompactStartResult{}, err
+		}
 	}
 	record, payload, err := makeCompactRecord(request.State)
 	if err != nil {

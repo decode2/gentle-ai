@@ -223,6 +223,25 @@ var reviewFacadeOperationTimeout = 25 * time.Second
 var reviewFacadeCommandRunner = runReviewCommandContext
 var reviewFacadePlannedTransitionHook = func(context.Context, string, string, string) error { return nil }
 var reviewFacadeCommittedTransitionHook = func(context.Context, string, string, string) error { return nil }
+var renderReviewStartFrozenCandidateContext = func(ctx context.Context, builder reviewtransaction.SnapshotBuilder, snapshot reviewtransaction.Snapshot) (reviewtransaction.FrozenCandidateContext, error) {
+	return builder.FrozenCandidateContext(ctx, snapshot)
+}
+
+type reviewStartContextError struct {
+	AuthoritySelected bool
+	LineageID         string
+	StoreRevision     string
+	Cause             error
+}
+
+func (err *reviewStartContextError) Error() string {
+	if err.AuthoritySelected {
+		return fmt.Sprintf("render frozen context for selected durable START authority %q at revision %s: %v", err.LineageID, err.StoreRevision, err.Cause)
+	}
+	return fmt.Sprintf("render frozen context before START authority creation for %q: %v", err.LineageID, err.Cause)
+}
+
+func (err *reviewStartContextError) Unwrap() error { return err.Cause }
 
 func RunReview(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
@@ -834,26 +853,34 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	if err != nil {
 		return fmt.Errorf("create compact facade review: %w", err)
 	}
+	var requestedFrozenContext *reviewtransaction.FrozenCandidateContext
+	var requestedContextErr error
+	if negotiated && len(state.SelectedLenses) > 0 {
+		contextResult, contextErr := renderReviewStartFrozenCandidateContext(ctx, reviewtransaction.SnapshotBuilder{Repo: root}, state.InitialSnapshot)
+		if contextErr != nil {
+			requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: contextErr}
+		} else {
+			requestedFrozenContext = &contextResult
+		}
+	}
+	if negotiated && requestedContextErr == nil {
+		preview := reviewFacadeStartResultFor(reviewtransaction.CompactStartCreated, len(state.SelectedLenses) > 0, state)
+		if _, previewErr := newReviewIntegrationStartResult(preview, assessment, state.InitialSnapshot.Kind, requestedFrozenContext); previewErr != nil {
+			requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: previewErr}
+		}
+	}
+	var beforeCreate func() error
+	if negotiated {
+		beforeCreate = func() error { return requestedContextErr }
+	}
 	started, err := reviewtransaction.StartCompactAuthority(ctx, root, reviewtransaction.CompactStartRequest{
-		State: state, TracePath: strings.TrimSpace(*tracePath), ExplicitLineage: explicitLineage,
+		State: state, TracePath: strings.TrimSpace(*tracePath), ExplicitLineage: explicitLineage, BeforeCreate: beforeCreate,
 	})
 	if err != nil {
 		return fmt.Errorf("start compact facade review: %w", err)
 	}
 	authority := started.Record.State
-	legacyResult := ReviewFacadeStartResult{
-		Operation: "review/start", Action: string(started.Action), LensesRequired: started.LensesRequired,
-		LineageID: authority.LineageID, State: authority.State, RiskLevel: authority.RiskLevel,
-		SelectedLenses: append([]string{}, authority.SelectedLenses...), LensBindings: facadeLensBindings(authority.SelectedLenses),
-		Projection:   facadeProjection(authority.InitialSnapshot.Projection),
-		ChangedFiles: len(authority.InitialSnapshot.Paths), TargetIdentity: authority.InitialSnapshot.Identity,
-		ChangedLines: authority.OriginalChangedLines, CorrectionBudget: authority.CorrectionBudget,
-	}
-	if authority.InitialSnapshot.Kind == reviewtransaction.TargetBaseWorkspaceOverlay {
-		legacyResult.TargetMode = authority.InitialSnapshot.Kind
-		legacyResult.BaseTree = authority.InitialSnapshot.BaseTree
-		legacyResult.CandidateTree = authority.InitialSnapshot.CandidateTree
-	}
+	legacyResult := reviewFacadeStartResultFor(started.Action, started.LensesRequired, authority)
 	if !negotiated {
 		return encodeReviewJSON(stdout, legacyResult)
 	}
@@ -866,11 +893,44 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 			return fmt.Errorf("classify authoritative negotiated START target: %w", err)
 		}
 	}
-	negotiatedResult, err := newReviewIntegrationStartResult(legacyResult, assessment, authority.InitialSnapshot.Kind)
+	var frozenContext *reviewtransaction.FrozenCandidateContext
+	if len(authority.SelectedLenses) > 0 {
+		if authority.InitialSnapshot.Identity == state.InitialSnapshot.Identity && requestedFrozenContext != nil {
+			frozenContext = requestedFrozenContext
+		} else {
+			contextResult, contextErr := renderReviewStartFrozenCandidateContext(ctx, reviewtransaction.SnapshotBuilder{Repo: root}, authority.InitialSnapshot)
+			if contextErr != nil {
+				return &reviewStartContextError{
+					AuthoritySelected: true, LineageID: authority.LineageID, StoreRevision: started.Record.Revision, Cause: contextErr,
+				}
+			}
+			frozenContext = &contextResult
+		}
+	}
+	negotiatedResult, err := newReviewIntegrationStartResult(legacyResult, assessment, authority.InitialSnapshot.Kind, frozenContext)
 	if err != nil {
-		return err
+		return &reviewStartContextError{
+			AuthoritySelected: true, LineageID: authority.LineageID, StoreRevision: started.Record.Revision, Cause: err,
+		}
 	}
 	return encodeReviewJSON(stdout, negotiatedResult)
+}
+
+func reviewFacadeStartResultFor(action reviewtransaction.CompactStartAction, lensesRequired bool, authority reviewtransaction.CompactState) ReviewFacadeStartResult {
+	result := ReviewFacadeStartResult{
+		Operation: "review/start", Action: string(action), LensesRequired: lensesRequired,
+		LineageID: authority.LineageID, State: authority.State, RiskLevel: authority.RiskLevel,
+		SelectedLenses: append([]string{}, authority.SelectedLenses...), LensBindings: facadeLensBindings(authority.SelectedLenses),
+		Projection:   facadeProjection(authority.InitialSnapshot.Projection),
+		ChangedFiles: len(authority.InitialSnapshot.Paths), TargetIdentity: authority.InitialSnapshot.Identity,
+		ChangedLines: authority.OriginalChangedLines, CorrectionBudget: authority.CorrectionBudget,
+	}
+	if authority.InitialSnapshot.Kind == reviewtransaction.TargetBaseWorkspaceOverlay {
+		result.TargetMode = authority.InitialSnapshot.Kind
+		result.BaseTree = authority.InitialSnapshot.BaseTree
+		result.CandidateTree = authority.InitialSnapshot.CandidateTree
+	}
+	return result
 }
 
 func RunReviewFacadeFinalize(args []string, stdout io.Writer) error {
