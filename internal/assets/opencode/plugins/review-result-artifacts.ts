@@ -13,6 +13,7 @@ type ReviewBinding = {
   order: number
   revision?: string
   repository_context?: string
+  subject_hash?: string
 }
 
 function parseBinding(prompt: unknown, lens: string): ReviewBinding {
@@ -31,12 +32,14 @@ function parseBinding(prompt: unknown, lens: string): ReviewBinding {
   const value = binding as Record<string, unknown>
   const fields = Object.keys(value).sort().join(",")
   const legacy = fields === "lens,lineage,order,target"
-  const current = fields === "lens,lineage,order,repository_context,revision,target"
-  if ((!legacy && !current) ||
+  const priorCurrent = fields === "lens,lineage,order,repository_context,revision,target"
+  const current = fields === "lens,lineage,order,repository_context,revision,subject_hash,target"
+  if ((!legacy && !priorCurrent && !current) ||
       typeof value.lineage !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.lineage) ||
       typeof value.target !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.target) ||
-      (current && (typeof value.revision !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.revision) ||
+      ((priorCurrent || current) && (typeof value.revision !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.revision) ||
         typeof value.repository_context !== "string" || !/^rctx1_[a-f0-9]{64}$/.test(value.repository_context))) ||
+      (current && (typeof value.subject_hash !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.subject_hash))) ||
       value.lens !== lens || !Number.isSafeInteger(value.order) || (value.order as number) < 0) {
     throw new Error("review task binding does not match the selected lens")
   }
@@ -108,11 +111,23 @@ function captureResult(cwd: string, binding: ReviewBinding, result: string): Pro
 
 async function preflightCapture(cwd: string, binding: ReviewBinding): Promise<void> {
   try {
-    await runNative(cwd, [
+    const response = await runNative(cwd, [
       "review", "capture-result", ...repositoryBindingArgs(cwd, binding),
       "--lineage", binding.lineage, "--target", binding.target,
       "--lens", binding.lens, "--order", String(binding.order), "--preflight",
     ], "")
+    if (binding.subject_hash) {
+      let subjectHash: unknown
+      try {
+        const parsed = JSON.parse(response) as { artifact_subject?: { subject_hash?: unknown } }
+        subjectHash = parsed?.artifact_subject?.subject_hash
+      } catch {
+        throw new Error("review capture preflight returned malformed artifact-subject JSON")
+      }
+      if (subjectHash !== binding.subject_hash) {
+        throw new Error("review capture preflight returned a different artifact subject")
+      }
+    }
   } catch (cause) {
     // An older installed gentle-ai binary rejects the flag itself ("flag
     // provided but not defined: -preflight"). That is version skew, not a

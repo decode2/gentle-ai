@@ -11,8 +11,10 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/reviewtransaction"
 )
 
-const ReviewIntegrationStatusSchema = "gentle-ai.review-integration.status/v1"
-const ReviewIntegrationStatusSchemaID = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/status.schema.json"
+const ReviewIntegrationStatusSchemaV1 = "gentle-ai.review-integration.status/v1"
+const ReviewIntegrationStatusSchemaIDV1 = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/status.schema.json"
+const ReviewIntegrationStatusSchema = "gentle-ai.review-integration.status/v2"
+const ReviewIntegrationStatusSchemaID = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/status-v2.schema.json"
 const ReviewIntegrationProjectionSchema = "gentle-ai.review-integration.projection/v1"
 const ReviewIntegrationProjectionSchemaID = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/projection.schema.json"
 

@@ -58,13 +58,15 @@ type ReviewTransitionBinding struct {
 // ReviewTransitionArtifact deliberately excludes the provider-owned path. The
 // native finalize command discovers the immutable captured bytes itself.
 type ReviewTransitionArtifact struct {
-	Schema         string `json:"schema"`
-	Capability     string `json:"capability"`
-	SHA256         string `json:"sha256"`
-	LineageID      string `json:"lineage_id"`
-	TargetIdentity string `json:"target_identity"`
-	Lens           string `json:"lens"`
-	SelectedOrder  int    `json:"selected_order"`
+	Schema            string                                      `json:"schema"`
+	Capability        string                                      `json:"capability"`
+	SHA256            string                                      `json:"sha256"`
+	LineageID         string                                      `json:"lineage_id"`
+	TargetIdentity    string                                      `json:"target_identity"`
+	Lens              string                                      `json:"lens"`
+	SelectedOrder     int                                         `json:"selected_order"`
+	SubjectHash       string                                      `json:"subject_hash"`
+	AdmissionDecision reviewtransaction.ArtifactAdmissionDecision `json:"admission_decision"`
 }
 
 func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []string, artifacts []ReviewTransitionArtifact, evidenceAvailable bool, artifactErr error, input reviewNextTransitionInput) ReviewNextTransition {

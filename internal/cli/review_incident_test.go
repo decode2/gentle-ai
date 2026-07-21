@@ -48,8 +48,13 @@ func TestReviewCaptureResultPreflightVerifiesBindingWithoutMutation(t *testing.T
 	if preflight.Schema != reviewCapturePreflightSchema || preflight.Capability != reviewCapturePreflightCapability ||
 		preflight.RepositoryRoot == "" ||
 		preflight.LineageID != started.LineageID || preflight.TargetIdentity != record.State.InitialSnapshot.Identity ||
-		preflight.Lens != record.State.SelectedLenses[0] || preflight.SelectedOrder != 0 {
+		preflight.Lens != record.State.SelectedLenses[0] || preflight.SelectedOrder != 0 ||
+		preflight.ArtifactSubject.SubjectHash == "" || preflight.ArtifactSubject.AuthorityRevision != record.Revision ||
+		preflight.ArtifactSubject.Lens != preflight.Lens || preflight.ArtifactSubject.SelectedOrder != preflight.SelectedOrder {
 		t.Fatalf("preflight result = %+v", preflight)
+	}
+	if err := reviewtransaction.ValidateArtifactSubject(preflight.ArtifactSubject); err != nil {
+		t.Fatalf("preflight artifact subject = %#v: %v", preflight.ArtifactSubject, err)
 	}
 	if _, err := os.Stat(filepath.Join(store.Dir, reviewtransaction.CompactReviewerResultsDir)); !os.IsNotExist(err) {
 		t.Fatal("preflight persisted a reviewer result artifact")
@@ -78,7 +83,7 @@ func TestReviewCaptureResultNestedRepositoryFailsActionablyAndStaysRetriable(t *
 		t.Fatal(err)
 	}
 	input := filepath.Join(t.TempDir(), "result.json")
-	if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+	if err := os.WriteFile(input, admittedReviewerPayloadForTest(t, child, record, record.State.SelectedLenses[0], 0), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	args := func(cwd string, rest ...string) []string {
@@ -194,7 +199,7 @@ func TestReviewPreserveResultDurableIncidentArtifact(t *testing.T) {
 // decoder and is not a recoverable artifact.
 func TestReviewPreservedResultReplaysThroughCaptureAndFinalize(t *testing.T) {
 	repo, started, _, record := newArtifactReview(t, false)
-	extracted := `{"findings":[],"evidence":["checked exact target"]}`
+	extracted := string(admittedReviewerPayloadForTest(t, repo, record, record.State.SelectedLenses[0], 0))
 	envelope := "<task id=\"lens-1\" state=\"completed\">\n<task_result>\n" + extracted + "\n</task_result>\n</task>"
 	preserve := func(raw string) string {
 		t.Helper()
@@ -384,7 +389,7 @@ func TestReviewPreserveResultDuplicateRecoveryIsIdempotent(t *testing.T) {
 	}
 
 	extractedInput := filepath.Join(t.TempDir(), "extracted.json")
-	if err := os.WriteFile(extractedInput, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+	if err := os.WriteFile(extractedInput, admittedReviewerPayloadForTest(t, repo, record, record.State.SelectedLenses[0], 0), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	captureArgs := []string{
@@ -450,7 +455,7 @@ func TestReviewPreserveResultInterruptedRecoveryRetries(t *testing.T) {
 	// A clean retry of the identical binding with the correct extracted
 	// payload must succeed and finalize.
 	extracted := filepath.Join(t.TempDir(), "extracted.json")
-	if err := os.WriteFile(extracted, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+	if err := os.WriteFile(extracted, admittedReviewerPayloadForTest(t, repo, record, record.State.SelectedLenses[0], 0), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer

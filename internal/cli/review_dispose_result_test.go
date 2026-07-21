@@ -50,7 +50,7 @@ func TestReviewDisposeResultEscalatesStrandedLineage(t *testing.T) {
 	target := record.State.InitialSnapshot.Identity
 
 	input := filepath.Join(t.TempDir(), "result.json")
-	if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+	if err := os.WriteFile(input, admittedReviewerPayloadForTest(t, repo, record, lenses[0], 0), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var captured bytes.Buffer
