@@ -259,6 +259,9 @@ gga review finalize --cwd . --lineage <lineage> --result-artifact .\manifest.jso
 gga review finalize --cwd . --lineage <lineage> --result-artifact @.\manifest.json
 ```
 
+*(Note: The CLI automatically detects and strips the UTF-8 Byte Order Mark (BOM) written by Windows PowerShell 5.1 `Out-File -Encoding utf8`.)*
+
+
 ### Next steps
 
 - Read the [review authority threat model](review-authority-threat-model.md) before integrating delivery authorization.

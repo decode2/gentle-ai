@@ -424,6 +424,56 @@ func TestReviewFacadeFinalizeResultArtifactTransport(t *testing.T) {
 			t.Fatalf("finalize with @file path error = %v", err)
 		}
 	})
+
+	t.Run("finalize with BOM-prefixed file path manifest", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(t.TempDir(), "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		bomManifest := append([]byte("\xEF\xBB\xBF"), []byte(manifest)...)
+		manifestFile := filepath.Join(t.TempDir(), "manifest.json")
+		if err := os.WriteFile(manifestFile, bomManifest, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		
+		if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result-artifact", manifestFile}, io.Discard); err != nil {
+			t.Fatalf("finalize with BOM file path error = %v", err)
+		}
+	})
+
+	t.Run("finalize with BOM-prefixed @file path manifest", func(t *testing.T) {
+		repo, started, _, record := newArtifactReview(t, false)
+		input := filepath.Join(t.TempDir(), "result.json")
+		if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		validArgs := []string{"--cwd", repo, "--lineage", started.LineageID, "--target",
+			record.State.InitialSnapshot.Identity, "--lens", record.State.SelectedLenses[0], "--order", "0", "--input", input}
+		var output bytes.Buffer
+		if err := RunReviewCaptureResult(validArgs, &output); err != nil {
+			t.Fatal(err)
+		}
+		manifest := strings.TrimSpace(output.String())
+		
+		bomManifest := append([]byte("\xEF\xBB\xBF"), []byte(manifest)...)
+		manifestFile := filepath.Join(t.TempDir(), "manifest.json")
+		if err := os.WriteFile(manifestFile, bomManifest, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		
+		if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result-artifact", "@" + manifestFile}, io.Discard); err != nil {
+			t.Fatalf("finalize with @file BOM path error = %v", err)
+		}
+	})
 }
 
 func TestPowerShellBinaryAcceptance(t *testing.T) {

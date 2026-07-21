@@ -376,6 +376,10 @@ func readFacadeReviewerArtifacts(raw []string, storeDir string, state reviewtran
 			return nil, fmt.Errorf("read reviewer artifact %d: %w", index+1, err)
 		}
 
+		if len(payload) >= 3 && payload[0] == 0xEF && payload[1] == 0xBB && payload[2] == 0xBF {
+			payload = payload[3:]
+		}
+
 		var artifact reviewResultArtifact
 		if err := decodeFacadeJSONBytes(payload, &artifact); err != nil {
 			return nil, fmt.Errorf("decode reviewer artifact %d: %w", index+1, err)
