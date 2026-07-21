@@ -231,7 +231,7 @@ func TestPartialUninstallVisualPolishSelectionRemovesThemeLogoGroup(t *testing.T
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(opencode settings dir) error = %v", err)
 	}
-	if err := os.WriteFile(settingsPath, []byte(`{"theme":"gentleman-kanagawa","keep":true}`), 0o644); err != nil {
+	if err := os.WriteFile(settingsPath, []byte(`{"theme":"gentleman","keep":true}`), 0o644); err != nil {
 		t.Fatalf("WriteFile(opencode settings) error = %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestPartialUninstallVisualPolishSelectionRemovesThemeLogoGroup(t *testing.T
 	if err := os.MkdirAll(filepath.Dir(claudeThemePath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(claude theme dir) error = %v", err)
 	}
-	if err := os.WriteFile(claudeThemePath, []byte(`{"name":"Gentleman"}`), 0o644); err != nil {
+	if err := os.WriteFile(claudeThemePath, []byte(`{"name":"gentleman"}`), 0o644); err != nil {
 		t.Fatalf("WriteFile(claude theme) error = %v", err)
 	}
 
