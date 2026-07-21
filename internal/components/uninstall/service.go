@@ -1,13 +1,17 @@
 package uninstall
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
@@ -133,9 +137,10 @@ var (
 )
 
 type operation struct {
-	typeID opType
-	path   string
-	apply  func(path string) (changed bool, removed bool, err error)
+	typeID       opType
+	path         string
+	apply        func(path string) (changed bool, removed bool, err error)
+	removedFiles *[]string
 }
 
 func NewService(homeDir, workspaceDir, appVersion string) (*Service, error) {
@@ -158,6 +163,8 @@ func NewService(homeDir, workspaceDir, appVersion string) (*Service, error) {
 }
 
 // CleanupDeselectedAgents removes agent-scoped managed artifacts without a snapshot.
+// It is deliberately non-transactional: cleanup preserves unproven user content
+// rather than claiming rollback for a destructive operation.
 func CleanupDeselectedAgents(homeDir, workspaceDir string, agentIDs []model.AgentID) (Result, error) {
 	if len(agentIDs) == 0 {
 		return Result{}, nil
@@ -440,6 +447,9 @@ func (s *Service) executeOperationsInto(p plan, agentsToRemove []model.AgentID, 
 
 	for _, op := range p.operations {
 		changed, removed, err := op.apply(op.path)
+		if op.removedFiles != nil {
+			result.RemovedFiles = append(result.RemovedFiles, (*op.removedFiles)...)
+		}
 		if err != nil {
 			return result, err
 		}
@@ -649,8 +659,12 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 				continue
 			}
 			dirPath := filepath.Join(skillDir, entry.Name())
+			ownedCleanup, err := removeOwnedAssetTree(dirPath, filepath.Join("skills", entry.Name()))
+			if err != nil {
+				return nil, nil, err
+			}
 			targets = append(targets, dirPath)
-			ops = append(ops, removeTree(dirPath), removeDirIfEmpty(skillDir))
+			ops = append(ops, ownedCleanup, removeDirIfEmpty(skillDir))
 		}
 	case model.ComponentSDD:
 		if adapter.SupportsSystemPrompt() {
@@ -673,7 +687,7 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 				}
 				path := filepath.Join(commandsDir, entry.Name())
 				targets = append(targets, path)
-				ops = append(ops, removeFile(path))
+				ops = append(ops, removeFile(path, []byte(assets.MustRead(filepath.Join(commandsAssetDir, entry.Name())))))
 			}
 			ops = append(ops, removeDirIfEmpty(commandsDir))
 		}
@@ -717,13 +731,10 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 			ops = append(ops, rewriteOpenCodeSDDSettings(path, defaultPlan, paths...))
 
 			pluginDir := filepath.Join(homeDir, ".config", "opencode", "plugins")
-			for _, pluginPath := range []string{
-				filepath.Join(pluginDir, "background-agents.ts"),
-				filepath.Join(pluginDir, "model-variants.ts"),
-				filepath.Join(pluginDir, "skill-registry.ts"),
-			} {
+			for _, name := range []string{"model-variants.ts", "skill-registry.ts"} {
+				pluginPath := filepath.Join(pluginDir, name)
 				targets = append(targets, pluginPath)
-				ops = append(ops, removeFile(pluginPath))
+				ops = append(ops, removeFile(pluginPath, []byte(assets.MustRead(filepath.Join("opencode", "plugins", name)))))
 			}
 			ops = append(ops, removeDirIfEmpty(pluginDir))
 
@@ -740,12 +751,20 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 		if adapter.SupportsSkills() {
 			skillDir := adapter.SkillsDir(homeDir)
 			sharedDir := filepath.Join(skillDir, "_shared")
+			sharedCleanup, err := removeOwnedAssetTree(sharedDir, "skills/_shared")
+			if err != nil {
+				return nil, nil, err
+			}
 			targets = append(targets, sharedDir)
-			ops = append(ops, removeTree(sharedDir))
+			ops = append(ops, sharedCleanup)
 			for _, skillID := range managedSDDSkillIDs() {
 				dirPath := filepath.Join(skillDir, skillID)
+				ownedCleanup, err := removeOwnedAssetTree(dirPath, filepath.Join("skills", skillID))
+				if err != nil {
+					return nil, nil, err
+				}
 				targets = append(targets, dirPath)
-				ops = append(ops, removeTree(dirPath))
+				ops = append(ops, ownedCleanup)
 			}
 			ops = append(ops, removeDirIfEmpty(skillDir))
 		}
@@ -761,7 +780,7 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 				}
 				path := filepath.Join(workflowsDir, entry.Name())
 				targets = append(targets, path)
-				ops = append(ops, removeFile(path))
+				ops = append(ops, removeFile(path, []byte(assets.MustRead(filepath.Join(cap.EmbeddedWorkflowsDir(), entry.Name())))))
 			}
 			ops = append(ops, removeDirIfEmpty(workflowsDir), removeDirIfEmpty(filepath.Dir(workflowsDir)))
 		}
@@ -777,7 +796,7 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 				}
 				path := filepath.Join(agentsDir, entry.Name())
 				targets = append(targets, path)
-				ops = append(ops, removeFile(path))
+				ops = append(ops, removeFile(path, []byte(assets.MustRead(filepath.Join(adapter.EmbeddedSubAgentsDir(), entry.Name())))))
 			}
 			ops = append(ops, removeDirIfEmpty(agentsDir))
 		}
@@ -1187,24 +1206,149 @@ func isManagedContext7ServerJSON(content []byte) bool {
 		args[3] == "context7-mcp"
 }
 
-func removeFile(path string) operation {
-	return operation{
-		typeID: opRemoveFile,
-		path:   path,
-		apply: func(path string) (bool, bool, error) {
-			_, statErr := os.Stat(path)
-			if statErr != nil {
-				if os.IsNotExist(statErr) {
-					return false, false, nil
-				}
-				return false, false, statErr
+func removeFile(path string, expected ...[]byte) operation {
+	return operation{typeID: opRemoveFile, path: path, apply: func(path string) (bool, bool, error) {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		if err != nil {
+			return false, false, err
+		}
+		if len(expected) > 0 {
+			if !info.Mode().IsRegular() {
+				return false, false, nil
 			}
-			if err := removeFileIfExists(path); err != nil {
+			content, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(content, expected[0]) {
 				return false, false, err
 			}
-			return true, true, nil
-		},
+		}
+		if err := os.Remove(path); err != nil {
+			return false, false, err
+		}
+		return true, true, nil
+	}}
+}
+
+// removeOwnedAssetTree removes only unchanged files whose paths and contents
+// match the embedded asset payload. Unknown, modified, and symlinked entries are
+// not installer-owned and are preserved. Known directories are removed only after
+// their owned files are gone and only when they are empty.
+func removeOwnedAssetTree(path, assetDir string) (operation, error) {
+	ownedFiles := make(map[string][]byte)
+	ownedDirs := map[string]struct{}{path: {}}
+	if err := fs.WalkDir(assets.FS, assetDir, func(assetPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(filepath.FromSlash(assetDir), filepath.FromSlash(assetPath))
+		if err != nil {
+			return fmt.Errorf("resolve owned asset path %q: %w", assetPath, err)
+		}
+		if rel == "." {
+			return nil
+		}
+		destPath := filepath.Join(path, rel)
+		if entry.IsDir() {
+			ownedDirs[destPath] = struct{}{}
+			return nil
+		}
+		content, err := assets.Read(assetPath)
+		if err != nil {
+			return fmt.Errorf("read owned asset %q: %w", assetPath, err)
+		}
+		ownedFiles[destPath] = []byte(content)
+		return nil
+	}); err != nil {
+		return operation{}, fmt.Errorf("enumerate owned assets %q: %w", assetDir, err)
 	}
+
+	paths := make([]string, 0, len(ownedFiles))
+	for ownedPath := range ownedFiles {
+		paths = append(paths, ownedPath)
+	}
+	slices.Sort(paths)
+	dirs := make([]string, 0, len(ownedDirs))
+	for dir := range ownedDirs {
+		dirs = append(dirs, dir)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		depthI, depthJ := strings.Count(dirs[i], string(filepath.Separator)), strings.Count(dirs[j], string(filepath.Separator))
+		return depthI > depthJ || depthI == depthJ && dirs[i] < dirs[j]
+	})
+
+	removedFiles := []string{}
+	return operation{
+		typeID: opRemoveTree, path: path, removedFiles: &removedFiles,
+		apply: func(path string) (bool, bool, error) {
+			changed := false
+			for _, ownedPath := range paths {
+				expected := ownedFiles[ownedPath]
+				symlinked, err := pathContainsSymlink(path, ownedPath)
+				if err != nil {
+					return changed, false, err
+				}
+				if symlinked {
+					continue
+				}
+				info, err := os.Lstat(ownedPath)
+				if os.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					return changed, false, err
+				}
+				if !info.Mode().IsRegular() {
+					continue
+				}
+				actual, err := os.ReadFile(ownedPath)
+				if err != nil {
+					return changed, false, err
+				}
+				if !bytes.Equal(actual, expected) {
+					continue
+				}
+				if err := os.Remove(ownedPath); err != nil {
+					return changed, false, fmt.Errorf("remove owned asset %q: %w", ownedPath, err)
+				}
+				removedFiles = append(removedFiles, ownedPath)
+				changed = true
+			}
+
+			removedRoot := false
+			for _, dir := range dirs {
+				symlinked, err := pathContainsSymlink(path, dir)
+				if err != nil {
+					return changed, removedRoot, err
+				}
+				if symlinked {
+					continue
+				}
+				info, err := os.Lstat(dir)
+				if os.IsNotExist(err) {
+					continue
+				}
+				if err != nil {
+					return changed, removedRoot, err
+				}
+				if !info.IsDir() {
+					continue
+				}
+				err = os.Remove(dir)
+				if err == nil {
+					changed = true
+					removedRoot = dir == path
+					continue
+				}
+				if os.IsNotExist(err) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTEMPTY) {
+					continue
+				}
+				return changed, removedRoot, fmt.Errorf("remove empty owned directory %q: %w", dir, err)
+			}
+			return changed, removedRoot, nil
+		},
+	}, nil
 }
 
 func removeTree(path string) operation {
@@ -1224,6 +1368,32 @@ func removeTree(path string) operation {
 			return true, true, nil
 		},
 	}
+}
+
+// pathContainsSymlink checks every existing component from root through path
+// using Lstat, so cleanup never follows a user-created symlink.
+func pathContainsSymlink(root, path string) (bool, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false, fmt.Errorf("owned path %q escapes root %q", path, root)
+	}
+	current := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part != "." {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func removeDirIfEmpty(path string) operation {

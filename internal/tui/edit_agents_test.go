@@ -82,6 +82,7 @@ func TestEditAgents_SelectionCommitsOnlyAfterSuccessfulSync(t *testing.T) {
 			m := editAgentsModel()
 			m.Selection.Agents = []model.AgentID{model.AgentOpenCode}
 			m.PendingAgentSelection = []model.AgentID{model.AgentClaudeCode}
+			m.Screen = ScreenSync
 			updated, _ := m.Update(SyncDoneMsg{Err: tt.err})
 			got := updated.(Model)
 			if !slices.Equal(got.Selection.Agents, []model.AgentID{tt.want}) || got.PendingAgentSelection != nil {

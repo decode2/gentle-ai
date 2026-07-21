@@ -2,6 +2,7 @@ package uninstall
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,15 +12,131 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/internal/agents"
 	"github.com/gentleman-programming/gentle-ai/internal/agents/codex"
+	"github.com/gentleman-programming/gentle-ai/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/internal/backup"
 	"github.com/gentleman-programming/gentle-ai/internal/components/communitytool"
 	"github.com/gentleman-programming/gentle-ai/internal/components/engram"
 	"github.com/gentleman-programming/gentle-ai/internal/components/gga"
+	"github.com/gentleman-programming/gentle-ai/internal/components/skills"
 	"github.com/gentleman-programming/gentle-ai/internal/model"
 	"github.com/gentleman-programming/gentle-ai/internal/state"
 )
 
 type stubSnapshotter struct{}
+
+func TestRemoveFilePreservesModifiedManagedAssets(t *testing.T) {
+	for _, asset := range []string{
+		"claude/commands/sdd-init.md", "opencode/plugins/model-variants.ts",
+		"windsurf/workflows/sdd-new.md", "claude/agents/sdd-apply.md",
+	} {
+		t.Run(asset, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "managed")
+			if err := os.WriteFile(path, append([]byte(assets.MustRead(asset)), "user edit"...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			changed, _, err := removeFile(path, []byte(assets.MustRead(asset))).apply(path)
+			if err != nil || changed {
+				t.Fatalf("remove modified %s = changed:%t err:%v", asset, changed, err)
+			}
+		})
+	}
+}
+
+func TestCleanupDeselectedAgentsPreservesUnknownNestedSkillFiles(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	svc, err := NewService(home, workspace, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := svc.registry.Get(model.AgentOpenCode)
+	if !ok {
+		t.Fatal("OpenCode adapter not found")
+	}
+	if _, err := skills.Inject(home, adapter, []model.SkillID{model.SkillGoTesting}); err != nil {
+		t.Fatalf("install managed skill: %v", err)
+	}
+	userFile := filepath.Join(adapter.SkillsDir(home), string(model.SkillGoTesting), "notes", "user.txt")
+	if err := os.MkdirAll(filepath.Dir(userFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userFile, []byte("user content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := CleanupDeselectedAgents(home, workspace, []model.AgentID{model.AgentOpenCode})
+	if err != nil {
+		t.Fatalf("cleanup deselected agent: %v", err)
+	}
+	if !slices.Contains(result.RemovedFiles, filepath.Join(adapter.SkillsDir(home), string(model.SkillGoTesting), "SKILL.md")) {
+		t.Fatalf("removed files = %v, want managed skill file", result.RemovedFiles)
+	}
+	if got := string(mustReadServiceFile(t, userFile)); got != "user content" {
+		t.Fatalf("unknown nested skill file = %q, want preserved user content", got)
+	}
+	managedFile := filepath.Join(adapter.SkillsDir(home), string(model.SkillGoTesting), "SKILL.md")
+	if _, err := os.Stat(managedFile); !os.IsNotExist(err) {
+		t.Fatalf("unchanged managed skill = %v, want removed", err)
+	}
+}
+
+func TestExecuteOperationsIntoReturnsPartialTreeResult(t *testing.T) {
+	removed := []string{"a", "b"}
+	result, err := (&Service{}).executeOperationsInto(plan{operations: []operation{{
+		typeID: opRemoveTree, removedFiles: &removed,
+		apply: func(string) (bool, bool, error) { return true, false, errors.New("stop") },
+	}}}, nil, Result{})
+	if err == nil || !slices.Equal(result.RemovedFiles, removed) {
+		t.Fatalf("partial result = %+v, err = %v", result, err)
+	}
+}
+
+func TestCleanupDeselectedAgentsPreservesModifiedManagedSkillFilesAndSymlinks(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	svc, err := NewService(home, workspace, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := svc.registry.Get(model.AgentOpenCode)
+	if !ok {
+		t.Fatal("OpenCode adapter not found")
+	}
+	if _, err := skills.Inject(home, adapter, []model.SkillID{model.SkillGoTesting}); err != nil {
+		t.Fatalf("install managed skill: %v", err)
+	}
+
+	managedFile := filepath.Join(adapter.SkillsDir(home), string(model.SkillGoTesting), "SKILL.md")
+	if err := os.WriteFile(managedFile, []byte("user-modified managed skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CleanupDeselectedAgents(home, workspace, []model.AgentID{model.AgentOpenCode}); err != nil {
+		t.Fatalf("cleanup modified managed skill: %v", err)
+	}
+	if got := string(mustReadServiceFile(t, managedFile)); got != "user-modified managed skill" {
+		t.Fatalf("modified managed skill = %q, want preserved content", got)
+	}
+
+	externalTarget := filepath.Join(t.TempDir(), "external.txt")
+	if err := os.WriteFile(externalTarget, []byte("external content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(managedFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalTarget, managedFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CleanupDeselectedAgents(home, workspace, []model.AgentID{model.AgentOpenCode}); err != nil {
+		t.Fatalf("cleanup symlinked managed skill: %v", err)
+	}
+	if got := string(mustReadServiceFile(t, externalTarget)); got != "external content" {
+		t.Fatalf("external symlink target = %q, want unchanged", got)
+	}
+	if info, err := os.Lstat(managedFile); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("managed symlink = %v, %v; want preserved symlink", info, err)
+	}
+}
 
 func TestCleanupDeselectedAgentsIsNarrowAndIdempotent(t *testing.T) {
 	home := t.TempDir()
@@ -63,7 +180,7 @@ func TestCleanupDeselectedAgentsIsNarrowAndIdempotent(t *testing.T) {
 		t.Fatalf("installed agents = %v, err = %v", got.InstalledAgents, err)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".gentle-ai", "backups")); !os.IsNotExist(err) {
-		t.Fatalf("cleanup created uninstall backup: %v", err)
+		t.Fatalf("deselected-agent cleanup must not create an uninstall backup: %v", err)
 	}
 }
 
@@ -709,7 +826,7 @@ func TestComponentOperationsSDD_ClaudeRemovesManagedCommandFiles(t *testing.T) {
 
 	managed := []string{"sdd-init.md", "sdd-explore.md", "sdd-onboard.md"}
 	for _, name := range managed {
-		if err := os.WriteFile(filepath.Join(commandsDir, name), []byte(name), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(commandsDir, name), []byte(assets.MustRead(filepath.Join("claude", "commands", name))), 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
 	}
@@ -763,8 +880,11 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 	modelVariantsPluginPath := filepath.Join(pluginDir, "model-variants.ts")
 	skillRegistryPluginPath := filepath.Join(pluginDir, "skill-registry.ts")
 	thirdPartyPluginPath := filepath.Join(pluginDir, "third-party.ts")
-	for _, path := range []string{backgroundAgentsPath, modelVariantsPluginPath, skillRegistryPluginPath} {
-		if err := os.WriteFile(path, []byte("managed"), 0o644); err != nil {
+	for path, content := range map[string]string{
+		backgroundAgentsPath: "legacy", modelVariantsPluginPath: assets.MustRead("opencode/plugins/model-variants.ts"),
+		skillRegistryPluginPath: assets.MustRead("opencode/plugins/skill-registry.ts"),
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("WriteFile(%q) error = %v", path, err)
 		}
 	}
@@ -794,7 +914,7 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 
 	applySDDOpenCodeOperations(t, svc, adapter)
 
-	for _, path := range []string{backgroundAgentsPath, modelVariantsPluginPath, skillRegistryPluginPath, modelVariantsCachePath, modelVariantsTempPath, modelVariantsRandomTempPath} {
+	for _, path := range []string{modelVariantsPluginPath, skillRegistryPluginPath, modelVariantsCachePath, modelVariantsTempPath, modelVariantsRandomTempPath} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("managed file %q should be removed; stat err = %v", path, err)
 		}
