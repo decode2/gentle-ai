@@ -44,6 +44,31 @@ type storeLock struct {
 // Callers must always Release the lease.
 type MaintenanceLock struct{ lock *storeLock }
 
+// AuthorityFileLock exposes the hardened, platform-specific no-follow lock
+// primitive to adjacent provider-owned authority stores. It preserves kernel
+// advisory ownership as truth and never treats PID metadata as authorization.
+type AuthorityFileLock struct{ lock *storeLock }
+
+// AcquireAuthorityFileLock opens and exclusively locks one private authority
+// lock path using the same no-follow implementation as the review stores.
+func AcquireAuthorityFileLock(path string) (*AuthorityFileLock, error) {
+	lock, err := acquireLocalStoreLock(path)
+	if err != nil {
+		return nil, err
+	}
+	return &AuthorityFileLock{lock: lock}, nil
+}
+
+// Release relinquishes an AuthorityFileLock.
+func (lock *AuthorityFileLock) Release() error {
+	if lock == nil || lock.lock == nil {
+		return nil
+	}
+	err := lock.lock.release()
+	lock.lock = nil
+	return err
+}
+
 func (lock *MaintenanceLock) Release() error {
 	if lock == nil {
 		return nil

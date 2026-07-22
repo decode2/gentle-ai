@@ -229,12 +229,6 @@ In **Automatic** mode the orchestrator is the gatekeeper between phases. The gat
 
 **On gate FAIL:** re-run the same phase exactly once with corrective feedback that names the specific failures the gatekeeper found (do not blanket-retry). Re-run the gate on the new result. If it passes, continue the chain. If it fails again, STOP the automatic chain and surface a report to the user naming the phase, what the gatekeeper caught, both attempts, and the recommended fix. Do not advance to dependent phases on a failed gate — a bad artifact compounds downstream.
 
-To prevent soft loops during `sdd-apply` or verify continuations, maintain and check a cumulative runtime-attempt budget:
-1. **Ledger Persistence**: Persist an objective-scoped attempt ledger (topic key: `sdd/{change-name}/attempt-ledger-{work-unit}` in engram; file: `openspec/changes/{change-name}/attempt-ledger-{work-unit}.json` in OpenSpec) to track runtime attempts.
-2. **Ledger Structure**: The ledger must contain: `schema` ("gentle-ai.sdd-attempt-ledger/v1"), `change_name`, `work_unit` (task/objective), `candidate_identity` (stable commit SHA/candidate tree digest), `evidence_goal` (verification goal), `attempts` (array of objects recording: index, task fingerprint, failed/interrupted status, reused/invalidated harness, diagnosis of failure), `cumulative_attempts` (count of failed/interrupted runs), and `max_attempts` (defaults to 2).
-3. **Execution Block**: When `cumulative_attempts >= max_attempts`, the orchestrator MUST NOT launch further `sdd-apply` continuations or test-run harnesses for the same goal. It must STOP and report `blocked: attempt-budget-exhausted` / next recommended `resolve-blockers`. Require the user/maintainer to provide a diagnosis identifying the proven cause of failure before authorizing any further execution. A new attempt budget requires an explicit maintainer/user scope reset.
-4. **Harness Reuse & Immutability**: Reuse existing harnesses where safe; do not silently generate fresh harnesses for the same goal. Preserve cleanup/process evidence and candidate immutability across incidents.
-
 The gatekeeper runs in addition to the Review Workload Guard and the Mandatory Delegation Triggers; it never relaxes them and never auto-marks anything reviewed in engram.
 
 ### Artifact Store Mode

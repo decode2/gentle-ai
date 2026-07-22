@@ -75,7 +75,6 @@ type ArtifactPaths struct {
 	Tasks         []string `json:"tasks"`
 	ApplyProgress []string `json:"applyProgress"`
 	VerifyReport  []string `json:"verifyReport"`
-	AttemptLedger []string `json:"attemptLedger"`
 	ReviewPolicy  []string `json:"reviewPolicy"`
 	ReviewLedger  []string `json:"reviewLedger"`
 	ReviewReceipt []string `json:"reviewReceipt"`
@@ -287,7 +286,6 @@ func Resolve(options ResolveOptions) (Status, error) {
 		"tasks":         singleArtifactState(artifactPaths.Tasks),
 		"applyProgress": singleArtifactState(artifactPaths.ApplyProgress),
 		"verifyReport":  singleArtifactState(artifactPaths.VerifyReport),
-		"attemptLedger": singleArtifactState(artifactPaths.AttemptLedger),
 		"reviewLedger":  singleArtifactState(artifactPaths.ReviewLedger),
 		"reviewReceipt": singleArtifactState(artifactPaths.ReviewReceipt),
 		"reviewBundle":  singleArtifactState(artifactPaths.ReviewBundle),
@@ -311,15 +309,6 @@ func Resolve(options ResolveOptions) (Status, error) {
 	coreReady := artifacts["proposal"] == ArtifactDone && artifacts["specs"] == ArtifactDone && artifacts["design"] == ArtifactDone && artifacts["tasks"] == ArtifactDone && taskProgress.Total > 0
 	applyState := resolveApplyState(coreReady, taskProgress)
 	blockedReasons := artifactBlockedReasons(artifacts, taskProgress)
-	for _, path := range artifactPaths.AttemptLedger {
-		if data, err := os.ReadFile(path); err == nil {
-			if exhausted, reason := checkAttemptLedger(changeName, string(data)); exhausted {
-				blockedReasons = append(blockedReasons, reason)
-			}
-		} else {
-			blockedReasons = append(blockedReasons, fmt.Sprintf("failed to read attempt ledger at %s", path))
-		}
-	}
 	bindingPresent, bindingPathErr := bindingExists(context.Background(), workspaceRoot, changeName)
 	if bindingPathErr != nil {
 		return Status{}, bindingPathErr
@@ -349,23 +338,6 @@ func Resolve(options ResolveOptions) (Status, error) {
 		readText(firstPath(artifactPaths.ApplyProgress)),
 	)
 	dependencies := resolveDependencies(artifacts, taskProgress, applyState, coreReady, verifyResult.Passing, remediationState.Complete)
-	hasExhaustedLedger := false
-	for _, path := range artifactPaths.AttemptLedger {
-		if data, err := os.ReadFile(path); err == nil {
-			if exhausted, _ := checkAttemptLedger(changeName, string(data)); exhausted {
-				hasExhaustedLedger = true
-				break
-			}
-		} else {
-			hasExhaustedLedger = true // fail closed if present file is unreadable
-			break
-		}
-	}
-	if hasExhaustedLedger {
-		dependencies.Apply = DependencyBlocked
-		dependencies.Verify = DependencyBlocked
-		dependencies.Archive = DependencyBlocked
-	}
 	nextRecommended := resolveNextRecommended(dependencies, applyState, artifacts["verifyReport"] == ArtifactDone, remediationState)
 	if staleAllowAuthority != nil {
 		dependencies.Verify = DependencyReady
@@ -532,20 +504,6 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 		"tasks":         engramArtifactState(artifactsByType["tasks"]),
 		"applyProgress": engramArtifactState(artifactsByType["apply-progress"]),
 		"verifyReport":  engramArtifactState(artifactsByType["verify-report"]),
-		"attemptLedger": (func() ArtifactState {
-			state := ArtifactMissing
-			for key, obs := range artifactsByType {
-				if strings.HasPrefix(key, "attempt-ledger") {
-					s := engramArtifactState(obs)
-					if s == ArtifactDone {
-						state = ArtifactDone
-					} else if s == ArtifactPartial && state != ArtifactDone {
-						state = ArtifactPartial
-					}
-				}
-			}
-			return state
-		})(),
 		"reviewLedger":  engramArtifactState(artifactsByType["review/ledger"]),
 		"reviewPolicy":  engramArtifactState(artifactsByType["review/policy"]),
 		"reviewReceipt": engramArtifactState(artifactsByType["review/receipt"]),
@@ -560,13 +518,6 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 	coreReady := artifacts["proposal"] == ArtifactDone && artifacts["specs"] == ArtifactDone && artifacts["design"] == ArtifactDone && artifacts["tasks"] == ArtifactDone && taskProgress.Total > 0
 	applyState := resolveApplyState(coreReady, taskProgress)
 	blockedReasons := artifactBlockedReasons(artifacts, taskProgress)
-	for key, obs := range artifactsByType {
-		if strings.HasPrefix(key, "attempt-ledger") {
-			if exhausted, reason := checkAttemptLedger(changeName, obs.Content); exhausted {
-				blockedReasons = append(blockedReasons, reason)
-			}
-		}
-	}
 	// Stale evidence under a live allow authority needs a fresh verification,
 	// not legacy remediation classification against a missing transaction.
 	var staleAllowAuthority *reviewAuthorityEvaluation
@@ -595,20 +546,6 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 		blockedReasons = append(blockedReasons, remediationState.Reason)
 	}
 	dependencies := resolveDependencies(artifacts, taskProgress, applyState, coreReady, verifyResult.Passing, remediationState.Complete)
-	hasExhaustedLedger := false
-	for key, obs := range artifactsByType {
-		if strings.HasPrefix(key, "attempt-ledger") {
-			if exhausted, _ := checkAttemptLedger(changeName, obs.Content); exhausted {
-				hasExhaustedLedger = true
-				break
-			}
-		}
-	}
-	if hasExhaustedLedger {
-		dependencies.Apply = DependencyBlocked
-		dependencies.Verify = DependencyBlocked
-		dependencies.Archive = DependencyBlocked
-	}
 	nextRecommended := resolveNextRecommended(dependencies, applyState, artifacts["verifyReport"] == ArtifactDone, remediationState)
 	if staleAllowAuthority != nil {
 		dependencies.Verify = DependencyReady
@@ -790,7 +727,7 @@ func projectFromGitConfig(content string) string {
 	return ""
 }
 
-var engramTitlePattern = regexp.MustCompile(`^sdd/([^/]+)/(proposal|spec|design|tasks|apply-progress|verify-report|attempt-ledger(?:-[^/]+)?|review/(?:transaction|policy|ledger|receipt|chain-bundle|gate-context)|state)$`)
+var engramTitlePattern = regexp.MustCompile(`^sdd/([^/]+)/(proposal|spec|design|tasks|apply-progress|verify-report|review/(?:transaction|policy|ledger|receipt|chain-bundle|gate-context)|state)$`)
 
 func collectEngramChanges(observations []engramObservation, project string) []string {
 	seen := map[string]bool{}
@@ -851,12 +788,6 @@ func engramArtifactPaths(changeName string, artifacts map[string]engramObservati
 	if _, ok := artifacts["verify-report"]; ok {
 		paths.VerifyReport = []string{fmt.Sprintf("sdd/%s/verify-report", changeName)}
 	}
-	for key := range artifacts {
-		if strings.HasPrefix(key, "attempt-ledger") {
-			paths.AttemptLedger = append(paths.AttemptLedger, fmt.Sprintf("sdd/%s/%s", changeName, key))
-		}
-	}
-	sort.Strings(paths.AttemptLedger)
 	if _, ok := artifacts["review/ledger"]; ok {
 		paths.ReviewLedger = []string{fmt.Sprintf("sdd/%s/review/ledger", changeName)}
 	}
@@ -1138,11 +1069,6 @@ func resolveArtifactPaths(changeRoot string) (ArtifactPaths, error) {
 	paths.Tasks = existingPath(filepath.Join(changeRoot, "tasks.md"))
 	paths.ApplyProgress = existingPath(filepath.Join(changeRoot, "apply-progress.md"))
 	paths.VerifyReport = existingPath(filepath.Join(changeRoot, "verify-report.md"))
-	if matches, globErr := filepath.Glob(filepath.Join(changeRoot, "attempt-ledger*.json")); globErr == nil && len(matches) > 0 {
-		paths.AttemptLedger = matches
-	} else {
-		paths.AttemptLedger = []string{}
-	}
 	paths.ReviewLedger = existingPath(filepath.Join(changeRoot, "reviews", "ledger.json"))
 	paths.ReviewPolicy = existingPath(filepath.Join(changeRoot, "reviews", "policy.md"))
 	paths.ReviewReceipt = existingPath(filepath.Join(changeRoot, "reviews", "receipt.json"))
@@ -1166,7 +1092,6 @@ func emptyArtifactPaths() ArtifactPaths {
 		Tasks:         []string{},
 		ApplyProgress: []string{},
 		VerifyReport:  []string{},
-		AttemptLedger: []string{},
 		ReviewLedger:  []string{},
 		ReviewPolicy:  []string{},
 		ReviewReceipt: []string{},
@@ -1627,61 +1552,4 @@ func contains(values []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-type attemptRecord struct {
-	AttemptIndex    int    `json:"attempt_index"`
-	TaskFingerprint string `json:"task_fingerprint"`
-	Status          string `json:"status"`
-	Timestamp       string `json:"timestamp"`
-}
-
-type attemptLedger struct {
-	Schema             string          `json:"schema"`
-	ChangeName         string          `json:"change_name"`
-	WorkUnit           string          `json:"work_unit"`
-	CandidateIdentity  string          `json:"candidate_identity"`
-	EvidenceGoal       string          `json:"evidence_goal"`
-	Attempts           []attemptRecord `json:"attempts"`
-	CumulativeAttempts int             `json:"cumulative_attempts"`
-	MaxAttempts        int             `json:"max_attempts"`
-}
-
-func checkAttemptLedger(changeName string, content string) (bool, string) {
-	if content == "" {
-		return false, ""
-	}
-	var ledger attemptLedger
-	if err := json.Unmarshal([]byte(content), &ledger); err != nil {
-		return true, "attempt ledger is malformed, truncated, or corrupt"
-	}
-	if ledger.Schema != "gentle-ai.sdd-attempt-ledger/v1" {
-		return true, fmt.Sprintf("invalid attempt ledger schema %q", ledger.Schema)
-	}
-	if ledger.ChangeName == "" || (changeName != "" && ledger.ChangeName != changeName) {
-		return true, fmt.Sprintf("attempt ledger change_name %q is unrelated or invalid", ledger.ChangeName)
-	}
-	if ledger.WorkUnit == "" {
-		return true, "attempt ledger work_unit is missing or empty"
-	}
-	if ledger.CandidateIdentity == "" {
-		return true, "attempt ledger candidate_identity is missing or empty"
-	}
-	if ledger.EvidenceGoal == "" {
-		return true, "attempt ledger evidence_goal is missing or empty"
-	}
-	if ledger.Attempts == nil {
-		return true, "attempt ledger attempts list is missing or invalid"
-	}
-	if ledger.CumulativeAttempts < 0 {
-		return true, "attempt ledger cumulative_attempts is negative"
-	}
-	maxAttempts := ledger.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 2 // default to 2 attempts
-	}
-	if ledger.CumulativeAttempts >= maxAttempts {
-		return true, fmt.Sprintf("SDD apply attempt budget has been exhausted (%d/%d attempts consumed). A scope reset is required.", ledger.CumulativeAttempts, maxAttempts)
-	}
-	return false, ""
 }

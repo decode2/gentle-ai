@@ -139,12 +139,6 @@ Hybrid validation:
 
 On gate failure, re-run the same phase exactly once with specific corrective feedback. If the second result fails, STOP the automatic chain and report; do not advance dependent phases.
 
-To prevent soft loops during `sdd-apply` or verify continuations, maintain and check a cumulative runtime-attempt budget:
-1. **Ledger Persistence**: Persist an objective-scoped attempt ledger (topic key: `sdd/{change-name}/attempt-ledger-{work-unit}` in engram; file: `openspec/changes/{change-name}/attempt-ledger-{work-unit}.json` in OpenSpec) to track runtime attempts.
-2. **Ledger Structure**: The ledger must contain: `schema` ("gentle-ai.sdd-attempt-ledger/v1"), `change_name`, `work_unit` (task/objective), `candidate_identity` (stable commit SHA/candidate tree digest), `evidence_goal` (verification goal), `attempts` (array of objects recording: index, task fingerprint, failed/interrupted status, reused/invalidated harness, diagnosis of failure), `cumulative_attempts` (count of failed/interrupted runs), and `max_attempts` (defaults to 2).
-3. **Execution Block**: When `cumulative_attempts >= max_attempts`, the orchestrator MUST NOT launch further `sdd-apply` continuations or test-run harnesses for the same goal. It must STOP and report `blocked: attempt-budget-exhausted` / next recommended `resolve-blockers`. Require the user/maintainer to provide a diagnosis identifying the proven cause of failure before authorizing any further execution. A new attempt budget requires an explicit maintainer/user scope reset.
-4. **Harness Reuse & Immutability**: Reuse existing harnesses where safe; do not silently generate fresh harnesses for the same goal. Preserve cleanup/process evidence and candidate immutability across incidents.
-
 ### Artifact Store Mode
 
 This is collected by `SDD Session Preflight`. If missing, enforce the hard gate before any phase work. Cache the collected store (`engram`, `openspec`, `hybrid`, or `none`) for the session. If unspecified, default to `engram` when Engram is available; otherwise use `none` and explain the persistence limitation.
