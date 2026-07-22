@@ -762,6 +762,36 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 	if err != nil {
 		t.Fatal(err)
 	}
+	predecessorStateBytes, err := os.ReadFile(store.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	predecessorReceiptBytes, err := os.ReadFile(store.ReceiptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPredecessorUnchanged := func(stage string) {
+		t.Helper()
+		stateBytes, stateErr := os.ReadFile(store.StatePath())
+		receiptBytes, receiptErr := os.ReadFile(store.ReceiptPath())
+		if stateErr != nil || receiptErr != nil || !bytes.Equal(stateBytes, predecessorStateBytes) || !bytes.Equal(receiptBytes, predecessorReceiptBytes) {
+			t.Fatalf("%s changed predecessor state or receipt bytes: state=%v receipt=%v", stage, stateErr, receiptErr)
+		}
+	}
+	assertNoAuthorityArtifacts := func(lineages ...string) {
+		t.Helper()
+		for _, lineage := range lineages {
+			successorStore, storeErr := CompactAuthoritativeStore(context.Background(), repo, lineage)
+			if storeErr != nil {
+				t.Fatal(storeErr)
+			}
+			for _, path := range []string{successorStore.StatePath(), successorStore.ReceiptPath()} {
+				if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("START created authority artifact for successor %q at %q: %v", lineage, path, statErr)
+				}
+			}
+		}
+	}
 	writeSnapshotFile(t, repo, "first.txt", "changed first.txt\n")
 	writeSnapshotFile(t, repo, "second.txt", "changed second.txt\n")
 
@@ -785,7 +815,8 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 		err    error
 	}
 	results := make(chan outcome, 2)
-	for _, lineage := range []string{"compact-start-approved-scope-race-a", "compact-start-approved-scope-race-b"} {
+	raceLineages := []string{"compact-start-approved-scope-race-a", "compact-start-approved-scope-race-b"}
+	for _, lineage := range raceLineages {
 		state := requested
 		state.LineageID = lineage
 		go func() {
@@ -799,6 +830,9 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 			t.Fatalf("concurrent same-scope START = %#v, %v", got.result, got.err)
 		}
 	}
+	assertPredecessorUnchanged("concurrent START")
+	assertNoAuthorityArtifacts(raceLineages...)
+
 	explicit := requested
 	explicit.LineageID = "compact-start-approved-scope-explicit"
 	got, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: explicit, ExplicitLineage: true})
@@ -810,6 +844,8 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 	if err != nil || got.Action != CompactStartBlocked || got.Record.Revision != predecessor.Revision {
 		t.Fatalf("explicit predecessor START = %#v, %v", got, err)
 	}
+	assertPredecessorUnchanged("explicit START")
+	assertNoAuthorityArtifacts("compact-start-approved-scope-explicit")
 
 	requested.Generation = approved.Generation + 1
 	reason, actor := "candidate changed after approval", "maintainer@example.com"
@@ -820,6 +856,14 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertPredecessorUnchanged("successful recovery")
+	successorStore, err := CompactAuthoritativeStore(context.Background(), repo, requested.LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(successorStore.ReceiptPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovered successor receipt exists at %q: %v", successorStore.ReceiptPath(), err)
+	}
 	provenance := recovered.State.Recovery
 	if provenance == nil || provenance.PredecessorLineageID != approved.LineageID ||
 		provenance.PredecessorRevision != predecessor.Revision || provenance.Reason != reason || provenance.Actor != actor {
@@ -828,6 +872,53 @@ func TestStartCompactAuthorityRequiresRecoveryForApprovedSameScopeChangedCandida
 	if len(recovered.State.LensResults) != 0 || len(recovered.State.Findings) != 0 || recovered.State.EvidenceHash != "" ||
 		len(recovered.State.CorrectionAttempts) != 0 {
 		t.Fatalf("recovery reused predecessor evidence: %#v", recovered.State)
+	}
+}
+
+func TestStartCompactAuthorityCreatesForApprovedDisjointTarget(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	writeSnapshotFile(t, repo, "path_1.txt", "one\n")
+	writeSnapshotFile(t, repo, "path_2.txt", "two\n")
+	gitSnapshot(t, repo, "add", "--", "path_1.txt", "path_2.txt")
+	gitSnapshot(t, repo, "commit", "-m", "add disjoint review targets")
+
+	writeSnapshotFile(t, repo, "path_1.txt", "reviewed one\n")
+	approved, approvedStore, _ := approvedCompactCurrentChangesFixture(t, repo, "compact-start-approved-path-1", []string{})
+	approvedStateBytes, err := os.ReadFile(approvedStore.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedReceiptBytes, err := os.ReadFile(approvedStore.ReceiptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeSnapshotFile(t, repo, "path_1.txt", "one\n")
+	writeSnapshotFile(t, repo, "path_2.txt", "reviewed two\n")
+	requested := newCompactTestState(t, repo, "compact-start-requested-path-2")
+	if !equalStrings(approved.GenesisPaths, []string{"path_1.txt"}) ||
+		!equalStrings(requested.InitialSnapshot.Paths, []string{"path_2.txt"}) ||
+		classifyCompactPathSetRelation(approved.GenesisPaths, requested.InitialSnapshot.Paths) != compactPathsDisjoint {
+		t.Fatalf("fixture path sets are not disjoint: approved=%v requested=%v", approved.GenesisPaths, requested.InitialSnapshot.Paths)
+	}
+
+	result, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: requested})
+	if err != nil || result.Action != CompactStartCreated || result.Record.State.LineageID != requested.LineageID ||
+		result.Record.State.State != StateReviewing {
+		t.Fatalf("start approved disjoint target = %#v, %v", result, err)
+	}
+	if stateBytes, readErr := os.ReadFile(approvedStore.StatePath()); readErr != nil || !bytes.Equal(stateBytes, approvedStateBytes) {
+		t.Fatalf("disjoint START changed approved state bytes: %v", readErr)
+	}
+	if receiptBytes, readErr := os.ReadFile(approvedStore.ReceiptPath()); readErr != nil || !bytes.Equal(receiptBytes, approvedReceiptBytes) {
+		t.Fatalf("disjoint START changed approved receipt bytes: %v", readErr)
+	}
+	requestedStore, err := CompactAuthoritativeStore(context.Background(), repo, requested.LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(requestedStore.ReceiptPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new reviewing lineage receipt exists at %q: %v", requestedStore.ReceiptPath(), err)
 	}
 }
 
