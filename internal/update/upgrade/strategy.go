@@ -374,7 +374,7 @@ func brewUpgrade(ctx context.Context, r update.UpdateResult, ownership update.Ho
 	updateCmd.Stdin = nil
 	_ = updateCmd.Run() // ignore error intentionally
 
-	upgradeCmd := execCommand("brew", "upgrade", flag, toolName)
+	upgradeCmd := execCommand("brew", "upgrade", flag, gentlemanProgrammingTapRef(toolName))
 	upgradeCmd.Stdin = nil
 	if out, err := upgradeCmd.CombinedOutput(); err != nil {
 		return formatBrewUpgradeError(toolName, ownership, err, string(out))
@@ -421,7 +421,8 @@ func legacyCaskMigration(toolName string) string {
 }
 
 func formatBrewUpgradeError(toolName string, ownership update.HomebrewOwnership, err error, output string) error {
-	message := fmt.Sprintf("brew upgrade --%s %s: %v (output: %s)", ownership, toolName, err, output)
+	ref := gentlemanProgrammingTapRef(toolName)
+	message := fmt.Sprintf("brew upgrade --%s %s: %v (output: %s)", ownership, ref, err, output)
 	if advice := homebrewFailureAdvice(toolName, output, ownership); advice != "" {
 		message += "\n\n" + advice
 	}
@@ -448,13 +449,13 @@ func homebrewFailureAdvice(toolName string, output string, detected ...update.Ho
 			flag = "--formula"
 			artifact = "formula"
 		}
-		return fmt.Sprintf("Homebrew requires explicit trust for external taps. Trust only this Gentle AI %s, then retry:\n  brew trust %s %s\n  brew upgrade %s %s", artifact, flag, ref, flag, toolName)
+		return fmt.Sprintf("Homebrew requires explicit trust for external taps. Trust only this Gentle AI %s, then retry:\n  brew trust %s %s\n  brew upgrade %s %s", artifact, flag, ref, flag, ref)
 	}
 
 	if strings.Contains(lower, "bubblewrap is installed but cannot create a rootless sandbox") ||
 		strings.Contains(lower, "rootless sandbox") ||
 		strings.Contains(lower, "homebrew_no_sandbox_linux") {
-		return "Homebrew on Linux could not create its Bubblewrap rootless sandbox. This requires an explicit admin/security decision: enabling unprivileged user namespaces lets Homebrew use its sandbox but changes host kernel/AppArmor policy. If acceptable, run:\n  sudo sysctl -w kernel.unprivileged_userns_clone=1\n  sudo sysctl -w user.max_user_namespaces=28633\n  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true\n\nFinal workaround if your distro policy forbids this sandbox:\n  HOMEBREW_NO_SANDBOX_LINUX=1 brew upgrade " + flag + " " + toolName
+		return "Homebrew on Linux could not create its Bubblewrap rootless sandbox. This requires an explicit admin/security decision: enabling unprivileged user namespaces lets Homebrew use its sandbox but changes host kernel/AppArmor policy. If acceptable, run:\n  sudo sysctl -w kernel.unprivileged_userns_clone=1\n  sudo sysctl -w user.max_user_namespaces=28633\n  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true\n\nFinal workaround if your distro policy forbids this sandbox:\n  HOMEBREW_NO_SANDBOX_LINUX=1 brew upgrade " + flag + " " + ref
 	}
 
 	return ""

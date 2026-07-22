@@ -57,8 +57,8 @@ func TestRunStrategy_BrewUpgrade(t *testing.T) {
 	if gotName != "brew" {
 		t.Errorf("exec name = %q, want %q", gotName, "brew")
 	}
-	if len(gotArgs) < 3 || gotArgs[0] != "upgrade" || gotArgs[1] != "--formula" || gotArgs[2] != "engram" {
-		t.Errorf("exec args = %v, want [upgrade --formula engram]", gotArgs)
+	if len(gotArgs) < 3 || gotArgs[0] != "upgrade" || gotArgs[1] != "--formula" || gotArgs[2] != "gentleman-programming/tap/engram" {
+		t.Errorf("exec args = %v, want [upgrade --formula gentleman-programming/tap/engram]", gotArgs)
 	}
 }
 
@@ -1105,7 +1105,7 @@ Run brew trust --formula gentleman-programming/tap/gentle-ai to trust it.`
 	advice := homebrewFailureAdvice("gentle-ai", output)
 	for _, want := range []string{
 		"brew trust --formula gentleman-programming/tap/gentle-ai",
-		"brew upgrade --formula gentle-ai",
+		"brew upgrade --formula gentleman-programming/tap/gentle-ai",
 	} {
 		if !strings.Contains(advice, want) {
 			t.Fatalf("tap trust advice missing %q:\n%s", want, advice)
@@ -1119,7 +1119,7 @@ Run brew trust --cask gentleman-programming/tap/engram to trust it.`
 	advice := homebrewFailureAdvice("engram", output)
 	for _, want := range []string{
 		"brew trust --cask gentleman-programming/tap/engram",
-		"brew upgrade --cask engram",
+		"brew upgrade --cask gentleman-programming/tap/engram",
 	} {
 		if !strings.Contains(advice, want) {
 			t.Fatalf("cask tap trust advice missing %q:\n%s", want, advice)
@@ -1142,7 +1142,7 @@ Homebrew's Linux sandbox requires rootless Bubblewrap and unprivileged user name
 		"sudo sysctl -w kernel.unprivileged_userns_clone=1",
 		"sudo sysctl -w user.max_user_namespaces=28633",
 		"sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true",
-		"HOMEBREW_NO_SANDBOX_LINUX=1 brew upgrade --formula gentle-ai",
+		"HOMEBREW_NO_SANDBOX_LINUX=1 brew upgrade --formula gentleman-programming/tap/gentle-ai",
 	} {
 		if !strings.Contains(advice, want) {
 			t.Fatalf("bubblewrap advice missing %q:\n%s", want, advice)

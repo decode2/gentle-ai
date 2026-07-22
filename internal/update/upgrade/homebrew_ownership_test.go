@@ -55,7 +55,7 @@ func TestRunStrategyUsesCaskOwnershipAndMigrationGuidance(t *testing.T) {
 		r := update.UpdateResult{Tool: update.ToolInfo{Name: "engram", DetectCmd: []string{"engram", "version"}, InstallMethod: update.InstallBinary}, LatestVersion: tt.target}
 		_, err := runStrategy(context.Background(), r, system.PlatformProfile{OS: "darwin", PackageManager: "brew"})
 		wantErr := tt.name != "current"
-		if (err != nil) != wantErr || !strings.Contains(calls, "trust --cask gentleman-programming/tap/engram") || !strings.Contains(calls, "upgrade --cask engram") {
+		if (err != nil) != wantErr || !strings.Contains(calls, "trust --cask gentleman-programming/tap/engram") || !strings.Contains(calls, "upgrade --cask gentleman-programming/tap/engram") {
 			t.Fatalf("%s: error=%v calls=%s", tt.name, err, calls)
 		}
 		if wantErr && (!strings.Contains(err.Error(), "brew uninstall --cask engram") || !strings.Contains(err.Error(), "brew install --formula gentleman-programming/tap/engram")) {
