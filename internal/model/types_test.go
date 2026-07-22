@@ -8,6 +8,26 @@ func TestAgentAntigravity(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentID(t *testing.T) {
+	tests := []struct {
+		input string
+		want  AgentID
+	}{
+		{"gemini-cli", AgentAntigravity},
+		{"gemini", AgentAntigravity},
+		{"antigravity", AgentAntigravity},
+		{"opencode", AgentOpenCode},
+		{"claude-code", AgentClaudeCode},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := NormalizeAgentID(tc.input); got != tc.want {
+				t.Errorf("NormalizeAgentID(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 // Unit 1 — TriggerEvent, TriggerMode, TriggerWhen, TriggerBinding, TriggerRuleSet
 
 // 1.1 — all six TriggerEvent constants exist with correct string values.

@@ -218,7 +218,7 @@ func defaultAgentsFromDetection(detection system.DetectionResult) []model.AgentI
 func asAgentIDs(values []string) []model.AgentID {
 	agents := make([]model.AgentID, 0, len(values))
 	for _, value := range values {
-		agents = append(agents, model.AgentID(value))
+		agents = append(agents, model.NormalizeAgentID(value))
 	}
 
 	return agents

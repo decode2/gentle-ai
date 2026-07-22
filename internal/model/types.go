@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 type AgentID string
 
 const (
@@ -20,6 +22,18 @@ const (
 	AgentTrae          AgentID = "trae-ide"
 	AgentHermes        AgentID = "hermes"
 )
+
+// NormalizeAgentID maps deprecated or alias agent identifiers to their canonical AgentID.
+// Specifically, "gemini-cli" and "gemini" map to AgentAntigravity ("antigravity").
+func NormalizeAgentID(input string) AgentID {
+	trimmed := strings.TrimSpace(input)
+	switch AgentID(trimmed) {
+	case AgentGeminiCLI, "gemini":
+		return AgentAntigravity
+	default:
+		return AgentID(trimmed)
+	}
+}
 
 // SupportTier indicates how fully an agent supports the Gentleman AI ecosystem.
 // All current agents receive the full SDD orchestrator, skill files, MCP config,
