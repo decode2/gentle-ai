@@ -93,6 +93,18 @@ func TestBindApprovedReviewRejectsAmbiguousPlanningChanges(t *testing.T) {
 			seedReadyChange(t, planningRoot, "thin", "- [x] 1.1 App\n")
 			seedReadyChange(t, filepath.Join(root, "packages", "api"), "thin", "- [x] 1.1 API\n")
 		}},
+		{name: "symlinked sibling collision", seed: func(t *testing.T, root, planningRoot string) {
+			seedReadyChange(t, planningRoot, "thin", "- [x] 1.1 App\n")
+			outside := t.TempDir()
+			seedReadyChange(t, outside, "thin", "- [x] 1.1 API\n")
+			link := filepath.Join(root, "packages", "api", "openspec")
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(outside, "openspec"), link); err != nil {
+				t.Skipf("symlink fixture unavailable: %v", err)
+			}
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -122,6 +134,110 @@ func TestBindApprovedReviewRejectsOpenSpecSymlinkEscape(t *testing.T) {
 
 	if _, err := BindApprovedReview(context.Background(), planningRoot, "thin", "approved-thin", ""); err == nil || !strings.Contains(err.Error(), "outside repository") {
 		t.Fatalf("OpenSpec symlink escape error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".git", "gentle-ai")); !os.IsNotExist(err) {
+		t.Fatalf("symlink escape created runtime authority: %v", err)
+	}
+}
+
+func TestBindApprovedReviewIgnoresGitExcludedUnreadableCollision(t *testing.T) {
+	root := t.TempDir()
+	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
+	write(t, filepath.Join(root, ".gitignore"), ".data/\nignored/\n")
+	seedReadyChange(t, filepath.Join(root, "ignored"), "thin", "- [x] ignored\n")
+	unreadable := filepath.Join(root, ".data", "postgres")
+	write(t, filepath.Join(unreadable, "base", "state"), "runtime\n")
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+	writeApprovedCompactAuthorityForChange(t, root, changeRoot, "approved-thin")
+
+	if _, err := BindApprovedReview(context.Background(), root, "thin", "approved-thin", ""); err != nil {
+		t.Fatalf("Git-excluded runtime path affected binding: %v", err)
+	}
+}
+
+func TestBindingChangeRootsSkipsDeletedCachedRoot(t *testing.T) {
+	root := t.TempDir()
+	selected := seedReadyChange(t, root, "thin", "- [x] selected\n")
+	deleted := seedReadyChange(t, filepath.Join(root, "packages", "api"), "thin", "- [x] deleted\n")
+	runSDDStatusGit(t, root, "init", "-q")
+	runSDDStatusGit(t, root, "add", ".")
+	if err := os.RemoveAll(deleted); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := bindingChangeRoots(context.Background(), root, "thin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{selected}) {
+		t.Fatalf("bindingChangeRoots() = %v, want only %q", got, selected)
+	}
+}
+
+func TestBindingChangeRootsUsesFirstRootAndIncludesSymlink(t *testing.T) {
+	root := t.TempDir()
+	outer := filepath.Join(root, "openspec", "changes", "thin")
+	write(t, filepath.Join(outer, "openspec", "changes", "thin", "tasks.md"), "nested\n")
+	outside := t.TempDir()
+	seedReadyChange(t, outside, "thin", "- [x] linked\n")
+	linkedOpenSpec := filepath.Join(root, "packages", "api", "openspec")
+	if err := os.MkdirAll(filepath.Dir(linkedOpenSpec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "openspec"), linkedOpenSpec); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	linked := filepath.Join(linkedOpenSpec, "changes", "thin")
+	opaque := filepath.Join(root, "packages", "web", "openspec", "changes", "thin")
+	if err := os.MkdirAll(opaque, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runSDDStatusGit(t, opaque, "init", "-q")
+	runSDDStatusGit(t, root, "init", "-q")
+
+	got, err := bindingChangeRoots(context.Background(), root, "thin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{outer, linked, opaque}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bindingChangeRoots() = %v, want %v", got, want)
+	}
+}
+
+func TestBindApprovedReviewRejectsSuccessfulGitDiagnosticsBeforeRuntimeMutation(t *testing.T) {
+	root := t.TempDir()
+	seedReadyChange(t, root, "thin", "- [x] done\n")
+	runSDDStatusGit(t, root, "init", "-q")
+	runSDDStatusGit(t, root, "config", "core.fsmonitor", "/nonexistent")
+
+	_, err := BindApprovedReview(context.Background(), root, "thin", "approved-thin", "")
+	if err == nil || !strings.Contains(err.Error(), "diagnostics") {
+		t.Fatalf("BindApprovedReview() diagnostic error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".git", "gentle-ai")); !os.IsNotExist(statErr) {
+		t.Fatalf("Git diagnostic created runtime authority: %v", statErr)
+	}
+}
+
+func TestBindApprovedReviewPreflightsGitInventoryBeforeRuntimeMutation(t *testing.T) {
+	root := t.TempDir()
+	seedReadyChange(t, root, "thin", "- [x] done\n")
+	runSDDStatusGit(t, root, "init", "-q")
+	if err := os.WriteFile(filepath.Join(root, ".git", "index"), []byte("corrupt index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := BindApprovedReview(context.Background(), root, "thin", "approved-thin", "")
+	var commandErr *reviewtransaction.GitCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("BindApprovedReview() error = %T %v, want typed Git failure", err, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".git", "gentle-ai")); !os.IsNotExist(statErr) {
+		t.Fatalf("Git inventory failure created runtime authority: %v", statErr)
 	}
 }
 

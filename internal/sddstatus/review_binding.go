@@ -51,6 +51,9 @@ func BindApprovedReview(ctx context.Context, repo, change, lineage, expected str
 	if err != nil {
 		return ReviewBinding{}, err
 	}
+	if _, err := resolveBindingChangeRoot(ctx, root, repo, change); err != nil {
+		return ReviewBinding{}, err
+	}
 	if err := rejectHistoricalLegacyBinding(ctx, root, lineage); err != nil {
 		return ReviewBinding{}, err
 	}
@@ -100,7 +103,7 @@ func rejectHistoricalLegacyBinding(ctx context.Context, root, lineage string) er
 }
 
 func prepareApprovedReviewBinding(ctx context.Context, root, workspace, change, lineage string) (ReviewBinding, error) {
-	changeRoot, err := resolveBindingChangeRoot(root, workspace, change)
+	changeRoot, err := resolveBindingChangeRoot(ctx, root, workspace, change)
 	if err != nil {
 		return ReviewBinding{}, err
 	}
@@ -142,7 +145,7 @@ func prepareApprovedReviewBinding(ctx context.Context, root, workspace, change, 
 	final, finalErr := store.Load()
 	finalPayload, readErr := os.ReadFile(store.ReceiptPath())
 	finalGate := reviewtransaction.EvaluateCompactGate(ctx, root, receipt, input)
-	finalChangeRoot, changeErr := resolveBindingChangeRoot(root, workspace, change)
+	finalChangeRoot, changeErr := resolveBindingChangeRoot(ctx, root, workspace, change)
 	if finalErr != nil || readErr != nil || changeErr != nil || finalChangeRoot != changeRoot || final.Revision != record.Revision || !bytes.Equal(payload, finalPayload) || finalGate.Result != reviewtransaction.GateAllow || !reflect.DeepEqual(gate.Context, finalGate.Context) {
 		return ReviewBinding{}, errors.New("authority or live gate changed before binding publish")
 	}
@@ -154,7 +157,7 @@ func prepareApprovedReviewBinding(ctx context.Context, root, workspace, change, 
 // not have such a root, so their already-approved compact authority and live
 // post-apply gate are the complete native successor provenance.
 func prepareApprovedRuntimeSuccessorBinding(ctx context.Context, root, workspace, change, lineage string) (ReviewBinding, error) {
-	matches, err := bindingChangeRoots(root, change)
+	matches, err := bindingChangeRoots(ctx, root, change)
 	if err != nil {
 		return ReviewBinding{}, err
 	}
@@ -337,7 +340,7 @@ func validateBoundReview(ctx context.Context, repo, change string) (ReviewBindin
 	if err != nil {
 		return ReviewBinding{}, reviewtransaction.NativeGateEvaluation{}, err
 	}
-	changeRoot, err := resolveBindingChangeRoot(root, repo, change)
+	changeRoot, err := resolveBindingChangeRoot(ctx, root, repo, change)
 	if err != nil {
 		return ReviewBinding{}, reviewtransaction.NativeGateEvaluation{}, err
 	}
@@ -376,7 +379,7 @@ func validateBoundReview(ctx context.Context, repo, change string) (ReviewBindin
 	finalBinding, bindingErr := loadEffectiveReviewBinding(ctx, root, change)
 	finalRecord, recordErr := store.Load()
 	finalReceipt, receiptErr := os.ReadFile(store.ReceiptPath())
-	finalChangeRoot, changeErr := resolveBindingChangeRoot(root, repo, change)
+	finalChangeRoot, changeErr := resolveBindingChangeRoot(ctx, root, repo, change)
 	if bindingErr != nil || recordErr != nil || receiptErr != nil || changeErr != nil || finalChangeRoot != changeRoot || !reflect.DeepEqual(finalBinding, binding) || finalRecord.Revision != record.Revision || !reflect.DeepEqual(finalRecord.State, record.State) || finalRecord.State.State != reviewtransaction.StateApproved || !bytes.Equal(finalReceipt, receiptPayload) || bindingHash(finalReceipt) != binding.ReceiptHash {
 		return ReviewBinding{}, reviewtransaction.NativeGateEvaluation{}, errors.New("bound authority, receipt, or binding changed during final read")
 	}
@@ -461,7 +464,7 @@ func loadEffectiveReviewBinding(ctx context.Context, repo, change string) (Revie
 	return *legacy, nil
 }
 
-func resolveBindingChangeRoot(root, workspace, change string) (string, error) {
+func resolveBindingChangeRoot(ctx context.Context, root, workspace, change string) (string, error) {
 	workspace, err := filepath.Abs(workspace)
 	if err != nil {
 		return "", err
@@ -530,7 +533,7 @@ func resolveBindingChangeRoot(root, workspace, change string) (string, error) {
 		return "", errors.New("selected OpenSpec change uses a symlinked path")
 	}
 
-	matches, err := bindingChangeRoots(root, change)
+	matches, err := bindingChangeRoots(ctx, root, change)
 	if err != nil {
 		return "", err
 	}
@@ -540,40 +543,42 @@ func resolveBindingChangeRoot(root, workspace, change string) (string, error) {
 	return selected, nil
 }
 
-func bindingChangeRoots(root, change string) ([]string, error) {
+func bindingChangeRoots(ctx context.Context, root, change string) ([]string, error) {
+	paths, err := (reviewtransaction.SnapshotBuilder{Repo: root}).DiscoverTrackedAndUnignoredPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
 	matches := []string{}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	for _, logicalPath := range paths {
+		parts := strings.Split(logicalPath, "/")
+		if parts[len(parts)-1] == "openspec" {
+			parts = append(parts, "changes", change)
 		}
-		if entry.IsDir() && entry.Name() == ".git" && path != root {
-			return filepath.SkipDir
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.Name() == "openspec" {
-				candidate := filepath.Join(path, "changes", change)
-				if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-					matches = append(matches, candidate)
-				} else if err != nil && !os.IsNotExist(err) {
-					return err
-				}
-			} else if isBindingChangePath(path, change) {
-				matches = append(matches, path)
+		for index := 0; index+2 < len(parts); index++ {
+			if parts[index] != "openspec" || parts[index+1] != "changes" || parts[index+2] != change {
+				continue
 			}
-			return nil
+			rootPath := strings.Join(parts[:index+3], "/")
+			if _, duplicate := seen[rootPath]; duplicate {
+				break
+			}
+			seen[rootPath] = struct{}{}
+			candidate := filepath.Join(root, filepath.FromSlash(rootPath))
+			info, statErr := os.Lstat(candidate)
+			if os.IsNotExist(statErr) {
+				break
+			}
+			if statErr != nil {
+				return nil, statErr
+			}
+			if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				matches = append(matches, filepath.Clean(candidate))
+			}
+			break
 		}
-		if !entry.IsDir() || !isBindingChangePath(path, change) {
-			return nil
-		}
-		matches = append(matches, filepath.Clean(path))
-		return filepath.SkipDir
-	})
-	return matches, err
-}
-
-func isBindingChangePath(path, change string) bool {
-	changesRoot := filepath.Dir(path)
-	return filepath.Base(path) == change && filepath.Base(changesRoot) == "changes" && filepath.Base(filepath.Dir(changesRoot)) == "openspec"
+	}
+	return matches, nil
 }
 
 func pathWithinBindingRoot(root, path string) bool {

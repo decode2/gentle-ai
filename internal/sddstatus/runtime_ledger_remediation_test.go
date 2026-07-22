@@ -121,6 +121,21 @@ func TestRuntimeRemediationFinishSupportsEngramWithoutOpenSpecRoot(t *testing.T)
 	}
 }
 
+func TestRuntimeRemediationRejectsSymlinkedOpenSpecInsteadOfEngramFallback(t *testing.T) {
+	fixture := newRuntimeEngramRemediationFixture(t)
+	outside := t.TempDir()
+	seedReadyChange(t, outside, "engram-runtime", "- [x] linked\n")
+	if err := os.Symlink(filepath.Join(outside, "openspec"), filepath.Join(fixture.repo, "openspec")); err != nil {
+		t.Skipf("symlink fixture unavailable: %v", err)
+	}
+	before := countRuntimeRecords(t, fixture.store.Dir)
+	_, err := fixture.store.Finish(context.Background(), fixture.finishRequest("reject-symlinked-openspec"))
+	if err == nil || !strings.Contains(err.Error(), "outside repository") {
+		t.Fatalf("symlinked OpenSpec successor error = %v", err)
+	}
+	assertRuntimeRemediationUnchanged(t, fixture, before)
+}
+
 func TestRuntimeRemediationFinishChargesButDoesNotSelectAnOverBudgetSuccessor(t *testing.T) {
 	fixture := newRuntimeRemediationFixtureConfigured(t, true, true, 1, 2)
 	beforeRecords := countRuntimeRecords(t, fixture.store.Dir)

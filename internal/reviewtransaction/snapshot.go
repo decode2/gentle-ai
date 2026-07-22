@@ -551,6 +551,34 @@ func (builder SnapshotBuilder) DiscoverIntendedUntracked(ctx context.Context) ([
 	return canonicalPaths(paths)
 }
 
+// DiscoverTrackedAndUnignoredPaths returns the canonical Git-owned workspace
+// inventory: every cached path plus every unignored untracked path.
+func (builder SnapshotBuilder) DiscoverTrackedAndUnignoredPaths(ctx context.Context) ([]string, error) {
+	root, err := builder.ResolveRepositoryRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	output, err := runGitInventory(ctx, root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	parts := bytes.Split(output, []byte{0})
+	paths := make([]string, 0, len(parts))
+	for _, item := range parts {
+		if len(item) > 0 {
+			value := string(item)
+			if strings.HasSuffix(value, "/") {
+				value = strings.TrimSuffix(value, "/")
+				if value == "" || strings.HasSuffix(value, "/") {
+					return nil, fmt.Errorf("invalid opaque Git inventory path %q", item)
+				}
+			}
+			paths = append(paths, value)
+		}
+	}
+	return canonicalPaths(paths)
+}
+
 // HasDirtyTrackedChanges reports whether the worktree or index differs from
 // HEAD, excluding untracked paths.
 func (builder SnapshotBuilder) HasDirtyTrackedChanges(ctx context.Context) (bool, error) {
@@ -1122,21 +1150,25 @@ var gitCommandContext = exec.CommandContext
 var gitProcessTreeStarter = startGitProcessTree
 
 func runGit(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, false, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, false, false, args...)
+}
+
+func runGitInventory(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	return runGitCaptured(ctx, repo, nil, nil, 0, false, true, args...)
 }
 
 func runGitIsolated(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, true, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, true, false, args...)
 }
 
 func runGitLimited(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, args ...string) ([]byte, error) {
 	if outputLimit <= 0 {
 		return nil, &GitOutputLimitError{Args: append([]string{}, args...), Limit: outputLimit}
 	}
-	return runGitCaptured(ctx, repo, extraEnv, stdin, outputLimit, true, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, outputLimit, true, false, args...)
 }
 
-func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, isolateConfig bool, args ...string) ([]byte, error) {
+func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, isolateConfig, rejectStderr bool, args ...string) ([]byte, error) {
 	remote := len(args) > 0 && args[0] == "ls-remote"
 	timeout := localGitCommandTimeout
 	if remote {
@@ -1151,12 +1183,14 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	if stdin != nil {
 		command.Stdin = bytes.NewReader(stdin)
 	}
-	var combined bytes.Buffer
+	var combined, machineStdout, machineStderr bytes.Buffer
 	var stdout, stderr *boundedGitOutput
 	if outputLimit > 0 {
 		stdout = &boundedGitOutput{limit: outputLimit}
 		stderr = &boundedGitOutput{limit: 64 << 10}
 		command.Stdout, command.Stderr = stdout, stderr
+	} else if rejectStderr {
+		command.Stdout, command.Stderr = &machineStdout, &machineStderr
 	} else {
 		command.Stdout, command.Stderr = &combined, &combined
 	}
@@ -1182,6 +1216,8 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	output, diagnostic := combined.Bytes(), combined.Bytes()
 	if stdout != nil {
 		output, diagnostic = stdout.Bytes(), stderr.Bytes()
+	} else if rejectStderr {
+		output, diagnostic = machineStdout.Bytes(), machineStderr.Bytes()
 	}
 	if errors.Is(err, exec.ErrWaitDelay) && commandContext.Err() == nil {
 		err = nil
@@ -1212,6 +1248,9 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	}
 	if stdout != nil && stdout.exceeded {
 		return nil, &GitOutputLimitError{Args: append([]string{}, args...), Limit: outputLimit}
+	}
+	if rejectStderr && len(diagnostic) != 0 {
+		return nil, fmt.Errorf("git inventory produced diagnostics: %s", strings.TrimSpace(string(diagnostic)))
 	}
 	return output, nil
 }
