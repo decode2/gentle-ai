@@ -16,6 +16,7 @@ repo = pathlib.Path(sys.argv[1]).resolve()
 dist_arg = sys.argv[2]
 contract_root = pathlib.PurePosixPath("contracts/review-integration/v1")
 expected_contract = [
+	contract_root / "fixtures/binding-revision-conflict.fixture.json",
 	contract_root / "fixtures/capabilities-v1.1.fixture.json",
 	contract_root / "fixtures/capabilities-v1.2.fixture.json",
 	contract_root / "fixtures/capabilities-v1.3.fixture.json",

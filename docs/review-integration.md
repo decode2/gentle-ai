@@ -272,7 +272,7 @@ Pi adoption, fallback retirement, package pinning, and Pi release sequencing are
 Each release archive contains:
 
 - `contracts/review-integration/v1/schemas/` — sixteen strict JSON Schemas, including preserved capability protocols v1.0–v1.2, current v1.3, versioned START/status/result-artifact contracts, provider subject/admission, and targeted validation.
-- `contracts/review-integration/v1/fixtures/` — eighteen deterministic conformance fixtures, including all four capability minors and preserved v1 plus current v2 START/status examples for every target-applicability state.
+- `contracts/review-integration/v1/fixtures/` — nineteen deterministic conformance fixtures, including all four capability minors, preserved v1 plus current v2 START/status examples for every target-applicability state, and the typed `binding_revision_conflict` failure envelope.
 - `docs/review-integration.md` — this ownership and consumption guide.
 
 Repository maintainers can verify source inventory or a complete GoReleaser snapshot:
