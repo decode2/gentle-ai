@@ -201,7 +201,7 @@ func TestNegotiatedFailureLineageUsesCanonicalFlagParsing(t *testing.T) {
 
 func TestReviewIntegrationOperationRegistryOwnsPublishedAndFailurePolicy(t *testing.T) {
 	wantOperations := []string{
-		"review.bind_sdd", "review.capabilities", "review.finalize", "review.repair", "review.start", "review.status", "review.validate",
+		"review.bind_sdd", "review.capabilities", "review.finalize", "review.repair", "review.retry_final_verification", "review.start", "review.status", "review.validate",
 	}
 	if got := reviewIntegrationOperationNames(); !reflect.DeepEqual(got, wantOperations) ||
 		!reflect.DeepEqual(reviewCapabilitiesStaticSurface().Operations, wantOperations) {

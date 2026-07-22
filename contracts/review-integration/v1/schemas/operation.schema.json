@@ -8,12 +8,13 @@
   "properties": {
     "schema": {"const": "gentle-ai.review-integration.operation/v1"},
     "contract": {"const": "gentle-ai.review-integration/v1"},
-    "operation": {"enum": ["review.finalize", "review.validate", "review.bind_sdd"]},
+    "operation": {"enum": ["review.finalize", "review.validate", "review.bind_sdd", "review.retry_final_verification"]},
     "result": {
       "oneOf": [
         {"$ref": "#/$defs/finalize"},
         {"$ref": "#/$defs/validate"},
-        {"$ref": "#/$defs/bind_sdd"}
+        {"$ref": "#/$defs/bind_sdd"},
+        {"$ref": "#/$defs/retry_final_verification"}
       ]
     }
   },
@@ -68,6 +69,22 @@
         "authority_revision": {"$ref": "#/$defs/sha256"},
         "receipt_hash": {"$ref": "#/$defs/sha256"},
         "gate_context": {"type": "object"}
+      }
+    },
+    "retry_final_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "predecessor_lineage_id", "predecessor_revision", "lineage_id", "state", "store_revision", "target_identity", "incident_digest", "recovery_disposition"],
+      "properties": {
+        "operation": {"const": "review.retry_final_verification"},
+        "predecessor_lineage_id": {"type": "string", "maxLength": 128, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "predecessor_revision": {"$ref": "#/$defs/sha256"},
+        "lineage_id": {"type": "string", "maxLength": 128, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "state": {"const": "validating"},
+        "store_revision": {"$ref": "#/$defs/sha256"},
+        "target_identity": {"$ref": "#/$defs/sha256"},
+        "incident_digest": {"$ref": "#/$defs/sha256"},
+        "recovery_disposition": {"const": "final_verification_retry"}
       }
     }
   }

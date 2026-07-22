@@ -5,16 +5,16 @@
   "applicability": "current_target",
   "authority": {
     "version": "compact-v2",
-    "lineage_id": "review-status-recover-fixture",
-    "state": "correction_required",
-    "generation": 3,
-    "revision": "sha256:81cdad8f3182d4919147d3c4fe8f614814068e5ef68417e3dcbd5e326dd3e390"
+    "lineage_id": "review-final-verification-retry-fixture",
+    "state": "escalated",
+    "generation": 2,
+    "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "receipt": {
-    "status": "expected_missing"
+    "status": "present",
+    "identity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
-  "action": "recover",
-  "action_disposition": "scope_changed",
+  "action": "retry_final_verification",
   "replayability": "manual_action_required",
   "frozen": {
     "tier": "medium",
@@ -22,6 +22,7 @@
     "correction_budget": 1
   },
   "target_identity": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6",
+  "authority_target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "projection": {
     "schema": "gentle-ai.review-integration.projection/v1",
     "kind": "current-changes",
@@ -61,22 +62,22 @@
   "eligibility": {
     "allowed_actions": [
       {
-        "action": "review.recover",
-        "reason_code": "eligible_recovery",
+        "action": "review.retry_final_verification",
+        "reason_code": "eligible_final_verification_retry",
         "required_inputs": [
           "predecessor_lineage",
           "expected_predecessor_revision",
           "successor_lineage",
-          "disposition",
-          "reason",
+          "incident",
           "actor",
+          "reason",
           "maintainer_authorization"
         ],
-        "disposition": "scope_changed",
+        "disposition": "final_verification_retry",
         "binding": {
-          "lineage_id": "review-status-recover-fixture",
-          "revision": "sha256:81cdad8f3182d4919147d3c4fe8f614814068e5ef68417e3dcbd5e326dd3e390",
-          "target_identity": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6"
+          "lineage_id": "review-final-verification-retry-fixture",
+          "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         }
       }
     ],
@@ -110,11 +111,11 @@
         "reason_code": "forbidden_not_selected_by_native_status"
       },
       {
-        "action": "review.repair",
+        "action": "review.recover",
         "reason_code": "forbidden_not_selected_by_native_status"
       },
       {
-        "action": "review.retry_final_verification",
+        "action": "review.repair",
         "reason_code": "forbidden_not_selected_by_native_status"
       },
       {
@@ -126,5 +127,61 @@
         "reason_code": "forbidden_not_selected_by_native_status"
       }
     ]
+  },
+  "next_transition": {
+    "kind": "collect",
+    "reason_code": "final_verification_retry_authorization_required",
+    "collect": {
+      "inputs": [
+        {
+          "name": "final_verification_retry_authorization",
+          "schema": "gentle-ai.review-final-verification-retry-authorization/v1",
+          "capture_operation": "external.authorize_final_verification_retry",
+          "arguments": [
+            {
+              "name": "predecessor-lineage",
+              "value": "review-final-verification-retry-fixture"
+            },
+            {
+              "name": "expected-predecessor-revision",
+              "value": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "name": "validating-revision",
+              "value": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            {
+              "name": "target",
+              "value": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            },
+            {
+              "name": "failed-evidence-hash",
+              "value": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            {
+              "name": "finalize-request-digest",
+              "value": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            {
+              "name": "incident-schema",
+              "value": "gentle-ai.review-final-verification-incident/v1"
+            },
+            {
+              "name": "incident-class",
+              "value": "procedural_tooling_failure"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "action_disposition": "final_verification_retry",
+  "final_verification_retry": {
+    "incident_schema": "gentle-ai.review-final-verification-incident/v1",
+    "incident_class": "procedural_tooling_failure",
+    "validating_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "failed_evidence_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "finalize_request_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   }
 }

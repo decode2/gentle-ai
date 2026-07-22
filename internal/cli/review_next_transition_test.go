@@ -72,6 +72,25 @@ func TestValidatingEvidenceCollectionUnblocksFinalizeAndPreCommit(t *testing.T) 
 	}
 }
 
+func TestFinalizeNextTransitionBindsCorrectedCurrentSnapshot(t *testing.T) {
+	initialTarget := strings.Repeat("a", 64)
+	currentTarget := strings.Repeat("b", 64)
+	transition := reviewFinalizeNextTransition(reviewtransaction.CompactState{
+		LineageID:       "corrected-validating-lineage",
+		State:           reviewtransaction.StateValidating,
+		RiskLevel:       reviewtransaction.RiskMedium,
+		InitialSnapshot: reviewtransaction.Snapshot{Identity: initialTarget},
+		CurrentSnapshot: reviewtransaction.Snapshot{Identity: currentTarget},
+	}, strings.Repeat("c", 64), nil, nil)
+	if transition.Kind != reviewNextTransitionCollect || transition.Collect == nil || len(transition.Collect.Inputs) != 1 {
+		t.Fatalf("corrected validating transition = %#v", transition)
+	}
+	arguments := transition.Collect.Inputs[0].Arguments
+	if len(arguments) != 3 || arguments[2].Name != "target" || arguments[2].Value != currentTarget {
+		t.Fatalf("corrected validating target arguments = %#v, want current snapshot %q", arguments, currentTarget)
+	}
+}
+
 func TestNegotiatedNextTransitionDiscoversCapturedArtifactsAndAdvances(t *testing.T) {
 	repo, started, _, record, _ := capturedArtifact(t)
 	args := []string{"status", "--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", started.LineageID}

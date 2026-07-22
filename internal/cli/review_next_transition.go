@@ -99,9 +99,16 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 	if status.Authority == nil {
 		return reviewStopTransition("missing_authority_binding")
 	}
-	binding := reviewTransitionBinding(status.Authority, status.TargetIdentity, input.RepositoryContext)
+	bindingTarget := status.TargetIdentity
+	if status.Action == reviewtransaction.TargetStatusActionRetryFinalVerification || status.Authority.State == reviewtransaction.StateValidating {
+		bindingTarget = reviewAuthorityTargetIdentity(status)
+	}
+	binding := reviewTransitionBinding(status.Authority, bindingTarget, input.RepositoryContext)
 	if status.Action == reviewtransaction.TargetStatusActionReconcileFinalize {
 		return reviewStopTransition("original_finalize_request_required")
+	}
+	if status.Action == reviewtransaction.TargetStatusActionRetryFinalVerification {
+		return reviewFinalVerificationRetryCollection(status, binding)
 	}
 	if status.Action == reviewtransaction.TargetStatusActionStop {
 		if status.Authority.State == reviewtransaction.StateCorrectionRequired {
@@ -182,10 +189,11 @@ type reviewFinalizeTransitionContext struct {
 
 func reviewFinalizeNextTransition(state reviewtransaction.CompactState, revision string, artifacts []ReviewTransitionArtifact, artifactErr error, contexts ...reviewFinalizeTransitionContext) ReviewNextTransition {
 	status := ReviewTargetStatusResult{
-		Applicability:  reviewtransaction.TargetApplicabilityCurrent,
-		Authority:      &ReviewTargetStatusAuthority{LineageID: state.LineageID, Revision: revision, State: state.State},
-		TargetIdentity: state.InitialSnapshot.Identity,
-		Frozen:         &ReviewTargetStatusFrozen{Tier: state.RiskLevel},
+		Applicability:           reviewtransaction.TargetApplicabilityCurrent,
+		Authority:               &ReviewTargetStatusAuthority{LineageID: state.LineageID, Revision: revision, State: state.State},
+		TargetIdentity:          state.CurrentSnapshot.Identity,
+		AuthorityTargetIdentity: state.CurrentSnapshot.Identity,
+		Frozen:                  &ReviewTargetStatusFrozen{Tier: state.RiskLevel},
 	}
 	if state.State == reviewtransaction.StateCorrectionRequired && state.CorrectionAttemptConsumed() {
 		status.Action = reviewtransaction.TargetStatusActionStop
@@ -318,6 +326,27 @@ func reviewRecoveryCollection(status ReviewTargetStatusResult, binding ReviewTra
 	return reviewCollectTransition("recovery_authorization_required", ReviewTransitionInput{
 		Name: "recovery_authorization", Schema: "gentle-ai.review-recovery-authorization/v1", CaptureOperation: "external.authorize_recovery",
 		Arguments: append(reviewBindingArguments(binding), ReviewTransitionArgument{Name: "disposition", Value: string(disposition)}),
+	})
+}
+
+func reviewFinalVerificationRetryCollection(status ReviewTargetStatusResult, binding ReviewTransitionBinding) ReviewNextTransition {
+	retry := status.FinalVerificationRetry
+	if retry == nil || status.ActionDisposition != reviewtransaction.RecoveryFinalVerificationRetry {
+		return reviewStopTransition("final_verification_retry_unavailable")
+	}
+	return reviewCollectTransition("final_verification_retry_authorization_required", ReviewTransitionInput{
+		Name: "final_verification_retry_authorization", Schema: reviewtransaction.FinalVerificationRetryAuthorizationSchema,
+		CaptureOperation: "external.authorize_final_verification_retry",
+		Arguments: []ReviewTransitionArgument{
+			{Name: "predecessor-lineage", Value: binding.LineageID},
+			{Name: "expected-predecessor-revision", Value: binding.Revision},
+			{Name: "validating-revision", Value: retry.ValidatingRevision},
+			{Name: "target", Value: retry.TargetIdentity},
+			{Name: "failed-evidence-hash", Value: retry.FailedEvidenceHash},
+			{Name: "finalize-request-digest", Value: retry.FinalizeRequestDigest},
+			{Name: "incident-schema", Value: retry.IncidentSchema},
+			{Name: "incident-class", Value: retry.IncidentClass},
+		},
 	})
 }
 

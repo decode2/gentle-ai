@@ -112,6 +112,10 @@
       {
         "action": "review.validate",
         "reason_code": "forbidden_corrupted_authority"
+      },
+      {
+        "action": "review.retry_final_verification",
+        "reason_code": "forbidden_corrupted_authority"
       }
     ]
   },

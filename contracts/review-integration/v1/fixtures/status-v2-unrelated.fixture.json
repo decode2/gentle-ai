@@ -93,6 +93,10 @@
       {
         "action": "review.repair",
         "reason_code": "forbidden_unrelated_target"
+      },
+      {
+        "action": "review.retry_final_verification",
+        "reason_code": "forbidden_unrelated_target"
       }
     ]
   }

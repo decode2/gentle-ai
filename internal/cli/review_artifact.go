@@ -24,8 +24,6 @@ const (
 	reviewAdmittedResultSchema     = reviewtransaction.AdmittedReviewerResultSchema
 	reviewResultReferencePrefix    = "rart1_"
 	reviewResultArtifactLimit      = 4 << 20
-	reviewFinalEvidenceDir         = "final-evidence"
-	reviewFinalEvidenceFile        = "verification.txt"
 )
 
 func RunReviewCaptureEvidence(args []string, stdout io.Writer) error {
@@ -54,18 +52,18 @@ func RunReviewCaptureEvidence(args []string, stdout io.Writer) error {
 		return reviewPreflightError(err)
 	}
 	state := record.State
-	if state.State != reviewtransaction.StateValidating || state.InitialSnapshot.Identity != *target || record.Revision != *revision {
+	if state.State != reviewtransaction.StateValidating || state.CurrentSnapshot.Identity != *target || record.Revision != *revision {
 		return reviewPreflightError(errors.New("final evidence binding does not match the current validating authority"))
 	}
 	payload, err := readFacadeBytes(*input)
 	if err != nil || len(payload) == 0 || len(payload) > reviewResultArtifactLimit {
 		return reviewPreflightError(errors.New("final verification evidence is required"))
 	}
-	dir := filepath.Join(store.Dir, reviewFinalEvidenceDir)
+	dir := filepath.Join(store.Dir, reviewtransaction.CompactFinalEvidenceDir)
 	if err := ensureReviewerArtifactDir(dir); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, reviewFinalEvidenceFile)
+	path := filepath.Join(dir, reviewtransaction.CompactFinalEvidenceFile)
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		if !bytes.Equal(existing, payload) {
 			return reviewPreflightError(errors.New("captured final evidence already exists with different bytes"))
@@ -100,11 +98,11 @@ func RunReviewCaptureEvidence(args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	return encodeReviewJSON(stdout, map[string]any{"schema": "gentle-ai.review-verification-evidence/v1", "capability": "review.native_final_evidence", "sha256": facadePayloadHash(payload), "lineage_id": state.LineageID, "target_identity": state.InitialSnapshot.Identity, "revision": record.Revision})
+	return encodeReviewJSON(stdout, map[string]any{"schema": "gentle-ai.review-verification-evidence/v1", "capability": "review.native_final_evidence", "sha256": facadePayloadHash(payload), "lineage_id": state.LineageID, "target_identity": state.CurrentSnapshot.Identity, "revision": record.Revision})
 }
 
 func readCapturedFinalEvidence(storeDir string, state reviewtransaction.CompactState, revision string) ([]byte, error) {
-	path := filepath.Join(storeDir, reviewFinalEvidenceDir, reviewFinalEvidenceFile)
+	path := filepath.Join(storeDir, reviewtransaction.CompactFinalEvidenceDir, reviewtransaction.CompactFinalEvidenceFile)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !reviewArtifactModeSafe(info.Mode(), false) {
 		return nil, errors.New("captured final evidence is unavailable or unsafe")
