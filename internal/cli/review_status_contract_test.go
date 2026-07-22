@@ -186,6 +186,7 @@ func TestNegotiatedReviewStatusContractAndSchemasAreStrict(t *testing.T) {
 	}{
 		{name: "status-v2.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
 		{name: "status-v2-recover.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
+		{name: "status-v2-final-verification-retry.fixture.json", applicability: reviewtransaction.TargetApplicabilityCurrent},
 		{name: "status-v2-unrelated.fixture.json", applicability: reviewtransaction.TargetApplicabilityUnrelated},
 		{name: "status-v2-ambiguous.fixture.json", applicability: reviewtransaction.TargetApplicabilityAmbiguous},
 		{name: "status-v2-corrupted.fixture.json", applicability: reviewtransaction.TargetApplicabilityCorrupted},

@@ -35,19 +35,21 @@ type ReviewTargetStatusResult struct {
 	Authority     *ReviewTargetStatusAuthority          `json:"authority,omitempty"`
 	Receipt       ReviewTargetStatusReceipt             `json:"receipt"`
 	Action        reviewtransaction.TargetStatusAction  `json:"action"`
-	// ActionDisposition names the `review recover --disposition` value the
-	// recovery rules accept. It is present exactly when Action is recover.
-	ActionDisposition reviewtransaction.RecoveryDisposition        `json:"action_disposition,omitempty"`
-	Replayability     reviewtransaction.Replayability              `json:"replayability"`
-	Frozen            *ReviewTargetStatusFrozen                    `json:"frozen,omitempty"`
-	TargetIdentity    string                                       `json:"target_identity"`
-	Projection        ReviewTargetStatusProjection                 `json:"projection"`
-	Repair            reviewtransaction.AuthorityRepairAssessment  `json:"repair"`
-	Candidates        []string                                     `json:"candidates"`
-	Reconciliation    *ReviewFinalizeReconciliation                `json:"reconciliation,omitempty"`
-	Eligibility       *ReviewActionEligibility                     `json:"eligibility,omitempty"`
-	NextTransition    *ReviewNextTransition                        `json:"next_transition,omitempty"`
-	ValidationRequest *reviewtransaction.TargetedValidationRequest `json:"validation_request,omitempty"`
+	// ActionDisposition names the provider recovery class accepted by the
+	// selected action. Generic recover and final-verification retry remain
+	// distinct operations.
+	ActionDisposition      reviewtransaction.RecoveryDisposition                `json:"action_disposition,omitempty"`
+	Replayability          reviewtransaction.Replayability                      `json:"replayability"`
+	Frozen                 *ReviewTargetStatusFrozen                            `json:"frozen,omitempty"`
+	TargetIdentity         string                                               `json:"target_identity"`
+	Projection             ReviewTargetStatusProjection                         `json:"projection"`
+	Repair                 reviewtransaction.AuthorityRepairAssessment          `json:"repair"`
+	Candidates             []string                                             `json:"candidates"`
+	Reconciliation         *ReviewFinalizeReconciliation                        `json:"reconciliation,omitempty"`
+	Eligibility            *ReviewActionEligibility                             `json:"eligibility,omitempty"`
+	NextTransition         *ReviewNextTransition                                `json:"next_transition,omitempty"`
+	ValidationRequest      *reviewtransaction.TargetedValidationRequest         `json:"validation_request,omitempty"`
+	FinalVerificationRetry *reviewtransaction.FinalVerificationRetryEligibility `json:"final_verification_retry,omitempty"`
 }
 
 // ReviewActionEligibility remains an additive compatibility detail for older
@@ -88,6 +90,7 @@ var reviewManagedActions = []string{
 	"review.reconcile-authority-batch",
 	"review.recover",
 	"review.repair",
+	ReviewIntegrationOperationRetryFinalVerification,
 	"review.start",
 	"review.validate",
 }
@@ -108,20 +111,21 @@ var reviewFinalizeManagedActions = []string{
 }
 
 const (
-	reviewActionEligibleCurrent             = "eligible_current_target"
-	reviewActionEligibleEscalatedRecovery   = "eligible_recovery_escalated"
-	reviewActionEligibleRecovery            = "eligible_recovery"
-	reviewActionEligibleClassifiedRepair    = "eligible_classified_authority_repair"
-	reviewActionForbiddenNotSelected        = "forbidden_not_selected_by_native_status"
-	reviewActionForbiddenAmbiguous          = "forbidden_ambiguous_authority"
-	reviewActionForbiddenCorrupted          = "forbidden_corrupted_authority"
-	reviewActionForbiddenUnrelated          = "forbidden_unrelated_target"
-	reviewActionForbiddenTerminalEscalated  = "forbidden_terminal_escalated_authority"
-	reviewActionForbiddenUnchangedEscalated = "forbidden_unchanged_escalated_candidate"
-	reviewActionForbiddenManualIntervention = "forbidden_manual_intervention_required"
-	reviewActionForbiddenReconciliation     = "forbidden_reconciliation_requires_exact_request"
-	reviewActionForbiddenInputsUnavailable  = "forbidden_required_inputs_unavailable"
-	reviewActionForbiddenFinalizeStatus     = "forbidden_finalize_requires_target_status"
+	reviewActionEligibleCurrent                = "eligible_current_target"
+	reviewActionEligibleEscalatedRecovery      = "eligible_recovery_escalated"
+	reviewActionEligibleRecovery               = "eligible_recovery"
+	reviewActionEligibleClassifiedRepair       = "eligible_classified_authority_repair"
+	reviewActionEligibleFinalVerificationRetry = "eligible_final_verification_retry"
+	reviewActionForbiddenNotSelected           = "forbidden_not_selected_by_native_status"
+	reviewActionForbiddenAmbiguous             = "forbidden_ambiguous_authority"
+	reviewActionForbiddenCorrupted             = "forbidden_corrupted_authority"
+	reviewActionForbiddenUnrelated             = "forbidden_unrelated_target"
+	reviewActionForbiddenTerminalEscalated     = "forbidden_terminal_escalated_authority"
+	reviewActionForbiddenUnchangedEscalated    = "forbidden_unchanged_escalated_candidate"
+	reviewActionForbiddenManualIntervention    = "forbidden_manual_intervention_required"
+	reviewActionForbiddenReconciliation        = "forbidden_reconciliation_requires_exact_request"
+	reviewActionForbiddenInputsUnavailable     = "forbidden_required_inputs_unavailable"
+	reviewActionForbiddenFinalizeStatus        = "forbidden_finalize_requires_target_status"
 )
 
 type ReviewFinalizeReconciliation struct {
@@ -179,6 +183,10 @@ func newReviewTargetStatusResult(native reviewtransaction.TargetStatusResult) Re
 		},
 		Receipt: ReviewTargetStatusReceipt{Status: ReviewReceiptNotApplicable},
 	}
+	if native.FinalVerificationRetry != nil {
+		eligibility := *native.FinalVerificationRetry
+		result.FinalVerificationRetry = &eligibility
+	}
 	if native.Applicability != reviewtransaction.TargetApplicabilityCurrent {
 		return result
 	}
@@ -225,6 +233,17 @@ func newReviewActionEligibility(status ReviewTargetStatusResult) *ReviewActionEl
 		if status.ActionDisposition == reviewtransaction.RecoveryEscalated {
 			allowed.ReasonCode = reviewActionEligibleEscalatedRecovery
 		}
+		if status.Authority != nil {
+			allowed.Binding = &ReviewActionBinding{
+				LineageID: status.Authority.LineageID,
+				Revision:  status.Authority.Revision, TargetIdentity: status.TargetIdentity,
+			}
+		}
+	case reviewtransaction.TargetStatusActionRetryFinalVerification:
+		allowed.Action = ReviewIntegrationOperationRetryFinalVerification
+		allowed.ReasonCode = reviewActionEligibleFinalVerificationRetry
+		allowed.Disposition = reviewtransaction.RecoveryFinalVerificationRetry
+		allowed.RequiredInputs = []string{"predecessor_lineage", "expected_predecessor_revision", "successor_lineage", "incident", "actor", "reason", "maintainer_authorization"}
 		if status.Authority != nil {
 			allowed.Binding = &ReviewActionBinding{
 				LineageID: status.Authority.LineageID,
@@ -297,6 +316,19 @@ func (result ReviewTargetStatusResult) Validate() error {
 	}
 	if result.TargetIdentity != result.Projection.CurrentSnapshotIdentity {
 		return errors.New("negotiated review target identity differs from its current projection")
+	}
+	if retry := result.FinalVerificationRetry; retry != nil {
+		if result.Applicability != reviewtransaction.TargetApplicabilityCurrent || result.Authority == nil ||
+			result.Authority.Version != reviewtransaction.AuthorityVersionCompact || result.Authority.State != reviewtransaction.StateEscalated ||
+			result.Action != reviewtransaction.TargetStatusActionRetryFinalVerification || result.ActionDisposition != reviewtransaction.RecoveryFinalVerificationRetry ||
+			retry.IncidentSchema != reviewtransaction.FinalVerificationIncidentSchema ||
+			retry.IncidentClass != reviewtransaction.FinalVerificationIncidentProceduralToolingFailure ||
+			retry.TargetIdentity != result.TargetIdentity || !validReviewCapabilitySHA256(retry.ValidatingRevision) ||
+			!validReviewCapabilitySHA256(retry.FailedEvidenceHash) || !validReviewCapabilitySHA256(retry.FinalizeRequestDigest) {
+			return errors.New("final-verification retry status metadata is invalid")
+		}
+	} else if result.Action == reviewtransaction.TargetStatusActionRetryFinalVerification {
+		return errors.New("final-verification retry action lacks provider eligibility")
 	}
 	if result.Eligibility != nil {
 		if err := result.Eligibility.Validate(result); err != nil {
@@ -399,12 +431,16 @@ func (result ReviewTargetStatusResult) Validate() error {
 	}
 	switch result.ActionDisposition {
 	case "":
-		if result.Action == reviewtransaction.TargetStatusActionRecover {
+		if result.Action == reviewtransaction.TargetStatusActionRecover || result.Action == reviewtransaction.TargetStatusActionRetryFinalVerification {
 			return errors.New("recover status requires the recovery disposition recovery accepts")
 		}
 	case reviewtransaction.RecoveryScopeChanged, reviewtransaction.RecoveryInvalidated, reviewtransaction.RecoveryEscalated:
 		if result.Action != reviewtransaction.TargetStatusActionRecover {
 			return errors.New("only recover status may carry a recovery disposition")
+		}
+	case reviewtransaction.RecoveryFinalVerificationRetry:
+		if result.Action != reviewtransaction.TargetStatusActionRetryFinalVerification {
+			return errors.New("only final-verification retry status may carry its dedicated disposition")
 		}
 	default:
 		return errors.New("unsupported review status recovery disposition")
@@ -424,6 +460,11 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 			return err
 		}
 	}
+	if result.FinalVerificationRetry != nil {
+		if err := result.validateFinalVerificationRetryNextTransition(); err != nil {
+			return err
+		}
+	}
 	if result.NextTransition.Collect == nil {
 		return nil
 	}
@@ -437,6 +478,33 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 			!reflect.DeepEqual(manifestPathsForStatus(*input.ChangedPathManifest), result.Projection.Paths) {
 			return errors.New("negotiated status capture target differs from the frozen target identity")
 		}
+	}
+	return nil
+}
+
+func (result ReviewTargetStatusResult) validateFinalVerificationRetryNextTransition() error {
+	transition, retry := result.NextTransition, result.FinalVerificationRetry
+	if transition == nil || retry == nil || result.Authority == nil ||
+		transition.Kind != reviewNextTransitionCollect || transition.ReasonCode != "final_verification_retry_authorization_required" ||
+		transition.Collect == nil || len(transition.Collect.Inputs) != 1 {
+		return errors.New("final-verification retry authorization transition is incomplete")
+	}
+	input := transition.Collect.Inputs[0]
+	arguments, err := reviewTransitionArgumentMap(input.Arguments)
+	want := map[string]string{
+		"predecessor-lineage":           result.Authority.LineageID,
+		"expected-predecessor-revision": result.Authority.Revision,
+		"validating-revision":           retry.ValidatingRevision,
+		"target":                        retry.TargetIdentity,
+		"failed-evidence-hash":          retry.FailedEvidenceHash,
+		"finalize-request-digest":       retry.FinalizeRequestDigest,
+		"incident-schema":               retry.IncidentSchema,
+		"incident-class":                retry.IncidentClass,
+	}
+	if err != nil || input.Name != "final_verification_retry_authorization" ||
+		input.Schema != reviewtransaction.FinalVerificationRetryAuthorizationSchema ||
+		input.CaptureOperation != "external.authorize_final_verification_retry" || !reflect.DeepEqual(arguments, want) {
+		return errors.New("final-verification retry authorization transition is not provider-bound")
 	}
 	return nil
 }
@@ -628,14 +696,14 @@ func (eligibility ReviewActionEligibility) Validate(status ReviewTargetStatusRes
 		return errors.New("review action eligibility has an invalid allowed action")
 	}
 	seen := map[string]bool{allowed.Action: true}
-	if allowed.Action == "review.recover" {
+	if allowed.Action == "review.recover" || allowed.Action == ReviewIntegrationOperationRetryFinalVerification {
 		if allowed.Disposition != status.ActionDisposition || allowed.Binding == nil ||
 			allowed.Binding.TargetIdentity != status.TargetIdentity || status.Authority == nil ||
 			allowed.Binding.LineageID != status.Authority.LineageID || allowed.Binding.Revision != status.Authority.Revision {
 			return errors.New("recovery eligibility lacks a current native binding")
 		}
 	} else if allowed.Disposition != "" || allowed.Binding != nil {
-		return errors.New("only recovery eligibility may contain a binding or disposition")
+		return errors.New("only provider recovery eligibility may contain a binding or disposition")
 	}
 	for _, forbidden := range eligibility.ForbiddenActions {
 		if strings.TrimSpace(forbidden.Action) == "" || strings.TrimSpace(forbidden.ReasonCode) == "" || seen[forbidden.Action] {

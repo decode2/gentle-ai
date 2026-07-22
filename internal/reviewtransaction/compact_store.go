@@ -184,6 +184,9 @@ func BuildReleaseScopeSnapshot(ctx context.Context, repo string) (Snapshot, erro
 }
 
 func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRecoveryRequest) (CompactRecord, error) {
+	if request.Disposition == RecoveryFinalVerificationRetry {
+		return CompactRecord{}, errors.New("final_verification_retry is provider-only; use the dedicated final-verification retry operation")
+	}
 	predecessorStore, err := CompactAuthoritativeStore(ctx, repo, request.PredecessorLineageID)
 	if err != nil {
 		return CompactRecord{}, err
@@ -394,6 +397,8 @@ func validateCompactRecoveryEdge(predecessor CompactRecord, successor CompactSta
 		if recovery.MaintainerAuthorization != compactRecoveryAuthorizationBinding(predecessor.State.LineageID, predecessor.Revision, successor.InitialSnapshot.Identity, recovery.Actor, recovery.Reason) {
 			return compactRecoveryAuthorizationError(successor.InitialSnapshot)
 		}
+	case RecoveryFinalVerificationRetry:
+		return validateCompactFinalVerificationRetryEdge(predecessor, successor)
 	default:
 		return errors.New("unsupported recovery disposition")
 	}

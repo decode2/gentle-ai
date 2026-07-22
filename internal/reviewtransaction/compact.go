@@ -171,20 +171,22 @@ type CompactInvalidationEvidence struct {
 type RecoveryDisposition string
 
 const (
-	RecoveryScopeChanged RecoveryDisposition = "scope_changed"
-	RecoveryInvalidated  RecoveryDisposition = "invalidated"
-	RecoveryEscalated    RecoveryDisposition = "escalated"
+	RecoveryScopeChanged           RecoveryDisposition = "scope_changed"
+	RecoveryInvalidated            RecoveryDisposition = "invalidated"
+	RecoveryEscalated              RecoveryDisposition = "escalated"
+	RecoveryFinalVerificationRetry RecoveryDisposition = "final_verification_retry"
 )
 
 type CompactRecoveryProvenance struct {
-	PredecessorLineageID    string                    `json:"predecessor_lineage_id"`
-	PredecessorRevision     string                    `json:"predecessor_revision"`
-	Disposition             RecoveryDisposition       `json:"disposition"`
-	Reason                  string                    `json:"reason"`
-	Actor                   string                    `json:"actor"`
-	RecoveredAt             time.Time                 `json:"recovered_at"`
-	MaintainerAuthorization string                    `json:"maintainer_authorization,omitempty"`
-	Evidence                *CompactRecoveredEvidence `json:"evidence,omitempty"`
+	PredecessorLineageID    string                              `json:"predecessor_lineage_id"`
+	PredecessorRevision     string                              `json:"predecessor_revision"`
+	Disposition             RecoveryDisposition                 `json:"disposition"`
+	Reason                  string                              `json:"reason"`
+	Actor                   string                              `json:"actor"`
+	RecoveredAt             time.Time                           `json:"recovered_at"`
+	MaintainerAuthorization string                              `json:"maintainer_authorization,omitempty"`
+	Evidence                *CompactRecoveredEvidence           `json:"evidence,omitempty"`
+	FinalVerificationRetry  *CompactFinalVerificationRetryProof `json:"final_verification_retry,omitempty"`
 }
 
 // CompactRecoveredEvidence is the self-contained provenance for the only
@@ -289,11 +291,21 @@ func (state CompactState) Validate() error {
 			if strings.TrimSpace(recovery.MaintainerAuthorization) == "" {
 				return errors.New("escalated recovery requires maintainer authorization")
 			}
+		case RecoveryFinalVerificationRetry:
+			if recovery.FinalVerificationRetry == nil || recovery.MaintainerAuthorization == "" {
+				return errors.New("final-verification retry recovery requires exact source proof and maintainer authorization")
+			}
+			if err := validateCompactFinalVerificationRetryProofShape(state, *recovery); err != nil {
+				return err
+			}
 		default:
 			return errors.New("compact recovery disposition is invalid")
 		}
 		if recovery.Evidence != nil && recovery.Disposition != RecoveryEscalated {
 			return errors.New("only escalated recovery may carry predecessor evidence")
+		}
+		if recovery.FinalVerificationRetry != nil && recovery.Disposition != RecoveryFinalVerificationRetry {
+			return errors.New("only final-verification retry recovery may carry final-verification source proof")
 		}
 	}
 	if err := validateCompactResultDispositions(state); err != nil {

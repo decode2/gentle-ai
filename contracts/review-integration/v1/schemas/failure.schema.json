@@ -22,7 +22,7 @@
     "schema": {"const": "gentle-ai.review-integration.failure/v1"},
     "contract": {"const": "gentle-ai.review-integration/v1"},
     "operation": {
-      "enum": ["review.capabilities", "review.start", "review.status", "review.finalize", "review.repair", "review.validate", "review.bind_sdd"]
+      "enum": ["review.capabilities", "review.start", "review.status", "review.finalize", "review.repair", "review.retry_final_verification", "review.validate", "review.bind_sdd"]
     },
     "phase": {"enum": ["preflight", "pre_native", "native_running", "native_committed", "reconciliation"]},
     "code": {"type": "string", "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"},
@@ -47,7 +47,9 @@
           "successor_lineage_id",
           "disposition",
           "reason",
-          "actor"
+          "actor",
+          "incident",
+          "maintainer_authorization"
         ]
       }
     },
