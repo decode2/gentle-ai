@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,195 @@ func TestRetryCompactFinalVerificationUsesCorrectedCurrentSnapshot(t *testing.T)
 	}
 }
 
+func TestRetryCompactFinalVerificationFreezesCanonicalRepositoryIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("repository symlink repointing is not portable on Windows")
+	}
+	fixture := newFinalVerificationRetryFixture(t, "retry-repoint-source", "retry-repoint-successor")
+	otherRepo := initSnapshotRepo(t)
+	collisionStore := storeCompactStartAuthority(t, otherRepo, newCompactTestState(t, otherRepo, fixture.request.SuccessorLineageID))
+	collision := mustLoadCompactRecord(t, collisionStore)
+	otherBefore := compactAuthorityFileSnapshot(t, otherRepo)
+
+	link := filepath.Join(t.TempDir(), "repository")
+	if err := os.Symlink(fixture.repo, link); err != nil {
+		t.Fatal(err)
+	}
+	originalHook := finalVerificationRetryAfterRepositoryIdentity
+	finalVerificationRetryAfterRepositoryIdentity = func() {
+		if err := os.Remove(link); err != nil {
+			t.Fatalf("remove repository link: %v", err)
+		}
+		if err := os.Symlink(otherRepo, link); err != nil {
+			t.Fatalf("repoint repository link: %v", err)
+		}
+	}
+	t.Cleanup(func() { finalVerificationRetryAfterRepositoryIdentity = originalHook })
+
+	retried, err := RetryCompactFinalVerification(context.Background(), link, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFinalVerificationRetrySuccessor(t, fixture, retried)
+	if after := compactAuthorityFileSnapshot(t, otherRepo); !reflect.DeepEqual(after, otherBefore) {
+		t.Fatalf("repointed repository authority mutated\nbefore=%#v\nafter=%#v", otherBefore, after)
+	}
+	stillCollision := mustLoadCompactRecord(t, collisionStore)
+	if stillCollision.Revision != collision.Revision || !compactStateEqual(stillCollision.State, collision.State) {
+		t.Fatalf("repointed repository successor collision was overwritten: got %#v want %#v", stillCollision, collision)
+	}
+}
+
+func TestRetryCompactFinalVerificationNeverReplacesConcurrentSuccessor(t *testing.T) {
+	fixture := newFinalVerificationRetryFixture(t, "retry-publication-source", "retry-publication-successor")
+	successorStore, err := CompactAuthoritativeStore(context.Background(), fixture.repo, fixture.request.SuccessorLineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collisionState := newCompactTestState(t, fixture.repo, fixture.request.SuccessorLineageID)
+	collisionRecord, collisionPayload, err := makeCompactRecord(collisionState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHook := finalVerificationRetryAfterFirstLiveValidation
+	finalVerificationRetryAfterFirstLiveValidation = func() {
+		if err := writeAtomic(successorStore.StatePath(), collisionPayload, 0o644); err != nil {
+			t.Fatalf("publish concurrent collision: %v", err)
+		}
+	}
+	t.Cleanup(func() { finalVerificationRetryAfterFirstLiveValidation = originalHook })
+
+	if _, err := RetryCompactFinalVerification(context.Background(), fixture.repo, fixture.request); err == nil {
+		t.Fatal("retry replaced a concurrently published successor")
+	}
+	got := mustLoadCompactRecord(t, successorStore)
+	if got.Revision != collisionRecord.Revision || !compactStateEqual(got.State, collisionRecord.State) {
+		t.Fatalf("concurrent successor was overwritten: got %#v want %#v", got, collisionRecord)
+	}
+	predecessor := mustLoadCompactRecord(t, fixture.store)
+	if predecessor.Revision != fixture.predecessor.Revision || !compactStateEqual(predecessor.State, fixture.predecessor.State) {
+		t.Fatal("publication collision mutated predecessor authority")
+	}
+}
+
+func TestRetryCompactFinalVerificationIgnoresImmutablePublicationCrashResidue(t *testing.T) {
+	fixture := newFinalVerificationRetryFixture(t, "retry-publish-residue-source", "retry-publish-residue-successor")
+	successorStore, err := CompactAuthoritativeStore(context.Background(), fixture.repo, fixture.request.SuccessorLineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(successorStore.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(successorStore.Dir, ".publish-interrupted"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	retried, err := RetryCompactFinalVerification(context.Background(), fixture.repo, fixture.request)
+	if err != nil {
+		t.Fatalf("retry after immutable-publication crash residue: %v", err)
+	}
+	assertFinalVerificationRetrySuccessor(t, fixture, retried)
+}
+
+func TestRetryCompactFinalVerificationRevalidatesEvidencePrivacyAfterOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX private-mode race coverage")
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{name: "file becomes group-readable", mutate: func(path string) error { return os.Chmod(path, 0o640) }},
+		{name: "directory becomes world-searchable", mutate: func(path string) error { return os.Chmod(filepath.Dir(path), 0o755) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFinalVerificationRetryFixture(t, "retry-mode-source", "retry-mode-successor")
+			path := finalVerificationEvidencePath(fixture.store)
+			originalHook := finalVerificationRetryEvidenceAfterLstat
+			finalVerificationRetryEvidenceAfterLstat = func() {
+				if err := tt.mutate(path); err != nil {
+					t.Fatalf("mutate evidence mode: %v", err)
+				}
+			}
+			t.Cleanup(func() { finalVerificationRetryEvidenceAfterLstat = originalHook })
+			before := compactAuthorityFileSnapshot(t, fixture.repo)
+			if _, err := RetryCompactFinalVerification(context.Background(), fixture.repo, fixture.request); err == nil {
+				t.Fatal("retry accepted evidence whose private mode changed after lstat")
+			}
+			if after := compactAuthorityFileSnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
+				t.Fatalf("evidence mode denial mutated authority\nbefore=%#v\nafter=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestRetryCompactFinalVerificationRequiresFinalizeRevisionContinuity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*testing.T, *finalVerificationRetryFixture)
+	}{
+		{name: "first transition disconnected from request", mutate: func(t *testing.T, fixture *finalVerificationRetryFixture) {
+			disconnected := hash("8")
+			mutateFinalRetryAttempt(t, fixture, func(attempt *FinalizeAttempt) {
+				attempt.Transitions[0].ExpectedRevision = disconnected
+			})
+			fixture.request.Incident.ValidatingRevision = disconnected
+			fixture.request.MaintainerAuthorization = mustFinalVerificationRetryAuthorization(t, fixture.request)
+		}},
+		{name: "later transition disconnected from predecessor result", mutate: func(t *testing.T, fixture *finalVerificationRetryFixture) {
+			mutateFinalRetryAttempt(t, fixture, func(attempt *FinalizeAttempt) {
+				prior := FinalizeAttemptTransition{Operation: "review/intermediate", ExpectedRevision: attempt.Request.ExpectedRevision, Revision: hash("7")}
+				attempt.Transitions = append([]FinalizeAttemptTransition{prior}, attempt.Transitions...)
+			})
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFinalVerificationRetryFixture(t, "retry-continuity-source", "retry-continuity-successor")
+			tt.mutate(t, &fixture)
+			before := compactAuthorityFileSnapshot(t, fixture.repo)
+			if _, err := RetryCompactFinalVerification(context.Background(), fixture.repo, fixture.request); err == nil {
+				t.Fatal("retry accepted a disconnected FINALIZE transition chain")
+			}
+			if after := compactAuthorityFileSnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
+				t.Fatalf("journal continuity denial mutated authority\nbefore=%#v\nafter=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestFinalVerificationRetryAuthorizationFieldsAreCanonicalSingleLineText(t *testing.T) {
+	request := FinalVerificationRetryRequest{
+		PredecessorLineageID: "retry-fields-source", ExpectedPredecessorRevision: hash("1"), SuccessorLineageID: "retry-fields-successor",
+		Incident: FinalVerificationIncident{Schema: FinalVerificationIncidentSchema, Class: FinalVerificationIncidentProceduralToolingFailure,
+			LineageID: "retry-fields-source", TerminalRevision: hash("1"), ValidatingRevision: hash("2"), TargetIdentity: hash("3"),
+			FailedEvidenceHash: hash("4"), FinalizeRequestDigest: hash("5")},
+		Actor: "José Maintainer", Reason: "Reintentar verificación para 日本語 users",
+	}
+	if _, err := FinalVerificationRetryAuthorization(request); err != nil {
+		t.Fatalf("valid international authorization text rejected: %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		mutate func(*FinalVerificationRetryRequest)
+	}{
+		{name: "actor line separator", mutate: func(request *FinalVerificationRetryRequest) { request.Actor = "maintainer\u2028delegate" }},
+		{name: "actor paragraph separator", mutate: func(request *FinalVerificationRetryRequest) { request.Actor = "maintainer\u2029delegate" }},
+		{name: "actor control", mutate: func(request *FinalVerificationRetryRequest) { request.Actor = "maintainer\u0001delegate" }},
+		{name: "reason line separator", mutate: func(request *FinalVerificationRetryRequest) { request.Reason = "retry\u2028verification" }},
+		{name: "reason paragraph separator", mutate: func(request *FinalVerificationRetryRequest) { request.Reason = "retry\u2029verification" }},
+		{name: "reason control", mutate: func(request *FinalVerificationRetryRequest) { request.Reason = "retry\u0001verification" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			invalid := request
+			tt.mutate(&invalid)
+			if _, err := FinalVerificationRetryAuthorization(invalid); err == nil {
+				t.Fatal("non-canonical single-line authorization field was accepted")
+			}
+		})
+	}
+}
+
 func TestRetryCompactFinalVerificationDenialsNeverMutateAuthority(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -111,15 +301,21 @@ func TestRetryCompactFinalVerificationDenialsNeverMutateAuthority(t *testing.T) 
 		}},
 		{name: "incident lineage mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) { f.request.Incident.LineageID = "other-lineage" }},
 		{name: "incident terminal mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) { f.request.Incident.TerminalRevision = hash("8") }},
-		{name: "incident validating mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) {
+		{name: "incident validating mismatch", mutate: func(t *testing.T, f *finalVerificationRetryFixture) {
 			f.request.Incident.ValidatingRevision = hash("8")
+			f.request.MaintainerAuthorization = mustFinalVerificationRetryAuthorization(t, f.request)
 		}},
-		{name: "incident target mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) { f.request.Incident.TargetIdentity = hash("8") }},
-		{name: "incident evidence mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) {
+		{name: "incident target mismatch", mutate: func(t *testing.T, f *finalVerificationRetryFixture) {
+			f.request.Incident.TargetIdentity = hash("8")
+			f.request.MaintainerAuthorization = mustFinalVerificationRetryAuthorization(t, f.request)
+		}},
+		{name: "incident evidence mismatch", mutate: func(t *testing.T, f *finalVerificationRetryFixture) {
 			f.request.Incident.FailedEvidenceHash = hash("8")
+			f.request.MaintainerAuthorization = mustFinalVerificationRetryAuthorization(t, f.request)
 		}},
-		{name: "incident request mismatch", mutate: func(_ *testing.T, f *finalVerificationRetryFixture) {
+		{name: "incident request mismatch", mutate: func(t *testing.T, f *finalVerificationRetryFixture) {
 			f.request.Incident.FinalizeRequestDigest = hash("8")
+			f.request.MaintainerAuthorization = mustFinalVerificationRetryAuthorization(t, f.request)
 		}},
 		{name: "receipt mismatch", mutate: func(t *testing.T, f *finalVerificationRetryFixture) {
 			payload, err := os.ReadFile(f.store.ReceiptPath())

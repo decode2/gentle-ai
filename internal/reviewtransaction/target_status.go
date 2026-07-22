@@ -68,24 +68,25 @@ type TargetProjectionStatus struct {
 }
 
 type TargetStatusResult struct {
-	Applicability          TargetApplicability                `json:"applicability"`
-	AuthorityVersion       AuthorityVersion                   `json:"authority_version,omitempty"`
-	LineageID              string                             `json:"lineage_id,omitempty"`
-	State                  State                              `json:"state,omitempty"`
-	Generation             int                                `json:"generation,omitempty"`
-	Revision               string                             `json:"revision,omitempty"`
-	ReceiptIdentity        string                             `json:"receipt_identity,omitempty"`
-	Action                 TargetStatusAction                 `json:"action"`
-	ActionDisposition      RecoveryDisposition                `json:"action_disposition,omitempty"`
-	Replayability          Replayability                      `json:"replayability"`
-	OriginalChangedLines   int                                `json:"original_changed_lines,omitempty"`
-	Tier                   RiskLevel                          `json:"tier,omitempty"`
-	CorrectionBudget       int                                `json:"correction_budget,omitempty"`
-	SelectedLenses         []string                           `json:"selected_lenses,omitempty"`
-	TargetIdentity         string                             `json:"target_identity"`
-	Projection             TargetProjectionStatus             `json:"projection"`
-	CandidateLineageIDs    []string                           `json:"candidate_lineage_ids"`
-	FinalVerificationRetry *FinalVerificationRetryEligibility `json:"final_verification_retry,omitempty"`
+	Applicability           TargetApplicability                `json:"applicability"`
+	AuthorityVersion        AuthorityVersion                   `json:"authority_version,omitempty"`
+	LineageID               string                             `json:"lineage_id,omitempty"`
+	State                   State                              `json:"state,omitempty"`
+	Generation              int                                `json:"generation,omitempty"`
+	Revision                string                             `json:"revision,omitempty"`
+	ReceiptIdentity         string                             `json:"receipt_identity,omitempty"`
+	Action                  TargetStatusAction                 `json:"action"`
+	ActionDisposition       RecoveryDisposition                `json:"action_disposition,omitempty"`
+	Replayability           Replayability                      `json:"replayability"`
+	OriginalChangedLines    int                                `json:"original_changed_lines,omitempty"`
+	Tier                    RiskLevel                          `json:"tier,omitempty"`
+	CorrectionBudget        int                                `json:"correction_budget,omitempty"`
+	SelectedLenses          []string                           `json:"selected_lenses,omitempty"`
+	TargetIdentity          string                             `json:"target_identity"`
+	AuthorityTargetIdentity string                             `json:"authority_target_identity,omitempty"`
+	Projection              TargetProjectionStatus             `json:"projection"`
+	CandidateLineageIDs     []string                           `json:"candidate_lineage_ids"`
+	FinalVerificationRetry  *FinalVerificationRetryEligibility `json:"final_verification_retry,omitempty"`
 }
 
 type targetStatusCandidate struct {
@@ -263,6 +264,7 @@ func targetStatusForCandidate(result TargetStatusResult, candidate targetStatusC
 		record := *candidate.compact
 		state := record.State
 		result.State, result.Generation, result.Revision = state.State, state.Generation, record.Revision
+		result.AuthorityTargetIdentity = state.CurrentSnapshot.Identity
 		result.OriginalChangedLines, result.Tier, result.CorrectionBudget = state.OriginalChangedLines, state.RiskLevel, state.CorrectionBudget
 		result.SelectedLenses = append([]string{}, state.SelectedLenses...)
 		result.Projection = targetProjectionFromCompact(state, result.Projection)

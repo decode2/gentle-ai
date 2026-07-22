@@ -57,6 +57,7 @@
       }
     },
     "target_identity": { "$ref": "#/$defs/sha256" },
+    "authority_target_identity": { "$ref": "#/$defs/sha256" },
     "projection": { "$ref": "projection.schema.json" },
     "repair": { "$ref": "authority-repair-assessment.schema.json" },
     "candidates": {
@@ -237,7 +238,7 @@
     {
       "if": { "properties": { "applicability": { "const": "current_target" } } },
       "then": { "required": ["authority"] },
-      "else": { "not": { "anyOf": [{ "required": ["authority"] }, { "required": ["frozen"] }] } }
+      "else": { "not": { "anyOf": [{ "required": ["authority"] }, { "required": ["frozen"] }, { "required": ["authority_target_identity"] }] } }
     },
     {
       "if": {
@@ -264,7 +265,7 @@
         }
       },
       "then": {
-        "not": { "required": ["frozen"] },
+        "not": { "anyOf": [{ "required": ["frozen"] }, { "required": ["authority_target_identity"] }] },
         "properties": {
           "receipt": {
             "properties": { "status": { "enum": ["expected_missing", "present"] } }

@@ -1933,12 +1933,24 @@ func TestCompactDiscoveryIgnoresOnlyUnpublishedCrashResidue(t *testing.T) {
 	if err := os.MkdirAll(residue.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(residue.Dir, ".atomic-interrupted"), []byte("partial"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{".atomic-interrupted", ".publish-interrupted"} {
+		if err := os.WriteFile(filepath.Join(residue.Dir, name), []byte("partial"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	leaves, err := CompactAuthorityLeaves(context.Background(), repo)
 	if err != nil || len(leaves) != 1 || leaves[0].lineageID != state.LineageID {
 		t.Fatalf("leaves with crash residue = %#v, %v", leaves, err)
+	}
+	unexpected := filepath.Join(residue.Dir, "unexpected-residue")
+	if err := os.WriteFile(unexpected, []byte("not a temporary publication"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CompactAuthorityLeaves(context.Background(), repo); err == nil {
+		t.Fatal("unexpected state-less lineage entry was hidden as crash residue")
+	}
+	if err := os.Remove(unexpected); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(residue.StatePath(), []byte("corrupt published authority"), 0o600); err != nil {
 		t.Fatal(err)

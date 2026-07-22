@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gentleman-programming/gentle-ai/internal/reviewtransaction"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -105,6 +107,65 @@ func TestReviewRetryFinalVerificationOperationAndStatusCompleteNormally(t *testi
 	}
 }
 
+func TestReviewRetryFinalVerificationCorrectedRestartUsesFrozenAuthorityTarget(t *testing.T) {
+	fixture := failedCorrectedFinalVerificationCLIFixture(t)
+	if fixture.predecessor.State.InitialSnapshot.Identity == fixture.predecessor.State.CurrentSnapshot.Identity {
+		t.Fatal("corrected fixture did not advance CurrentSnapshot")
+	}
+	statusArgs := []string{"status", "--contract", ReviewIntegrationContractV1, "--action-eligibility", "--next-transition", "--cwd", fixture.repo, "--lineage", fixture.predecessor.State.LineageID}
+	var predecessorOutput bytes.Buffer
+	if err := RunReview(statusArgs, &predecessorOutput); err != nil {
+		t.Fatalf("corrected predecessor STATUS: %v\n%s", err, predecessorOutput.String())
+	}
+	var predecessorStatus ReviewTargetStatusResult
+	decodeStrictReviewJSON(t, predecessorOutput.Bytes(), &predecessorStatus)
+	if predecessorStatus.TargetIdentity == predecessorStatus.AuthorityTargetIdentity ||
+		predecessorStatus.TargetIdentity != predecessorStatus.Projection.CurrentSnapshotIdentity ||
+		predecessorStatus.AuthorityTargetIdentity != fixture.predecessor.State.CurrentSnapshot.Identity ||
+		predecessorStatus.FinalVerificationRetry == nil || predecessorStatus.FinalVerificationRetry.TargetIdentity != predecessorStatus.AuthorityTargetIdentity ||
+		transitionArgumentValue(t, predecessorStatus.NextTransition, "target") != predecessorStatus.AuthorityTargetIdentity ||
+		predecessorStatus.Eligibility == nil || predecessorStatus.Eligibility.AllowedActions[0].Binding == nil ||
+		predecessorStatus.Eligibility.AllowedActions[0].Binding.TargetIdentity != predecessorStatus.AuthorityTargetIdentity {
+		t.Fatalf("corrected predecessor STATUS bindings = %#v\n%s", predecessorStatus, predecessorOutput.String())
+	}
+
+	retryArgs := finalVerificationRetryCLIArgs(t, fixture, "retry-corrected-cli-successor", fixture.incidentPath)
+	if err := RunReview(retryArgs, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var successorOutput bytes.Buffer
+	if err := RunReview([]string{"status", "--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", fixture.repo, "--lineage", "retry-corrected-cli-successor"}, &successorOutput); err != nil {
+		t.Fatalf("corrected retry successor STATUS: %v\n%s", err, successorOutput.String())
+	}
+	var successorStatus ReviewTargetStatusResult
+	decodeStrictReviewJSON(t, successorOutput.Bytes(), &successorStatus)
+	if successorStatus.Authority == nil || successorStatus.Authority.State != reviewtransaction.StateValidating ||
+		successorStatus.TargetIdentity == successorStatus.AuthorityTargetIdentity ||
+		successorStatus.AuthorityTargetIdentity != fixture.predecessor.State.CurrentSnapshot.Identity ||
+		transitionArgumentValue(t, successorStatus.NextTransition, "target") != successorStatus.AuthorityTargetIdentity {
+		t.Fatalf("corrected successor STATUS bindings = %#v\n%s", successorStatus, successorOutput.String())
+	}
+
+	passed := filepath.Join(t.TempDir(), "corrected-retry-passed.txt")
+	if err := os.WriteFile(passed, []byte("corrected retry verification passed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunReview([]string{"capture-evidence", "--cwd", fixture.repo, "--lineage", successorStatus.Authority.LineageID,
+		"--target", successorStatus.AuthorityTargetIdentity, "--expected-revision", successorStatus.Authority.Revision, "--input", passed}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var terminal bytes.Buffer
+	if err := RunReview([]string{"finalize", "--contract", ReviewIntegrationContractV1, "--cwd", fixture.repo,
+		"--lineage", successorStatus.Authority.LineageID, "--captured-evidence"}, &terminal); err != nil {
+		t.Fatal(err)
+	}
+	var finalized ReviewIntegrationFinalizeResult
+	decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, terminal.Bytes()).Result, &finalized)
+	if finalized.State != reviewtransaction.StateApproved {
+		t.Fatalf("corrected retry final state = %#v", finalized)
+	}
+}
+
 func TestReviewRetryFinalVerificationNegotiatedDenialIsNoMutation(t *testing.T) {
 	fixture := failedFinalVerificationCLIFixture(t)
 	request := reviewtransaction.FinalVerificationRetryRequest{
@@ -134,6 +195,97 @@ func TestReviewRetryFinalVerificationNegotiatedDenialIsNoMutation(t *testing.T) 
 	if after := cliReviewAuthoritySnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
 		t.Fatalf("retry denial mutated authority: %#v != %#v", after, before)
 	}
+}
+
+func TestReviewRetryFinalVerificationIncidentInputIsBoundedAndCancellable(t *testing.T) {
+	t.Run("oversize regular file", func(t *testing.T) {
+		fixture := failedFinalVerificationCLIFixture(t)
+		oversize := filepath.Join(t.TempDir(), "oversize-incident.json")
+		if err := os.WriteFile(oversize, bytes.Repeat([]byte("x"), 32<<10), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := cliReviewAuthoritySnapshot(t, fixture.repo)
+		args := finalVerificationRetryCLIArgs(t, fixture, "retry-oversize-successor", oversize)
+		err := runReviewRetryFinalVerification(context.Background(), args[1:], &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "size limit") {
+			t.Fatalf("oversize incident error = %v", err)
+		}
+		if after := cliReviewAuthoritySnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
+			t.Fatalf("oversize incident mutated authority: %#v != %#v", after, before)
+		}
+	})
+
+	t.Run("cancelled stdin", func(t *testing.T) {
+		fixture := failedFinalVerificationCLIFixture(t)
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldStdin := os.Stdin
+		os.Stdin = reader
+		t.Cleanup(func() {
+			os.Stdin = oldStdin
+			_ = writer.Close()
+			_ = reader.Close()
+		})
+		before := cliReviewAuthoritySnapshot(t, fixture.repo)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		args := finalVerificationRetryCLIArgs(t, fixture, "retry-cancelled-stdin-successor", "-")
+		go func() {
+			result <- runReviewRetryFinalVerification(ctx, args[1:], &bytes.Buffer{})
+		}()
+		time.Sleep(25 * time.Millisecond)
+		cancel()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled stdin error = %v", err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			_ = writer.Close()
+			<-result
+			t.Fatal("cancelled incident stdin remained blocked")
+		}
+		if after := cliReviewAuthoritySnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
+			t.Fatalf("cancelled stdin mutated authority: %#v != %#v", after, before)
+		}
+	})
+
+	t.Run("aggregate timeout joins without blocking", func(t *testing.T) {
+		fixture := failedFinalVerificationCLIFixture(t)
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldStdin, oldTimeout := os.Stdin, reviewFacadeOperationTimeout
+		os.Stdin, reviewFacadeOperationTimeout = reader, 25*time.Millisecond
+		t.Cleanup(func() {
+			os.Stdin, reviewFacadeOperationTimeout = oldStdin, oldTimeout
+			_ = writer.Close()
+			_ = reader.Close()
+		})
+		before := cliReviewAuthoritySnapshot(t, fixture.repo)
+		var output bytes.Buffer
+		result := make(chan error, 1)
+		args := finalVerificationRetryCLIArgs(t, fixture, "retry-timeout-stdin-successor", "-")
+		go func() {
+			result <- RunReview(args, &output)
+		}()
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("blocked negotiated stdin unexpectedly succeeded")
+			}
+		case <-time.After(500 * time.Millisecond):
+			_ = writer.Close()
+			<-result
+			t.Fatal("aggregate retry timeout remained blocked joining incident stdin")
+		}
+		if after := cliReviewAuthoritySnapshot(t, fixture.repo); !reflect.DeepEqual(after, before) {
+			t.Fatalf("timed out stdin mutated authority: %#v != %#v", after, before)
+		}
+	})
 }
 
 func TestFinalVerificationRetryContractFixturesAreStrictAndPathFree(t *testing.T) {
@@ -225,6 +377,22 @@ type failedFinalVerificationCLI struct {
 	incidentPath string
 }
 
+func finalVerificationRetryCLIArgs(t *testing.T, fixture failedFinalVerificationCLI, successor, incidentPath string) []string {
+	t.Helper()
+	request := reviewtransaction.FinalVerificationRetryRequest{
+		PredecessorLineageID: fixture.predecessor.State.LineageID, ExpectedPredecessorRevision: fixture.predecessor.Revision,
+		SuccessorLineageID: successor, Incident: fixture.incident, Actor: "maintainer", Reason: "retry after provider tooling failure",
+	}
+	authorization, err := reviewtransaction.FinalVerificationRetryAuthorization(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{"retry-final-verification", "--contract", ReviewIntegrationContractV1, "--cwd", fixture.repo,
+		"--predecessor-lineage", request.PredecessorLineageID, "--expected-predecessor-revision", request.ExpectedPredecessorRevision,
+		"--successor-lineage", request.SuccessorLineageID, "--incident", incidentPath,
+		"--actor", request.Actor, "--reason", request.Reason, "--maintainer-authorization", authorization}
+}
+
 func failedFinalVerificationCLIFixture(t *testing.T) failedFinalVerificationCLI {
 	t.Helper()
 	repo, started, _, _, _ := capturedArtifact(t)
@@ -269,6 +437,80 @@ func failedFinalVerificationCLIFixture(t *testing.T) failedFinalVerificationCLI 
 		t.Fatal(err)
 	}
 	incidentPath := filepath.Join(t.TempDir(), "incident.json")
+	if err := os.WriteFile(incidentPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return failedFinalVerificationCLI{repo: repo, predecessor: predecessor, incident: incident, incidentPath: incidentPath}
+}
+
+func failedCorrectedFinalVerificationCLIFixture(t *testing.T) failedFinalVerificationCLI {
+	t.Helper()
+	repo := initReviewCLIRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\none\ntwo\nthree\nfour\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	started := runNegotiatedReviewStart(t, repo, "retry-corrected-cli-source")
+	resultPath := filepath.Join(t.TempDir(), "blocking-result.json")
+	writeReviewCLIJSON(t, resultPath, facadeReviewerResult{
+		Lens: started.SelectedLenses[0], Findings: []facadeFinding{{
+			Location: "tracked.txt:5", Severity: "CRITICAL", Claim: "terminal value is incorrect",
+			ProofRefs: []string{"tracked.txt:5 changed hunk"}, EvidenceClass: reviewtransaction.EvidenceDeterministic,
+			CausalDisposition: reviewtransaction.CausalIntroduced,
+		}}, Evidence: []string{"inspected corrected candidate"},
+	})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result", resultPath}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--correction-lines", "2"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\none\ntwo\nthree\nfixed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	validationPath := filepath.Join(t.TempDir(), "validation.json")
+	writeReviewCLIJSON(t, validationPath, facadeValidationResult{
+		OriginalCriteria:     facadeValidationCheck{Passed: true, Evidence: []string{"original criteria passed"}},
+		CorrectionRegression: facadeValidationCheck{Passed: true, Evidence: []string{"correction regression passed"}},
+		FollowUps:            []reviewtransaction.FollowUp{},
+	})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--validation", validationPath}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validating, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidencePath := filepath.Join(t.TempDir(), "corrected-failed-evidence.txt")
+	evidence := []byte("corrected provider final verification tooling failed\n")
+	if err := os.WriteFile(evidencePath, evidence, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunReviewCaptureEvidence([]string{"--cwd", repo, "--lineage", started.LineageID,
+		"--target", validating.State.CurrentSnapshot.Identity, "--expected-revision", validating.Revision, "--input", evidencePath}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--captured-evidence", "--failed"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	predecessor, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDigest := completedFinalizeRequestDigest(t, store.FinalizeAttemptJournalPath(), predecessor.Revision)
+	incident := reviewtransaction.FinalVerificationIncident{
+		Schema: reviewtransaction.FinalVerificationIncidentSchema, Class: reviewtransaction.FinalVerificationIncidentProceduralToolingFailure,
+		LineageID: predecessor.State.LineageID, TerminalRevision: predecessor.Revision, ValidatingRevision: validating.Revision,
+		TargetIdentity: predecessor.State.CurrentSnapshot.Identity, FailedEvidenceHash: predecessor.State.EvidenceHash, FinalizeRequestDigest: requestDigest,
+	}
+	payload, err := reviewtransaction.CanonicalFinalVerificationIncident(incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incidentPath := filepath.Join(t.TempDir(), "corrected-incident.json")
 	if err := os.WriteFile(incidentPath, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}

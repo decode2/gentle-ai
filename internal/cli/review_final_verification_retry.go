@@ -74,8 +74,14 @@ func runReviewRetryFinalVerification(ctx context.Context, args []string, stdout 
 		strings.TrimSpace(*actor) == "" || strings.TrimSpace(*reason) == "" || *authorization == "" {
 		return reviewPreflightError(errors.New("review retry-final-verification requires --predecessor-lineage, --expected-predecessor-revision, --successor-lineage, --incident, --actor, --reason, and --maintainer-authorization"))
 	}
-	payload, err := readFacadeBytes(*incidentPath)
+	payload, err := readFinalVerificationIncidentInput(ctx, *incidentPath)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if errors.Is(err, errFinalVerificationIncidentInputTooLarge) {
+			return reviewPreflightError(err)
+		}
 		return reviewPreflightError(errors.New("final-verification incident is unavailable"))
 	}
 	incident, err := reviewtransaction.ParseFinalVerificationIncident(payload)

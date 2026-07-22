@@ -99,7 +99,11 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 	if status.Authority == nil {
 		return reviewStopTransition("missing_authority_binding")
 	}
-	binding := reviewTransitionBinding(status.Authority, status.TargetIdentity, input.RepositoryContext)
+	bindingTarget := status.TargetIdentity
+	if status.Action == reviewtransaction.TargetStatusActionRetryFinalVerification || status.Authority.State == reviewtransaction.StateValidating {
+		bindingTarget = reviewAuthorityTargetIdentity(status)
+	}
+	binding := reviewTransitionBinding(status.Authority, bindingTarget, input.RepositoryContext)
 	if status.Action == reviewtransaction.TargetStatusActionReconcileFinalize {
 		return reviewStopTransition("original_finalize_request_required")
 	}
@@ -185,10 +189,11 @@ type reviewFinalizeTransitionContext struct {
 
 func reviewFinalizeNextTransition(state reviewtransaction.CompactState, revision string, artifacts []ReviewTransitionArtifact, artifactErr error, contexts ...reviewFinalizeTransitionContext) ReviewNextTransition {
 	status := ReviewTargetStatusResult{
-		Applicability:  reviewtransaction.TargetApplicabilityCurrent,
-		Authority:      &ReviewTargetStatusAuthority{LineageID: state.LineageID, Revision: revision, State: state.State},
-		TargetIdentity: state.CurrentSnapshot.Identity,
-		Frozen:         &ReviewTargetStatusFrozen{Tier: state.RiskLevel},
+		Applicability:           reviewtransaction.TargetApplicabilityCurrent,
+		Authority:               &ReviewTargetStatusAuthority{LineageID: state.LineageID, Revision: revision, State: state.State},
+		TargetIdentity:          state.CurrentSnapshot.Identity,
+		AuthorityTargetIdentity: state.CurrentSnapshot.Identity,
+		Frozen:                  &ReviewTargetStatusFrozen{Tier: state.RiskLevel},
 	}
 	if state.State == reviewtransaction.StateCorrectionRequired && state.CorrectionAttemptConsumed() {
 		status.Action = reviewtransaction.TargetStatusActionStop

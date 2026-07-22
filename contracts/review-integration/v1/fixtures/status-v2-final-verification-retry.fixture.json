@@ -22,6 +22,7 @@
     "correction_budget": 1
   },
   "target_identity": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6",
+  "authority_target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "projection": {
     "schema": "gentle-ai.review-integration.projection/v1",
     "kind": "current-changes",
@@ -76,7 +77,7 @@
         "binding": {
           "lineage_id": "review-final-verification-retry-fixture",
           "revision": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "target_identity": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6"
+          "target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         }
       }
     ],
@@ -151,7 +152,7 @@
             },
             {
               "name": "target",
-              "value": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6"
+              "value": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
             },
             {
               "name": "failed-evidence-hash",
@@ -179,7 +180,7 @@
     "incident_schema": "gentle-ai.review-final-verification-incident/v1",
     "incident_class": "procedural_tooling_failure",
     "validating_revision": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    "target_identity": "sha256:e6faad1cb9ceb2db170e0ec9ea5394b44c3991dff6cbd02fb6787539715968f6",
+    "target_identity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "failed_evidence_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "finalize_request_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   }

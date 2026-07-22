@@ -12,8 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +31,7 @@ const (
 
 var finalVerificationRetryAfterFirstLiveValidation = func() {}
 var finalVerificationRetryEvidenceAfterLstat = func() {}
+var finalVerificationRetryAfterRepositoryIdentity = func() {}
 
 // FinalVerificationIncident is the only admitted reason for reopening final
 // verification. It describes a procedural/tooling failure after candidate
@@ -169,7 +173,15 @@ func FinalVerificationIncidentDigest(incident FinalVerificationIncident) string 
 }
 
 func validFinalVerificationAuthorizationField(value string) bool {
-	return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
+	if value == "" || strings.TrimSpace(value) != value || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || character == '\u2028' || character == '\u2029' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateFinalVerificationRetryRequestShape(request FinalVerificationRetryRequest) error {
@@ -248,18 +260,40 @@ func readCompactFailedFinalEvidence(store CompactStore) ([]byte, error) {
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !os.SameFile(info, opened) {
+	if err != nil || !opened.Mode().IsRegular() || !compactPrivateArtifactMode(opened.Mode(), false) || !os.SameFile(info, opened) {
 		return nil, errors.New("failed final-verification evidence changed before read")
+	}
+	dirOpened, err := os.Lstat(dir)
+	if err != nil || !dirOpened.IsDir() || dirOpened.Mode()&os.ModeSymlink != 0 ||
+		!compactPrivateArtifactMode(dirOpened.Mode(), true) || !os.SameFile(dirInfo, dirOpened) {
+		return nil, errors.New("failed final-verification evidence directory changed before read")
 	}
 	payload, err := io.ReadAll(io.LimitReader(file, compactFinalEvidenceLimit+1))
 	if err != nil || len(payload) == 0 || len(payload) > compactFinalEvidenceLimit {
 		return nil, errors.New("failed final-verification evidence is empty or exceeds the native limit")
 	}
 	after, err := os.Lstat(path)
-	if err != nil || !os.SameFile(opened, after) {
+	if err != nil || !after.Mode().IsRegular() || after.Mode()&os.ModeSymlink != 0 ||
+		!compactPrivateArtifactMode(after.Mode(), false) || !os.SameFile(opened, after) {
 		return nil, errors.New("failed final-verification evidence changed during read")
 	}
+	dirAfter, err := os.Lstat(dir)
+	if err != nil || !dirAfter.IsDir() || dirAfter.Mode()&os.ModeSymlink != 0 ||
+		!compactPrivateArtifactMode(dirAfter.Mode(), true) || !os.SameFile(dirInfo, dirAfter) {
+		return nil, errors.New("failed final-verification evidence directory changed during read")
+	}
 	return payload, nil
+}
+
+func finalVerificationAttemptHasRevisionContinuity(attempt FinalizeAttempt) bool {
+	expected := attempt.Request.ExpectedRevision
+	for _, transition := range attempt.Transitions {
+		if transition.ExpectedRevision != expected {
+			return false
+		}
+		expected = transition.Revision
+	}
+	return true
 }
 
 func buildLiveFinalVerificationSnapshot(ctx context.Context, repo string, expected Snapshot) (Snapshot, error) {
@@ -320,7 +354,7 @@ func deriveFinalVerificationRetrySourceLocked(ctx context.Context, store Compact
 	}
 	attempt := qualifying[0]
 	last := attempt.Transitions[len(attempt.Transitions)-1]
-	if !attempt.Completed || !attempt.ReceiptPublished || !validSHA256(last.ExpectedRevision) ||
+	if !attempt.Completed || !attempt.ReceiptPublished || !validSHA256(last.ExpectedRevision) || !finalVerificationAttemptHasRevisionContinuity(attempt) ||
 		attempt.Request.CandidateDigest != FinalizeAttemptValueDigest("candidate", predecessor.State.CurrentSnapshot) ||
 		attempt.Request.FailedDigest != FinalizeAttemptValueDigest("failed", true) {
 		return finalVerificationRetrySource{}, denyFinalVerificationRetry("journal_mismatch", "FINALIZE attempt does not prove a completed failed verification of CurrentSnapshot")
@@ -407,7 +441,7 @@ func validateCompactFinalVerificationRetryProofShape(successor CompactState, rec
 		return errors.New("final-verification retry incident does not bind its source proof")
 	}
 	attempt := proof.SourceFinalizeAttempt
-	if !attempt.Completed || !attempt.ReceiptPublished || len(attempt.Transitions) == 0 {
+	if !attempt.Completed || !attempt.ReceiptPublished || len(attempt.Transitions) == 0 || !finalVerificationAttemptHasRevisionContinuity(attempt) {
 		return errors.New("final-verification retry source FINALIZE attempt is incomplete")
 	}
 	last := attempt.Transitions[len(attempt.Transitions)-1]
@@ -473,10 +507,72 @@ func finalVerificationRetryAncestryEligible(predecessor CompactRecord, records m
 	}
 }
 
+func resolveFinalVerificationRetryStores(ctx context.Context, repo, predecessorLineage, successorLineage string) (CompactStore, CompactStore, string, error) {
+	if validateLineageID(predecessorLineage) != nil || validateLineageID(successorLineage) != nil {
+		return CompactStore{}, CompactStore{}, "", errors.New("invalid final-verification retry lineage")
+	}
+	identity, err := reviewRepositoryIdentity(ctx, repo)
+	if err != nil {
+		return CompactStore{}, CompactStore{}, "", fmt.Errorf("resolve final-verification retry repository identity: %w", err)
+	}
+	authorityRoot, err := canonicalLocatorDirectory(filepath.Join(identity.GitCommonDir, "gentle-ai", "review-transactions"))
+	if err != nil || !locatorPathWithin(identity.GitCommonDir, authorityRoot) {
+		return CompactStore{}, CompactStore{}, "", errors.New("final-verification retry authority root is unavailable or inconsistent")
+	}
+	if err := ensureNoPreparedCompactBatchReconciliation(authorityRoot); err != nil {
+		return CompactStore{}, CompactStore{}, "", err
+	}
+	versionRoot, err := canonicalLocatorDirectory(filepath.Join(authorityRoot, "v2"))
+	if err != nil || filepath.Dir(versionRoot) != authorityRoot {
+		return CompactStore{}, CompactStore{}, "", errors.New("final-verification retry compact-v2 root is unavailable or inconsistent")
+	}
+	lockPath := filepath.Join(versionRoot, "LOCK")
+	maintenancePath := compactMaintenanceLockPath(authorityRoot)
+	newStore := func(lineage string) CompactStore {
+		return CompactStore{
+			Dir: filepath.Join(versionRoot, lineage), lineageID: lineage, repo: identity.RepositoryRoot,
+			lockPath: lockPath, maintenanceLockPath: maintenancePath,
+		}
+	}
+	predecessor, successor := newStore(predecessorLineage), newStore(successorLineage)
+	if predecessor.repo != successor.repo || predecessor.lockPath != successor.lockPath ||
+		predecessor.maintenanceLockPath != successor.maintenanceLockPath ||
+		filepath.Dir(predecessor.Dir) != versionRoot || filepath.Dir(successor.Dir) != versionRoot {
+		return CompactStore{}, CompactStore{}, "", errors.New("final-verification retry stores do not share one frozen repository identity")
+	}
+	return predecessor, successor, versionRoot, nil
+}
+
+func discoverFinalVerificationRetryStores(versionRoot string, template CompactStore) ([]CompactStore, error) {
+	entries, err := os.ReadDir(versionRoot)
+	if err != nil {
+		return nil, err
+	}
+	stores := make([]CompactStore, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || validateLineageID(entry.Name()) != nil {
+			continue
+		}
+		dir := filepath.Join(versionRoot, entry.Name())
+		if _, statErr := os.Stat(filepath.Join(dir, compactStateFileName)); os.IsNotExist(statErr) {
+			residue, readErr := os.ReadDir(dir)
+			if onlyUnpublishedCompactCrashResidue(residue, readErr) {
+				continue
+			}
+		}
+		stores = append(stores, CompactStore{
+			Dir: dir, lineageID: entry.Name(), repo: template.repo,
+			lockPath: template.lockPath, maintenanceLockPath: template.maintenanceLockPath,
+		})
+	}
+	sort.Slice(stores, func(i, j int) bool { return stores[i].lineageID < stores[j].lineageID })
+	return stores, nil
+}
+
 // RetryCompactFinalVerification creates the sole provider-owned
 // final_verification_retry edge. The repository-wide compact lock serializes
 // predecessor CAS, graph/ancestry validation, live CurrentSnapshot proof, and
-// successor publication. Every denial returns before writeAtomic.
+// successor publication. Every denial returns before immutable publication.
 func RetryCompactFinalVerification(ctx context.Context, repo string, request FinalVerificationRetryRequest) (CompactRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return CompactRecord{}, err
@@ -484,14 +580,13 @@ func RetryCompactFinalVerification(ctx context.Context, repo string, request Fin
 	if err := validateExactFinalVerificationRetryAuthorization(request); err != nil {
 		return CompactRecord{}, err
 	}
-	predecessorStore, err := CompactAuthoritativeStore(ctx, repo, request.PredecessorLineageID)
+	predecessorStore, successorStore, versionRoot, err := resolveFinalVerificationRetryStores(
+		ctx, repo, request.PredecessorLineageID, request.SuccessorLineageID,
+	)
 	if err != nil {
 		return CompactRecord{}, err
 	}
-	successorStore, err := CompactAuthoritativeStore(ctx, repo, request.SuccessorLineageID)
-	if err != nil {
-		return CompactRecord{}, err
-	}
+	finalVerificationRetryAfterRepositoryIdentity()
 	var maintenance *MaintenanceLock
 	if predecessorStore.maintenanceLockPath != "" {
 		maintenance, err = acquireMaintenanceLock(ctx, predecessorStore.maintenanceLockPath, maintenanceShared)
@@ -513,7 +608,7 @@ func RetryCompactFinalVerification(ctx context.Context, repo string, request Fin
 	if predecessor.Revision != request.ExpectedPredecessorRevision {
 		return CompactRecord{}, denyFinalVerificationRetry("stale_revision", "expected predecessor revision is not current")
 	}
-	stores, err := DiscoverCompactStores(ctx, predecessorStore.repo)
+	stores, err := discoverFinalVerificationRetryStores(versionRoot, predecessorStore)
 	if err != nil {
 		return CompactRecord{}, err
 	}
@@ -588,7 +683,11 @@ func RetryCompactFinalVerification(ctx context.Context, repo string, request Fin
 	if err != nil {
 		return CompactRecord{}, err
 	}
-	if err := writeAtomic(successorStore.StatePath(), payload, 0o644); err != nil {
+	if err := publishImmutable(successorStore.StatePath(), payload, 0o644); err != nil {
+		var conflict *ImmutablePublicationConflictError
+		if errors.As(err, &conflict) {
+			return CompactRecord{}, denyFinalVerificationRetry("successor_collision", "successor authority was published concurrently with different bytes")
+		}
 		return CompactRecord{}, err
 	}
 	return record, nil

@@ -599,11 +599,7 @@ func DiscoverCompactStores(ctx context.Context, repo string) ([]CompactStore, er
 		dir := filepath.Join(versionRoot, entry.Name())
 		if _, statErr := os.Stat(filepath.Join(dir, compactStateFileName)); os.IsNotExist(statErr) {
 			residue, readErr := os.ReadDir(dir)
-			unpublished := readErr == nil
-			for _, item := range residue {
-				unpublished = unpublished && strings.HasPrefix(item.Name(), ".atomic-")
-			}
-			if unpublished {
+			if onlyUnpublishedCompactCrashResidue(residue, readErr) {
 				continue
 			}
 		}
@@ -614,6 +610,18 @@ func DiscoverCompactStores(ctx context.Context, repo string) ([]CompactStore, er
 	}
 	sort.Slice(stores, func(i, j int) bool { return stores[i].lineageID < stores[j].lineageID })
 	return stores, nil
+}
+
+func onlyUnpublishedCompactCrashResidue(entries []os.DirEntry, readErr error) bool {
+	if readErr != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".atomic-") && !strings.HasPrefix(entry.Name(), ".publish-") {
+			return false
+		}
+	}
+	return true
 }
 
 // StartCompactAuthority serializes compact start discovery, equivalence
