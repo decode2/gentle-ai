@@ -1103,7 +1103,7 @@ func TestReviewFacadeStartCannotResetActiveCorrectionBudget(t *testing.T) {
 
 			var output bytes.Buffer
 			if tt.negotiated {
-				err = RunReview([]string{"start", "--cwd", repo, "--contract", ReviewIntegrationContractV1}, &output)
+				err = RunReview(boundNegotiatedStartArgs(t, []string{"start", "--cwd", repo, "--contract", ReviewIntegrationContractV1}), &output)
 			} else {
 				err = RunReviewFacadeStart([]string{"--cwd", repo}, &output)
 			}

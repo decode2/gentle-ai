@@ -21,9 +21,9 @@ func TestNegotiatedReviewStartMatchesVersionedFixture(t *testing.T) {
 	writeReviewStartCandidate(t, repo, "scripts/deploy.sh", "echo deploy\n", 0o644)
 
 	var output bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", "review-start-fixture",
-	}, &output); err != nil {
+	}), &output); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeNegotiatedReviewStart(t, output.Bytes())
@@ -172,6 +172,7 @@ func TestNegotiatedReviewStartRoutesLargePureDocumentationToReadability(t *testi
 			if tt.focus != "" {
 				args = append(args, "--focus", tt.focus)
 			}
+			args = boundNegotiatedStartArgs(t, args)
 			var output bytes.Buffer
 			if err := RunReview(args, &output); err != nil {
 				t.Fatal(err)
@@ -235,7 +236,7 @@ func TestNegotiatedReviewStartAndStatusExposeWorkspaceOverlay(t *testing.T) {
 
 	var startOutput bytes.Buffer
 	args := []string{"--contract", ReviewIntegrationContractV1, "--cwd", repo, "--base-ref", base, "--workspace-overlay", "--lineage", "review-overlay"}
-	if err := RunReviewFacadeStart(args, &startOutput); err != nil {
+	if err := RunReviewFacadeStart(boundNegotiatedStartArgs(t, args), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	start := decodeNegotiatedReviewStart(t, startOutput.Bytes())
@@ -280,9 +281,9 @@ func TestNegotiatedOverlayStatusUsesResolvedStartBaseAfterSymbolicRefAdvances(t 
 
 	lineage := "review-overlay-resolved-base"
 	var startOutput bytes.Buffer
-	if err := RunReviewFacadeStart([]string{
+	if err := RunReviewFacadeStart(boundNegotiatedStartArgs(t, []string{
 		"--contract", ReviewIntegrationContractV1, "--cwd", repo, "--base-ref", "review-base", "--workspace-overlay", "--lineage", lineage,
-	}, &startOutput); err != nil {
+	}), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	start := decodeNegotiatedReviewStart(t, startOutput.Bytes())
@@ -695,9 +696,9 @@ func TestNegotiatedReviewStartPreservesLegacyPayloadAndAuthorityIdentity(t *test
 	}
 
 	var negotiatedOutput bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", negotiatedRepo, "--lineage", lineage,
-	}, &negotiatedOutput); err != nil {
+	}), &negotiatedOutput); err != nil {
 		t.Fatal(err)
 	}
 	negotiated := decodeNegotiatedReviewStart(t, negotiatedOutput.Bytes())
@@ -772,7 +773,7 @@ func TestExplicitReviewStartRetriesAcrossSharedCommonDirWithoutReconstruction(t 
 	start := func(root string) ([]byte, ReviewIntegrationStartResult) {
 		t.Helper()
 		var output bytes.Buffer
-		if err := RunReview([]string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", root, "--lineage", lineage}, &output); err != nil {
+		if err := RunReview(boundNegotiatedStartArgs(t, []string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", root, "--lineage", lineage}), &output); err != nil {
 			t.Fatalf("START in %s: %v\n%s", root, err, output.String())
 		}
 		return append([]byte(nil), output.Bytes()...), decodeNegotiatedReviewStart(t, output.Bytes())
@@ -883,9 +884,9 @@ func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 func runNegotiatedReviewStart(t *testing.T, repo, lineage string) ReviewIntegrationStartResult {
 	t.Helper()
 	var output bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage,
-	}, &output); err != nil {
+	}), &output); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeNegotiatedReviewStart(t, output.Bytes())
@@ -893,6 +894,58 @@ func runNegotiatedReviewStart(t *testing.T, repo, lineage string) ReviewIntegrat
 		t.Fatal(err)
 	}
 	return result
+}
+
+func boundNegotiatedStartArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	bound := append([]string(nil), args...)
+	cwd, projection, baseRef := ".", reviewtransaction.ProjectionWorkspace, ""
+	overlay, projectionProvided := false, false
+	for index := 0; index < len(bound); index++ {
+		name, value := bound[index], ""
+		if strings.Contains(name, "=") {
+			name, value, _ = strings.Cut(name, "=")
+		} else if index+1 < len(bound) && !strings.HasPrefix(bound[index+1], "--") {
+			value = bound[index+1]
+		}
+		switch name {
+		case "--cwd":
+			cwd = value
+		case "--projection":
+			projection, projectionProvided = reviewtransaction.Projection(value), true
+		case "--base-ref":
+			baseRef = value
+		case "--workspace-overlay":
+			overlay = true
+		}
+	}
+	intended := []string{}
+	if projection != reviewtransaction.ProjectionStaged {
+		var err error
+		intended, err = (reviewtransaction.SnapshotBuilder{Repo: cwd}).DiscoverIntendedUntracked(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := reviewtransaction.Target{Kind: reviewtransaction.TargetCurrentChanges, Projection: projection, IntendedUntracked: intended}
+	if baseRef != "" {
+		target.Kind, target.BaseRef = reviewtransaction.TargetBaseDiff, baseRef
+	}
+	if overlay {
+		target.Kind = reviewtransaction.TargetBaseWorkspaceOverlay
+	}
+	snapshot, err := (reviewtransaction.SnapshotBuilder{Repo: cwd}).Build(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound = append(bound, "--target", snapshot.Identity)
+	if !projectionProvided {
+		bound = append(bound, "--projection", string(projection))
+	}
+	if baseRef != "" && !overlay {
+		bound = append(bound, "--committed-only")
+	}
+	return bound
 }
 
 func decodeNegotiatedReviewStart(t *testing.T, payload []byte) ReviewIntegrationStartResult {

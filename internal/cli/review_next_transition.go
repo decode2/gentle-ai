@@ -81,7 +81,7 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 	if status.Applicability != reviewtransaction.TargetApplicabilityCurrent {
 		switch status.Applicability {
 		case reviewtransaction.TargetApplicabilityUnrelated:
-			return reviewExecuteTransition("fresh_target_ready", "review.start", []ReviewTransitionArgument{}, []ReviewTransitionArgument{{Name: "target_identity", Value: status.TargetIdentity}}, ReviewTransitionBinding{TargetIdentity: status.TargetIdentity}, nil)
+			return reviewExecuteTransition("fresh_target_ready", "review.start", reviewStartArguments(status, input.StartLineage), []ReviewTransitionArgument{{Name: "target_identity", Value: status.TargetIdentity}}, ReviewTransitionBinding{LineageID: input.StartLineage, TargetIdentity: status.TargetIdentity}, nil)
 		case reviewtransaction.TargetApplicabilityAmbiguous:
 			return reviewCollectTransition("lineage_selection_required", ReviewTransitionInput{
 				Name: "lineage_selection", Schema: "gentle-ai.review-lineage-selection/v1", CaptureOperation: "external.select_lineage",
@@ -257,10 +257,29 @@ type reviewNextTransitionInput struct {
 	Gate                                           reviewtransaction.GateKind
 	Successor, Reason, Actor, Authorization        string
 	RepairActor, RepairReason, RepairAuthorization string
+	StartLineage                                   string
 	RepositoryContext                              string
 	ValidationRequest                              *reviewtransaction.TargetedValidationRequest
 	CorrectionForecasted                           bool
 	CaptureContext                                 *reviewCaptureContext
+}
+
+func reviewStartArguments(status ReviewTargetStatusResult, lineage string) []ReviewTransitionArgument {
+	arguments := []ReviewTransitionArgument{
+		{Name: "contract", Value: ReviewIntegrationContractV1},
+		{Name: "target", Value: status.TargetIdentity},
+		{Name: "projection", Value: string(status.Projection.Projection)},
+	}
+	switch status.Projection.Kind {
+	case reviewtransaction.TargetBaseDiff:
+		arguments = append(arguments, ReviewTransitionArgument{Name: "base-ref", Value: status.Projection.BaseTree}, ReviewTransitionArgument{Name: "committed-only", Value: "true"})
+	case reviewtransaction.TargetBaseWorkspaceOverlay:
+		arguments = append(arguments, ReviewTransitionArgument{Name: "base-ref", Value: status.Projection.BaseTree}, ReviewTransitionArgument{Name: "workspace-overlay", Value: "true"})
+	}
+	if strings.TrimSpace(lineage) != "" {
+		arguments = append(arguments, ReviewTransitionArgument{Name: "lineage", Value: lineage})
+	}
+	return arguments
 }
 
 func reviewRepairTransition(status ReviewTargetStatusResult, input reviewNextTransitionInput) ReviewNextTransition {

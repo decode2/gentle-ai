@@ -344,17 +344,18 @@ func TestReviewActionEligibilityStopsWithoutCompleteExecutionInputs(t *testing.T
 		state         reviewtransaction.State
 		action        reviewtransaction.TargetStatusAction
 		replayability reviewtransaction.Replayability
+		allowedAction string
 		allowed       string
 		forbidden     string
 	}{
-		{"unrelated workspace start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenUnrelated},
-		{"unrelated staged start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenUnrelated},
-		{"unrelated base ref start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenUnrelated},
-		{"unrelated overlay start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenUnrelated},
-		{"reviewing selected lenses", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateReviewing, reviewtransaction.TargetStatusActionFinalize, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
-		{"pending finalize journal", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateValidating, reviewtransaction.TargetStatusActionReconcileFinalize, reviewtransaction.ReplayabilityStatusRequired, reviewActionForbiddenReconciliation, reviewActionForbiddenReconciliation},
-		{"scope changed finalize", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateCorrectionRequired, reviewtransaction.TargetStatusActionFinalize, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
-		{"terminal validation", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateApproved, reviewtransaction.TargetStatusActionValidate, reviewtransaction.ReplayabilityNotReplayable, reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
+		{"unrelated workspace start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, "review.start", reviewActionEligibleCurrent, reviewActionForbiddenUnrelated},
+		{"unrelated staged start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, "review.start", reviewActionEligibleCurrent, reviewActionForbiddenUnrelated},
+		{"unrelated base ref start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, "review.start", reviewActionEligibleCurrent, reviewActionForbiddenUnrelated},
+		{"unrelated overlay start", reviewtransaction.TargetApplicabilityUnrelated, "", reviewtransaction.TargetStatusActionStart, reviewtransaction.ReplayabilityNotReplayable, "review.start", reviewActionEligibleCurrent, reviewActionForbiddenUnrelated},
+		{"reviewing selected lenses", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateReviewing, reviewtransaction.TargetStatusActionFinalize, reviewtransaction.ReplayabilityNotReplayable, "stop", reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
+		{"pending finalize journal", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateValidating, reviewtransaction.TargetStatusActionReconcileFinalize, reviewtransaction.ReplayabilityStatusRequired, "stop", reviewActionForbiddenReconciliation, reviewActionForbiddenReconciliation},
+		{"scope changed finalize", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateCorrectionRequired, reviewtransaction.TargetStatusActionFinalize, reviewtransaction.ReplayabilityNotReplayable, "stop", reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
+		{"terminal validation", reviewtransaction.TargetApplicabilityCurrent, reviewtransaction.StateApproved, reviewtransaction.TargetStatusActionValidate, reviewtransaction.ReplayabilityNotReplayable, "stop", reviewActionForbiddenInputsUnavailable, reviewActionForbiddenInputsUnavailable},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			status := base(tt.applicability, tt.state, tt.action, tt.replayability)
@@ -362,14 +363,14 @@ func TestReviewActionEligibilityStopsWithoutCompleteExecutionInputs(t *testing.T
 				t.Fatal(err)
 			}
 			allowed := status.Eligibility.AllowedActions
-			if len(allowed) != 1 || allowed[0].Action != "stop" || allowed[0].ReasonCode != tt.allowed || len(allowed[0].RequiredInputs) != 0 {
+			if len(allowed) != 1 || allowed[0].Action != tt.allowedAction || allowed[0].ReasonCode != tt.allowed || len(allowed[0].RequiredInputs) != 0 {
 				t.Fatalf("eligibility = %#v", status.Eligibility)
 			}
 			forbiddenStart := false
 			for _, forbidden := range status.Eligibility.ForbiddenActions {
 				forbiddenStart = forbiddenStart || forbidden.Action == "review.start" && forbidden.ReasonCode == tt.forbidden
 			}
-			if !forbiddenStart {
+			if tt.allowedAction != "review.start" && !forbiddenStart {
 				t.Fatalf("missing expected forbidden guidance: %#v", status.Eligibility)
 			}
 		})

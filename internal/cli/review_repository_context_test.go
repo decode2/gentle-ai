@@ -435,7 +435,7 @@ func TestNegotiatedStartPublishesStableOpaqueRepositoryContext(t *testing.T) {
 	repo := initReviewCLIRepo(t)
 	writeReviewStartCandidate(t, repo, "candidate.go", "package candidate\n\nfunc value() int { return 2 }\n", 0o644)
 
-	args := []string{"--cwd", repo, "--contract", ReviewIntegrationContractV1, "--lineage", "repository-context-start"}
+	args := boundNegotiatedStartArgs(t, []string{"--cwd", repo, "--contract", ReviewIntegrationContractV1, "--lineage", "repository-context-start"})
 	var first bytes.Buffer
 	if err := RunReviewFacadeStart(args, &first); err != nil {
 		t.Fatal(err)
@@ -496,7 +496,7 @@ func TestNegotiatedStartRepositoryContextCoversWorkspaceStagedAndOverlay(t *test
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("USERPROFILE", os.Getenv("HOME"))
 			repo := initReviewCLIRepo(t)
-			args := append([]string{"--cwd", repo, "--contract", ReviewIntegrationContractV1, "--lineage", "repository-context-" + strings.ReplaceAll(tt.name, " ", "-")}, tt.args(t, repo)...)
+			args := boundNegotiatedStartArgs(t, append([]string{"--cwd", repo, "--contract", ReviewIntegrationContractV1, "--lineage", "repository-context-" + strings.ReplaceAll(tt.name, " ", "-")}, tt.args(t, repo)...))
 			var output bytes.Buffer
 			if err := RunReviewFacadeStart(args, &output); err != nil {
 				t.Fatal(err)

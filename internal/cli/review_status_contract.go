@@ -222,7 +222,9 @@ func newReviewTargetStatusResult(native reviewtransaction.TargetStatusResult) Re
 func newReviewActionEligibility(status ReviewTargetStatusResult) *ReviewActionEligibility {
 	allowed := ReviewEligibleAction{RequiredInputs: []string{}}
 	switch status.Action {
-	case reviewtransaction.TargetStatusActionStart, reviewtransaction.TargetStatusActionValidate:
+	case reviewtransaction.TargetStatusActionStart:
+		allowed.Action, allowed.ReasonCode = "review.start", reviewActionEligibleCurrent
+	case reviewtransaction.TargetStatusActionValidate:
 		allowed.Action, allowed.ReasonCode = "stop", reviewActionForbiddenInputsUnavailable
 	case reviewtransaction.TargetStatusActionFinalize:
 		if status.Replayability == reviewtransaction.ReplayabilityExactReplaySafe {
@@ -458,6 +460,9 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 	if result.NextTransition == nil {
 		return nil
 	}
+	if result.Applicability == reviewtransaction.TargetApplicabilityUnrelated {
+		return result.validateStartNextTransition()
+	}
 	expectedExecutionTarget := result.TargetIdentity
 	if result.Authority != nil && result.Authority.State == reviewtransaction.StateValidating {
 		expectedExecutionTarget = reviewAuthorityTargetIdentity(result)
@@ -495,6 +500,34 @@ func (result ReviewTargetStatusResult) validateNextTransitionTargets() error {
 			!reflect.DeepEqual(manifestPathsForStatus(*input.ChangedPathManifest), result.Projection.Paths) {
 			return errors.New("negotiated status capture target differs from the frozen target identity")
 		}
+	}
+	return nil
+}
+
+func (result ReviewTargetStatusResult) validateStartNextTransition() error {
+	transition := result.NextTransition
+	if result.Projection.Kind != reviewtransaction.TargetCurrentChanges && result.Projection.Kind != reviewtransaction.TargetBaseDiff &&
+		result.Projection.Kind != reviewtransaction.TargetBaseWorkspaceOverlay {
+		return errors.New("fresh target START projection kind is unsupported")
+	}
+	if transition.Kind != reviewNextTransitionExecute || transition.ReasonCode != "fresh_target_ready" || transition.Execute == nil ||
+		transition.Execute.Operation != "review.start" || len(transition.Execute.Artifacts) != 0 {
+		return errors.New("fresh target lacks an executable START transition")
+	}
+	arguments, err := reviewTransitionArgumentMap(transition.Execute.Arguments)
+	if err != nil {
+		return err
+	}
+	lineage := arguments["lineage"]
+	if lineage != "" && !validReviewIntegrationLineage(lineage) {
+		return errors.New("fresh target START lineage is not canonical")
+	}
+	wantArguments := reviewStartArguments(result, lineage)
+	wantPreconditions := []ReviewTransitionArgument{{Name: "target_identity", Value: result.TargetIdentity}}
+	wantBinding := ReviewTransitionBinding{LineageID: lineage, TargetIdentity: result.TargetIdentity}
+	if !reflect.DeepEqual(transition.Execute.Arguments, wantArguments) ||
+		!reflect.DeepEqual(transition.Execute.Preconditions, wantPreconditions) || transition.Execute.Binding != wantBinding {
+		return errors.New("fresh target START transition is not exactly bound")
 	}
 	return nil
 }
@@ -718,6 +751,10 @@ func (eligibility ReviewActionEligibility) Validate(status ReviewTargetStatusRes
 	allowed := eligibility.AllowedActions[0]
 	if strings.TrimSpace(allowed.Action) == "" || strings.TrimSpace(allowed.ReasonCode) == "" || allowed.RequiredInputs == nil {
 		return errors.New("review action eligibility has an invalid allowed action")
+	}
+	if status.Action == reviewtransaction.TargetStatusActionStart &&
+		(allowed.Action != "review.start" || allowed.ReasonCode != reviewActionEligibleCurrent || len(allowed.RequiredInputs) != 0) {
+		return errors.New("fresh target eligibility does not allow START")
 	}
 	seen := map[string]bool{allowed.Action: true}
 	if allowed.Action == "review.recover" || allowed.Action == ReviewIntegrationOperationRetryFinalVerification {

@@ -523,7 +523,7 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 					}
 				}
 			}
-			transition := newReviewNextTransition(result, native.SelectedLenses, artifacts, evidenceAvailable, artifactErr, reviewNextTransitionInput{Gate: reviewtransaction.GateKind(*gate), Successor: *recoverySuccessor, Reason: *recoveryReason, Actor: *recoveryActor, Authorization: *recoveryAuthorization, RepairActor: *repairActor, RepairReason: *repairReason, RepairAuthorization: *repairAuthorization, RepositoryContext: repositoryContext, ValidationRequest: validationRequest, CorrectionForecasted: correctionForecasted, CaptureContext: captureContext})
+			transition := newReviewNextTransition(result, native.SelectedLenses, artifacts, evidenceAvailable, artifactErr, reviewNextTransitionInput{Gate: reviewtransaction.GateKind(*gate), Successor: *recoverySuccessor, Reason: *recoveryReason, Actor: *recoveryActor, Authorization: *recoveryAuthorization, RepairActor: *repairActor, RepairReason: *repairReason, RepairAuthorization: *repairAuthorization, StartLineage: strings.TrimSpace(*lineage), RepositoryContext: repositoryContext, ValidationRequest: validationRequest, CorrectionForecasted: correctionForecasted, CaptureContext: captureContext})
 			result.NextTransition = &transition
 		}
 		if err := result.Validate(); err != nil {
@@ -825,6 +825,7 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	flags := newReviewFlagSet("review start", stdout, "Freeze live Git scope and derive the bounded review tier, lenses, and correction budget.")
 	cwd := flags.String("cwd", ".", "repository path")
 	contract := flags.String("contract", "", "optional negotiated review integration contract")
+	targetIdentity := flags.String("target", "", "exact frozen target identity for negotiated START")
 	lineage := flags.String("lineage", "", "optional explicit review lineage identifier")
 	policySource := flags.String("policy", "", "optional review policy file; the native bounded policy is used by default")
 	focus := flags.String("focus", "reliability", "dominant standard-risk focus: risk, resilience, readability, or reliability; large pure documentation always uses readability")
@@ -845,6 +846,9 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	negotiated, err := reviewIntegrationNegotiation(flags, *contract)
 	if err != nil {
 		return err
+	}
+	if err := validateReviewStartBinding(args, negotiated, *targetIdentity, *projection, *baseRef, *lineage, *committedOnly, *workspaceOverlay); err != nil {
+		return reviewPreflightError(err)
 	}
 	builder := reviewtransaction.SnapshotBuilder{Repo: *cwd}
 	root, err := builder.ResolveRepositoryRoot(ctx)
@@ -885,6 +889,9 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	snapshot, err := (reviewtransaction.SnapshotBuilder{Repo: root}).Build(ctx, target)
 	if err != nil {
 		return fmt.Errorf("build facade review target: %w", err)
+	}
+	if negotiated && snapshot.Identity != *targetIdentity {
+		return reviewPreflightError(errors.New("review start target does not match the freshly built snapshot"))
 	}
 	assessment, err := (reviewtransaction.SnapshotBuilder{Repo: root}).AssessSnapshotRisk(ctx, snapshot)
 	if err != nil {
@@ -955,7 +962,15 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	}
 	var beforeCreate func() error
 	if negotiated {
-		beforeCreate = func() error { return requestedContextErr }
+		beforeCreate = func() error {
+			if requestedContextErr != nil {
+				return requestedContextErr
+			}
+			if err := (reviewtransaction.SnapshotBuilder{Repo: root}).ValidateLiveSnapshot(ctx, snapshot); err != nil {
+				return reviewPreflightError(err)
+			}
+			return nil
+		}
 	}
 	started, err := reviewtransaction.StartCompactAuthority(ctx, root, reviewtransaction.CompactStartRequest{
 		State: state, TracePath: strings.TrimSpace(*tracePath), ExplicitLineage: explicitLineage, BeforeCreate: beforeCreate,
@@ -1015,6 +1030,77 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 		}
 	}
 	return encodeReviewJSON(stdout, negotiatedResult)
+}
+
+func validateReviewStartBinding(args []string, negotiated bool, target, projection, baseRef, lineage string, committedOnly, workspaceOverlay bool) error {
+	counts := reviewStartBindingFlagCounts(args)
+	if !negotiated {
+		if counts["target"] != 0 {
+			return errors.New("review start --target requires --contract")
+		}
+		return nil
+	}
+	for _, name := range []string{"contract", "target", "projection", "lineage", "base-ref", "committed-only", "workspace-overlay"} {
+		if counts[name] > 1 {
+			return fmt.Errorf("review start repeats --%s", name)
+		}
+	}
+	if counts["contract"] != 1 || counts["target"] != 1 || counts["projection"] != 1 {
+		return errors.New("negotiated review start requires exactly one --contract, --target, and --projection")
+	}
+	if !validReviewCapabilitySHA256(target) {
+		return errors.New("negotiated review start requires an exact sha256 --target")
+	}
+	if projection != string(reviewtransaction.ProjectionWorkspace) && projection != string(reviewtransaction.ProjectionStaged) {
+		return errors.New("negotiated review start requires an exact supported --projection")
+	}
+	if counts["lineage"] == 1 && !validReviewIntegrationLineage(lineage) {
+		return errors.New("negotiated review start lineage is not canonical")
+	}
+	base := strings.TrimSpace(baseRef)
+	switch {
+	case workspaceOverlay:
+		if counts["workspace-overlay"] != 1 || counts["base-ref"] != 1 || base == "" || counts["committed-only"] != 0 {
+			return errors.New("negotiated workspace-overlay START requires exactly --base-ref and --workspace-overlay")
+		}
+	case base != "":
+		if counts["base-ref"] != 1 || counts["committed-only"] != 1 || !committedOnly || counts["workspace-overlay"] != 0 {
+			return errors.New("negotiated base-diff START requires exactly --base-ref and --committed-only")
+		}
+	default:
+		if counts["base-ref"] != 0 || counts["committed-only"] != 0 || counts["workspace-overlay"] != 0 {
+			return errors.New("negotiated current-changes START contains a partial base selector")
+		}
+	}
+	return nil
+}
+
+func reviewStartBindingFlagCounts(args []string) map[string]int {
+	counts := make(map[string]int)
+	shape := reviewIntegrationOperationFlagShape("review.start")
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "--" || argument == "" || argument == "-" || argument[0] != '-' {
+			break
+		}
+		nameValue := strings.TrimPrefix(strings.TrimPrefix(argument, "-"), "-")
+		name, hasValue := nameValue, false
+		if separator := strings.IndexByte(nameValue, '='); separator >= 0 {
+			name, hasValue = nameValue[:separator], true
+		}
+		kind, known := shape[name]
+		if !known {
+			continue
+		}
+		switch name {
+		case "contract", "target", "projection", "lineage", "base-ref", "committed-only", "workspace-overlay":
+			counts[name]++
+		}
+		if kind != reviewIntegrationBoolFlag && !hasValue {
+			index++
+		}
+	}
+	return counts
 }
 
 func reviewFacadeStartResultFor(action reviewtransaction.CompactStartAction, lensesRequired bool, authority reviewtransaction.CompactState) ReviewFacadeStartResult {

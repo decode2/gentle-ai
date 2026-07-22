@@ -215,7 +215,7 @@ func TestNegotiatedReviewStartContextFailureReportsTruthfulAuthorityProvenance(t
 		t.Cleanup(restore)
 
 		var output bytes.Buffer
-		if err := RunReview([]string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage}, &output); err == nil {
+		if err := RunReview(boundNegotiatedStartArgs(t, []string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage}), &output); err == nil {
 			t.Fatal("negotiated START unexpectedly succeeded")
 		}
 		failure := decodeReviewIntegrationFailure(t, output.Bytes())
@@ -251,7 +251,7 @@ func TestNegotiatedReviewStartContextFailureReportsTruthfulAuthorityProvenance(t
 		t.Cleanup(restore)
 
 		var output bytes.Buffer
-		if err := RunReview([]string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage}, &output); err == nil {
+		if err := RunReview(boundNegotiatedStartArgs(t, []string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage}), &output); err == nil {
 			t.Fatal("negotiated START unexpectedly succeeded")
 		}
 		failure := decodeReviewIntegrationFailure(t, output.Bytes())
