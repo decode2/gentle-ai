@@ -3484,7 +3484,7 @@ func (m Model) goBack() Model {
 
 	// Leaving ScreenSync via Esc: clear stale overrides so they don't leak
 	// into a future sync triggered from a different flow (e.g. Welcome menu).
-	if m.Screen == ScreenSync && m.PendingSyncOverrides != nil {
+	if m.Screen == ScreenSync && (m.PendingSyncOverrides != nil || m.PendingAgentSelection != nil) {
 		m.PendingSyncOverrides = nil
 		m.PendingAgentSelection = nil
 	}
