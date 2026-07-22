@@ -353,6 +353,26 @@ Read the configured models from `opencode.json` at session start (or before firs
 - If a phase does not have an explicit model, use the default OpenCode runtime model for that agent and continue.
 - For named profiles, apply the same rule to the suffixed agent keys (for example, `sdd-apply-cheap`).
 
+### Background Delegation Model Output
+
+When reporting status for OpenCode background delegations, include the resolved model in task notifications and delegation list/read summaries:
+
+- **Task Notification format**:
+  ```text
+  [TASK NOTIFICATION]
+  ID: <delegation-id>
+  Status: <status>
+  Model: <resolved-model>
+  ```
+- **Delegation List format**: `• <delegation-id> [<status>] agent: <agent> model: <resolved-model>`
+- **Delegation Read format**:
+  ```text
+  ID: <delegation-id>
+  Agent: <agent>
+  Status: <status>
+  Model: <resolved-model>
+  ```
+
 <!-- /gentle-ai:sdd-model-assignments -->
 
 ### Sub-Agent Launch Deduplication (MANDATORY)
