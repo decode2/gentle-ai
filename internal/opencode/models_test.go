@@ -584,6 +584,79 @@ func TestLoadConfigProvidersInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestLoadConfigProvidersJSONCFallback(t *testing.T) {
+	dir := t.TempDir()
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	content := `{
+		"provider": {
+			"custom-llm": {
+				"name": "Custom LLM",
+				"models": {
+					"custom-model": {"name": "Custom Model", "tool_call": true}
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(jsoncPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Request opencode.json path (which does not exist); should fall back to opencode.jsonc
+	jsonPath := filepath.Join(dir, "opencode.json")
+	config, err := LoadConfigProviders(jsonPath)
+	if err != nil {
+		t.Fatalf("LoadConfigProviders() error = %v", err)
+	}
+	if len(config) != 1 {
+		t.Fatalf("config provider count = %d, want 1", len(config))
+	}
+	if _, ok := config["custom-llm"]; !ok {
+		t.Fatal("missing custom-llm provider from jsonc fallback")
+	}
+}
+
+func TestLoadConfigProvidersJSONCComments(t *testing.T) {
+	dir := t.TempDir()
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	content := `{
+		// Top level comment for custom provider config
+		"provider": {
+			/* Multi-line comment
+			   describing custom provider setup */
+			"my-provider": {
+				"name": "My Provider",
+				"models": {
+					"my-model": {
+						"name": "My Model",
+						"tool_call": true, // trailing comma here
+					},
+				},
+			},
+		},
+	}`
+	if err := os.WriteFile(jsoncPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	config, err := LoadConfigProviders(jsoncPath)
+	if err != nil {
+		t.Fatalf("LoadConfigProviders() error = %v", err)
+	}
+	if len(config) != 1 {
+		t.Fatalf("config provider count = %d, want 1", len(config))
+	}
+	p, ok := config["my-provider"]
+	if !ok {
+		t.Fatal("missing my-provider provider from jsonc with comments")
+	}
+	if p.Name != "My Provider" {
+		t.Fatalf("provider name = %q, want %q", p.Name, "My Provider")
+	}
+	if m, ok := p.Models["my-model"]; !ok || !m.ToolCall {
+		t.Fatalf("model my-model not loaded correctly: %+v", m)
+	}
+}
+
 // MergeCustomProviders
 
 func TestMergeCustomProvidersNewProvider(t *testing.T) {

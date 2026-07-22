@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/gentleman-programming/gentle-ai/internal/components/filemerge"
 )
 
 // DefaultCachePath returns the default path to the OpenCode models cache file.
@@ -331,27 +334,60 @@ type ConfigProvider struct {
 	Models map[string]ConfigModel `json:"models"`
 }
 
-// LoadConfigProviders reads the provider section from an opencode.json settings file.
-// Returns an empty map with nil error if the file is missing or has no provider key.
+// LoadConfigProviders reads the provider section from an opencode.json or opencode.jsonc settings file.
+// Supports JSONC comments and trailing commas. Returns an empty map with nil error if the file is missing or has no provider key.
 func LoadConfigProviders(path string) (map[string]ConfigProvider, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return map[string]ConfigProvider{}, nil
-		}
-		return map[string]ConfigProvider{}, err
+	paths := []string{path}
+	if strings.HasSuffix(path, ".json") {
+		paths = append(paths, strings.TrimSuffix(path, ".json")+".jsonc")
+	} else if strings.HasSuffix(path, ".jsonc") {
+		paths = append(paths, strings.TrimSuffix(path, ".jsonc")+".json")
 	}
 
-	var raw struct {
-		Provider map[string]ConfigProvider `json:"provider"`
+	var data []byte
+	var readPath string
+	var lastErr error
+
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err == nil {
+			data = b
+			readPath = p
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			lastErr = err
+		}
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return map[string]ConfigProvider{}, fmt.Errorf("parse opencode settings %q: %w", path, err)
-	}
-	if raw.Provider == nil {
+
+	if data == nil {
+		if lastErr != nil {
+			return map[string]ConfigProvider{}, lastErr
+		}
 		return map[string]ConfigProvider{}, nil
 	}
-	return raw.Provider, nil
+
+	root, err := filemerge.UnmarshalJSONObject(data)
+	if err != nil {
+		return map[string]ConfigProvider{}, fmt.Errorf("parse opencode settings %q: %w", readPath, err)
+	}
+
+	providerRaw, ok := root["provider"]
+	if !ok || providerRaw == nil {
+		return map[string]ConfigProvider{}, nil
+	}
+
+	providerBytes, err := json.Marshal(providerRaw)
+	if err != nil {
+		return map[string]ConfigProvider{}, fmt.Errorf("parse opencode settings %q: %w", readPath, err)
+	}
+
+	var configProviders map[string]ConfigProvider
+	if err := json.Unmarshal(providerBytes, &configProviders); err != nil {
+		return map[string]ConfigProvider{}, fmt.Errorf("parse opencode settings %q: %w", readPath, err)
+	}
+
+	return configProviders, nil
 }
 
 // MergeCustomProviders merges custom providers from opencode.json into the cache-loaded

@@ -1139,6 +1139,46 @@ func TestNewModelPickerStateCollisionCustomWins(t *testing.T) {
 	}
 }
 
+// TestNewModelPickerStateJSONCWithComments verifies that custom providers defined in
+// opencode.jsonc with comments are detected when NewModelPickerState is passed opencode.json.
+func TestNewModelPickerStateJSONCWithComments(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(cachePath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	jsoncPath := filepath.Join(dir, "opencode.jsonc")
+	jsoncContent := `{
+		// Custom provider setup for OpenCode JSONC
+		"provider": {
+			/* Multi-line comment */
+			"jsonc-provider": {
+				"name": "JSONC Provider",
+				"models": {
+					"jsonc-model": {"name": "JSONC Model", "tool_call": true},
+				},
+			},
+		},
+	}`
+	if err := os.WriteFile(jsoncPath, []byte(jsoncContent), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Pass opencode.json (which does not exist); should fall back to opencode.jsonc and parse comments
+	jsonPath := filepath.Join(dir, "opencode.json")
+	state := NewModelPickerState(cachePath, jsonPath)
+
+	p, ok := state.Providers["jsonc-provider"]
+	if !ok {
+		t.Fatalf("expected jsonc-provider in state, got providers: %v", providerKeys(state.Providers))
+	}
+	m, ok := p.Models["jsonc-model"]
+	if !ok || m.Name != "JSONC Model" {
+		t.Errorf("model jsonc-model = %+v, want JSONC Model", m)
+	}
+}
+
 // providerKeys returns the keys of a Provider map for test error messages.
 func providerKeys(providers map[string]opencode.Provider) []string {
 	keys := make([]string, 0, len(providers))
