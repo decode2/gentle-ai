@@ -142,6 +142,17 @@ func compactSquashedFixDelivery(gate GateKind, state CompactState, snapshot Snap
 		equalStrings(snapshot.Paths, state.GenesisPaths) && snapshot.PathsDigest == digestPaths(state.GenesisPaths)
 }
 
+func compactLinearFixDelivery(ctx context.Context, repo string, gate GateKind, state CompactState, snapshot Snapshot, refs *resolvedPrePRRefs, finalCandidateTree string) bool {
+	if gate != GatePrePush || state.InitialSnapshot.Kind != TargetBaseDiff || state.CurrentSnapshot.Kind != TargetFixDiff || refs == nil || refs.DeliveredCommitCount < 2 ||
+		snapshot.BaseTree != state.InitialSnapshot.BaseTree || snapshot.CandidateTree != finalCandidateTree ||
+		!equalStrings(snapshot.Paths, state.GenesisPaths) || snapshot.PathsDigest != digestPaths(state.GenesisPaths) {
+		return false
+	}
+	baseTree, baseErr := (SnapshotBuilder{Repo: repo}).resolveTree(ctx, refs.BaseCommit)
+	parentTree, parentErr := (SnapshotBuilder{Repo: repo}).resolveTree(ctx, refs.HeadCommit+"^")
+	return baseErr == nil && parentErr == nil && baseTree == state.InitialSnapshot.BaseTree && parentTree == state.InitialSnapshot.CandidateTree
+}
+
 func EvaluateCompactGate(ctx context.Context, repo string, receipt CompactReceipt, input NativeGateRequestInput) NativeGateEvaluation {
 	return evaluateCompactGate(ctx, repo, receipt, input, false)
 }
@@ -307,10 +318,11 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 	}
 	binding := record.State.CurrentSnapshot
 	squashedFixDelivery := compactSquashedFixDelivery(request.Gate, record.State, snapshot, resolvedPrePR, receipt.FinalCandidateTree)
+	linearFixDelivery := compactLinearFixDelivery(ctx, repo, request.Gate, record.State, snapshot, resolvedPrePR, receipt.FinalCandidateTree)
 	strictBinding := request.Gate == GatePostApply || request.Gate == GatePreCommit || request.Gate == GatePrePush && record.State.InitialSnapshot.Kind != TargetCurrentChanges
 	baseRelationshipValid := snapshot.BaseTree == receipt.BaseTree || request.Target.Kind == TargetFixDiff
 	if strictBinding {
-		baseRelationshipValid = snapshot.BaseTree == binding.BaseTree || squashedFixDelivery
+		baseRelationshipValid = snapshot.BaseTree == binding.BaseTree || squashedFixDelivery || linearFixDelivery
 	}
 	gateContext := GateContext{
 		Gate: request.Gate, LineageID: receipt.LineageID, Generation: receipt.Generation,
@@ -326,11 +338,11 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 	}
 	pathsMismatch := pathsAreSubset(snapshot.Paths, record.State.GenesisPaths) != nil && !compatibleAdvance
 	if strictBinding {
-		pathsMismatch = snapshot.PathsDigest != binding.PathsDigest && !squashedFixDelivery
+		pathsMismatch = snapshot.PathsDigest != binding.PathsDigest && !squashedFixDelivery && !linearFixDelivery
 	}
 	baseMismatch := snapshot.BaseTree != receipt.BaseTree && request.Target.Kind != TargetFixDiff && !compatibleAdvance
 	if strictBinding {
-		baseMismatch = snapshot.BaseTree != binding.BaseTree && !squashedFixDelivery
+		baseMismatch = snapshot.BaseTree != binding.BaseTree && !squashedFixDelivery && !linearFixDelivery
 	}
 	recoveryBinding, recoveryBound, recoveryErr := deriveCompactRecoveryBinding(ctx, repo, record.State)
 	if recoveryErr != nil {

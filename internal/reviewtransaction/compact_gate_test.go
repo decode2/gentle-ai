@@ -473,6 +473,58 @@ func TestCompactCorrectedBaseDiffPrePushAllowsOnlyExactSquashedFullDelivery(t *t
 	}
 }
 
+func TestCompactCorrectedBaseDiffPrePushAllowsExactLinearDelivery(t *testing.T) {
+	repo, state, receipt, baseRef := approvedCompactFixDiffFixtureWithCorrection(t, "compact-linear-corrected-delivery", "corrected other\n")
+	setCompactTestRemoteRef(t, repo, baseRef, "HEAD^")
+	gitSnapshot(t, repo, "add", "other.txt")
+	gitSnapshot(t, repo, "commit", "-m", "apply bounded correction")
+
+	got := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePush, LineageID: state.LineageID, BaseRef: baseRef})
+	if got.Result != GateAllow || !got.Context.BaseRelationshipValid || got.Context.BaseTree != state.InitialSnapshot.BaseTree || got.Context.CandidateTree != receipt.FinalCandidateTree {
+		t.Fatalf("exact linear corrected delivery = %#v; initial=%#v; receipt=%#v", got, state.InitialSnapshot, receipt)
+	}
+}
+
+func TestCompactCorrectedBaseDiffPrePushRejectsInexactLinearDelivery(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, repo, baseRef string)
+	}{
+		{name: "remote base drift", mutate: func(t *testing.T, repo, baseRef string) {
+			setCompactTestRemoteRef(t, repo, baseRef, "HEAD^^^")
+		}},
+		{name: "unrelated commit after correction", mutate: func(t *testing.T, repo, _ string) {
+			gitSnapshot(t, repo, "commit", "--allow-empty", "-m", "unrelated metadata")
+		}},
+		{name: "changed approved bytes", mutate: func(t *testing.T, repo, _ string) {
+			writeSnapshotFile(t, repo, "other.txt", "changed after approval\n")
+			gitSnapshot(t, repo, "commit", "-am", "change approved bytes")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, state, receipt, baseRef := approvedCompactFixDiffFixtureWithCorrection(t, "compact-linear-inexact-"+strings.ReplaceAll(tt.name, " ", "-"), "corrected other\n")
+			setCompactTestRemoteRef(t, repo, baseRef, "HEAD^")
+			gitSnapshot(t, repo, "add", "other.txt")
+			gitSnapshot(t, repo, "commit", "-m", "apply bounded correction")
+			tt.mutate(t, repo, baseRef)
+
+			got := EvaluateCompactGate(context.Background(), repo, receipt, NativeGateRequestInput{Gate: GatePrePush, LineageID: state.LineageID, BaseRef: baseRef})
+			if got.Result == GateAllow {
+				t.Fatalf("inexact linear corrected delivery = %#v", got)
+			}
+		})
+	}
+}
+
+func setCompactTestRemoteRef(t *testing.T, repo, baseRef, revision string) {
+	t.Helper()
+	remote := strings.TrimSpace(gitSnapshot(t, repo, "remote", "get-url", "origin"))
+	branch := strings.TrimPrefix(baseRef, "origin/")
+	commit := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", revision))
+	gitSnapshot(t, repo, "--git-dir", remote, "update-ref", "refs/heads/"+branch, commit)
+}
+
 func TestCompactPreCommitGateRejectsInexactStagedIntendedTransitions(t *testing.T) {
 	tests := []struct {
 		name     string
