@@ -182,6 +182,10 @@ func reviewFinalizeNextTransition(state reviewtransaction.CompactState, revision
 		TargetIdentity: state.InitialSnapshot.Identity,
 		Frozen:         &ReviewTargetStatusFrozen{Tier: state.RiskLevel},
 	}
+	if state.State == reviewtransaction.StateCorrectionRequired && state.CorrectionAttemptConsumed() {
+		status.Action = reviewtransaction.TargetStatusActionStop
+		status.Replayability = reviewtransaction.ReplayabilityManualActionRequired
+	}
 	transitionContext := reviewFinalizeTransitionContext{}
 	if len(contexts) > 0 {
 		transitionContext = contexts[0]

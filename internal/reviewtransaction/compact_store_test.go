@@ -1441,6 +1441,54 @@ func TestCompactMalformedValidatorDoesNotConsumeAuthority(t *testing.T) {
 	}
 }
 
+func TestCompactClearedEscalationRequiresHistoricalExhaustion(t *testing.T) {
+	forgedRepo := initSnapshotRepo(t)
+	forged, fix := pendingCompactCorrection(t, forgedRepo, "forged-cleared-escalation")
+	fixHash := FixDeltaHashForSnapshot(fix)
+	validation := ScopedValidationResult{LedgerIDs: forged.FixFindingIDs, FixCausedFindings: []Finding{}, FollowUps: []FollowUp{},
+		OriginalCriteria: ValidationCheck{EvidenceHash: hash("2"), FixDeltaHash: fixHash, Passed: true}, CorrectionRegression: ValidationCheck{EvidenceHash: hash("3"), FixDeltaHash: fixHash, Passed: true}}
+	if err := forged.CompleteCorrection(fix, 1, bindTargetedValidationForTest(validation, fix)); err != nil {
+		t.Fatal(err)
+	}
+	forged.State, forged.ActualCorrectionLines, forged.OriginalCriteria, forged.CorrectionRegression = StateEscalated, nil, nil, nil
+	forged.FixDeltaHash = EmptyFixDeltaHash
+	const want = "completed compact correction requires in-budget forecast and actual size"
+	if err := forged.Validate(); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("one-attempt cleared escalation validation = %v, want %q", err, want)
+	}
+	forgedRecord, _, _ := makeCompactRecord(forged)
+	forgedTransport := CompactTransport{Schema: CompactTransportSchema, Record: forgedRecord}
+	forgedTransport.BundleDigest = compactTransportDigest(forgedTransport)
+	gitSnapshot(t, forgedRepo, "commit", "-am", "forged correction delivery")
+	if _, err := ImportCompactTransport(context.Background(), forgedRepo, forgedTransport); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("one-attempt cleared escalation import = %v, want %q", err, want)
+	}
+
+	historicalRepo := initSnapshotRepo(t)
+	historical, next := pendingCompactCorrection(t, historicalRepo, "historical-cleared-escalation")
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			writeSnapshotFile(t, historicalRepo, "tracked.txt", strings.Repeat("historical correction\n", attempt+1))
+			next, _ = (SnapshotBuilder{Repo: historicalRepo}).Build(context.Background(), Target{Kind: TargetFixDiff, BaseRef: historical.CurrentSnapshot.CandidateTree, IntendedUntracked: historical.InitialSnapshot.IntendedUntracked, LedgerIDs: historical.FixFindingIDs})
+		}
+		fixDelta := FixDeltaHashForSnapshot(next)
+		historical.CorrectionAttempts = append(historical.CorrectionAttempts, CompactCorrectionAttempt{Snapshot: next, ProposedLines: 1, FixDeltaHash: fixDelta,
+			OriginalCriteria: ValidationCheck{EvidenceHash: hash(string(rune('a' + attempt))), FixDeltaHash: fixDelta, Passed: true}, CorrectionRegression: ValidationCheck{EvidenceHash: hash(string(rune('d' + attempt))), FixDeltaHash: fixDelta}})
+		historical.CurrentSnapshot = next
+	}
+	historical.State, historical.ProposedCorrectionLines = StateEscalated, nil
+	if err := historical.Validate(); err != nil {
+		t.Fatalf("historical three-attempt cleared state: %v", err)
+	}
+	historicalRecord, _, _ := makeCompactRecord(historical)
+	historicalTransport := CompactTransport{Schema: CompactTransportSchema, Record: historicalRecord}
+	historicalTransport.BundleDigest = compactTransportDigest(historicalTransport)
+	gitSnapshot(t, historicalRepo, "commit", "-am", "historical correction delivery")
+	if _, err := ImportCompactTransport(context.Background(), historicalRepo, historicalTransport); err != nil {
+		t.Fatalf("import historical three-attempt cleared state: %v", err)
+	}
+}
+
 func TestCompactHistoricalFailedValidatorRecoveryPreservesPredecessor(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("legacy multi-attempt fixture uses a Git executable-bit transition")

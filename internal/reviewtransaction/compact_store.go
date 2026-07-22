@@ -405,7 +405,7 @@ func compactEscalatedRecoveryTargetChanged(previous, next Snapshot) bool {
 }
 
 func compactHistoricalFailedValidator(state CompactState) bool {
-	if state.State != StateCorrectionRequired || len(state.CorrectionAttempts) == 0 || state.ProposedCorrectionLines != nil || state.ActualCorrectionLines != nil ||
+	if state.State != StateCorrectionRequired || !state.CorrectionAttemptConsumed() || state.ActualCorrectionLines != nil ||
 		state.FixDeltaHash != EmptyFixDeltaHash || state.OriginalCriteria != nil || state.CorrectionRegression != nil {
 		return false
 	}
@@ -1322,7 +1322,7 @@ func validateCompactSuccessor(previousRevision string, previous, next CompactSta
 			return fmt.Errorf("%w: compact review completion changed correction or delivery state", ErrInvalidSuccessor)
 		}
 	case "review/begin-fix":
-		if len(previous.CorrectionAttempts) >= MaxCompactCorrectionAttempts {
+		if previous.CorrectionAttemptConsumed() {
 			return fmt.Errorf("%w: %w", ErrInvalidSuccessor, ErrCompactCorrectionConsumed)
 		}
 		if previous.State != StateCorrectionRequired || next.State != StateCorrectionRequired && next.State != StateEscalated || previous.ProposedCorrectionLines != nil || next.ProposedCorrectionLines == nil {
@@ -1335,7 +1335,7 @@ func validateCompactSuccessor(previousRevision string, previous, next CompactSta
 			return fmt.Errorf("%w: compact correction start changed unrelated state", ErrInvalidSuccessor)
 		}
 	case "review/complete-fix":
-		if len(previous.CorrectionAttempts) >= MaxCompactCorrectionAttempts {
+		if previous.CorrectionAttemptConsumed() {
 			return fmt.Errorf("%w: %w", ErrInvalidSuccessor, ErrCompactCorrectionConsumed)
 		}
 		if previous.State != StateCorrectionRequired || previous.ProposedCorrectionLines == nil || next.State != StateValidating && next.State != StateCorrectionRequired && next.State != StateEscalated || len(next.CorrectionAttempts) != len(previous.CorrectionAttempts)+1 {

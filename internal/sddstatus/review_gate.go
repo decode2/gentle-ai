@@ -191,7 +191,7 @@ func resolveBoundedRemediation(required bool, verify verifyResultEvaluation, tra
 		if remainingBudget <= 0 {
 			return RemediationState{Reason: "compact review authority has no correction budget remaining"}
 		}
-		if len(compact.CorrectionAttempts) >= reviewtransaction.MaxCompactCorrectionAttempts {
+		if compact.CorrectionAttemptConsumed() {
 			return RemediationState{Reason: "compact review authority has exhausted its correction attempts"}
 		}
 		state := RemediationState{

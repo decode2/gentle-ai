@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -172,6 +173,89 @@ func TestCorrectionNextTransitionAgreesBetweenFinalizeAndRestartStatus(t *testin
 			}
 		})
 	}
+}
+
+func TestConsumedHistoricalCorrectionRoutesToRecoveryOrStop(t *testing.T) {
+	forecast := 1
+	for _, proposed := range []*int{nil, &forecast} {
+		for _, changed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("forecasted=%t/changed=%t", proposed != nil, changed), func(t *testing.T) {
+				repo, lineage, store, before := historicalConsumedCorrectionRoutingFixture(t, proposed)
+				if changed {
+					writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(3), 0o644)
+				}
+				statusArgs := []string{"status", "--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", lineage}
+				var first, restarted bytes.Buffer
+				if err := RunReview(statusArgs, &first); err != nil {
+					t.Fatal(err)
+				}
+				var status ReviewTargetStatusResult
+				decodeStrictReviewJSON(t, first.Bytes(), &status)
+				wantAction, wantKind, wantReason := reviewtransaction.TargetStatusActionStop, reviewNextTransitionStop, "unchanged_or_unverified_authority"
+				if changed {
+					wantAction, wantKind, wantReason = reviewtransaction.TargetStatusActionRecover, reviewNextTransitionCollect, "recovery_authorization_required"
+				}
+				if status.Action != wantAction || status.ValidationRequest != nil || status.NextTransition == nil || status.NextTransition.Kind != wantKind || status.NextTransition.ReasonCode != wantReason {
+					t.Fatalf("historical status = action %q request %#v transition %#v", status.Action, status.ValidationRequest, status.NextTransition)
+				}
+				var directOutput bytes.Buffer
+				if err := RunReviewFacadeFinalize([]string{"--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", lineage}, &directOutput); err != nil {
+					t.Fatal(err)
+				}
+				var direct ReviewIntegrationFinalizeResult
+				decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, directOutput.Bytes()).Result, &direct)
+				if direct.ValidationRequest != nil || direct.NextTransition == nil || direct.NextTransition.Kind != reviewNextTransitionStop || direct.NextTransition.ReasonCode != "unchanged_or_unverified_authority" {
+					t.Fatalf("historical direct FINALIZE = request %#v transition %#v", direct.ValidationRequest, direct.NextTransition)
+				}
+				if err := RunReview(statusArgs, &restarted); err != nil || restarted.String() != first.String() {
+					t.Fatalf("restarted STATUS changed: %v\nfirst=%s\nrestarted=%s", err, first.String(), restarted.String())
+				}
+				after, _ := os.ReadFile(store.StatePath())
+				if !bytes.Equal(before, after) {
+					t.Fatal("routing mutated historical predecessor authority")
+				}
+			})
+		}
+	}
+}
+
+func historicalConsumedCorrectionRoutingFixture(t *testing.T, proposed *int) (string, string, reviewtransaction.CompactStore, []byte) {
+	t.Helper()
+	repo := initReviewCLIRepo(t)
+	writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(1), 0o644)
+	started := runNegotiatedReviewStart(t, repo, "historical-consumed-routing")
+	result := filepath.Join(t.TempDir(), "blocking-result.json")
+	writeReviewCLIJSON(t, result, facadeReviewerResult{Lens: started.SelectedLenses[0], Findings: []facadeFinding{{Location: "candidate.go:3", Severity: "CRITICAL", Claim: "candidate value is wrong", ProofRefs: []string{"candidate.go:3 changed hunk"}, EvidenceClass: reviewtransaction.EvidenceDeterministic, CausalDisposition: reviewtransaction.CausalIntroduced}}, Evidence: []string{"reviewed exact candidate"}})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result", result, "--correction-lines", "2"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(2), 0o644)
+	validation := filepath.Join(t.TempDir(), "validation.json")
+	writeReviewCLIJSON(t, validation, facadeValidationResult{OriginalCriteria: facadeValidationCheck{Evidence: []string{"acceptance still fails"}}, CorrectionRegression: facadeValidationCheck{Evidence: []string{"regression still fails"}}, FollowUps: []reviewtransaction.FollowUp{}})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--validation", validation}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
+	record, _ := store.Load()
+	record.State.State, record.State.ProposedCorrectionLines, record.State.ActualCorrectionLines = reviewtransaction.StateCorrectionRequired, proposed, nil
+	record.State.FixDeltaHash, record.State.OriginalCriteria, record.State.CorrectionRegression = reviewtransaction.EmptyFixDeltaHash, nil, nil
+	if err := record.State.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.Revision, _ = reviewtransaction.CompactRevisionForState(record.State)
+	record.Schema = "gentle-ai.review-state-record/v2"
+	payload, _ := json.MarshalIndent(record, "", "  ")
+	payload = append(payload, '\n')
+	if err := os.WriteFile(store.StatePath(), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(store.ReceiptPath())
+	_ = os.Remove(filepath.Join(store.Dir, "finalize-attempt-journal.json"))
+	return repo, started.LineageID, store, payload
+}
+
+func historicalRoutingCandidate(value int) string {
+	return fmt.Sprintf("package candidate\n\nfunc value() int { return %d }\nfunc spare1() int { return 0 }\nfunc spare2() int { return 0 }\nfunc spare3() int { return 0 }\n", value)
 }
 
 func TestNegotiatedRestartStatusSuppliesFrozenContextForEveryMissingReviewer(t *testing.T) {

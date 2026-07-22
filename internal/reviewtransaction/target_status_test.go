@@ -274,6 +274,25 @@ func TestHistoricalFailedValidatorRequiresChangedTargetRecovery(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("START/status migrated historical authority")
 	}
+
+	writeSnapshotFile(t, repo, "tracked.txt", "base\none\ntwo\nthree\nfixed\n")
+	forecast := 1
+	state.ProposedCorrectionLines = &forecast
+	record, before, _ = makeCompactRecord(state)
+	if err := os.WriteFile(store.StatePath(), before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	status, statusErr = AssessTargetStatus(context.Background(), repo, TargetStatusRequest{Target: target, LineageID: state.LineageID})
+	if statusErr != nil || status.Action != TargetStatusActionStop || status.Revision != record.Revision {
+		t.Fatalf("same-target forecasted historical status = %#v, %v", status, statusErr)
+	}
+	writeSnapshotFile(t, repo, "tracked.txt", "changed forecasted recovery target\n")
+	requested = newCompactTestState(t, repo, "historical-status-forecasted")
+	started, err = StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: requested})
+	status, statusErr = AssessTargetStatus(context.Background(), repo, TargetStatusRequest{Target: target, LineageID: state.LineageID})
+	if err != nil || statusErr != nil || started.Action != CompactStartRecover || status.Action != TargetStatusActionRecover || status.ActionDisposition != RecoveryEscalated {
+		t.Fatalf("changed forecasted historical recovery: START=%#v status=%#v errors=%v/%v", started, status, err, statusErr)
+	}
 }
 
 func TestCorrectionScopeExpansionGuidesStatusAndStartToRecovery(t *testing.T) {

@@ -50,6 +50,9 @@ func buildTargetedValidationRequest(ctx context.Context, repo string, state Comp
 	if err := state.Validate(); err != nil {
 		return TargetedValidationRequest{}, err
 	}
+	if state.State == StateCorrectionRequired && state.CorrectionAttemptConsumed() {
+		return TargetedValidationRequest{}, ErrCompactCorrectionConsumed
+	}
 	wantRevision, err := CompactRevisionForState(state)
 	if err != nil || revision != wantRevision {
 		return TargetedValidationRequest{}, errors.New("targeted validation request requires the exact compact authority revision")

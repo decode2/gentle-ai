@@ -340,7 +340,7 @@ func targetStatusForCandidate(result TargetStatusResult, candidate targetStatusC
 			result.ActionDisposition = candidate.recoveryDisposition
 			return result
 		}
-		if state.State == StateEscalated || compactHistoricalFailedValidator(state) {
+		if state.State == StateEscalated || state.State == StateCorrectionRequired && state.CorrectionAttemptConsumed() {
 			result.Action, result.Replayability = TargetStatusActionStop, ReplayabilityManualActionRequired
 			return result
 		}
