@@ -10,7 +10,6 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -25,10 +24,6 @@ builds:
 archives:
   - formats:
       - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
@@ -39,6 +34,7 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+  algorithm: sha256
 
 # Sign only the checksum manifest. The signed trusted comment binds the exact
 # repository and tag; the updater rejects a valid signature copied from any
@@ -80,14 +76,3 @@ brews:
     description: "Gentle-AI — Ecosystem, Frameworks, Workflows for AI coding agents."
     license: "MIT"
     commit_msg_template: "chore: update gentle-ai formula to {{ .Tag }}"
-
-scoops:
-  - repository:
-      owner: Gentleman-Programming
-      name: scoop-bucket
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    name: gentle-ai
-    homepage: "https://github.com/Gentleman-Programming/gentle-ai"
-    description: "Gentle-AI — Ecosystem, Frameworks, Workflows for AI coding agents."
-    license: MIT
-    commit_msg_template: "chore: update gentle-ai to {{ .Tag }}"

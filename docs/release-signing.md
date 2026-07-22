@@ -70,6 +70,28 @@ If a key may be compromised, stop releases. Do not silently replace a trust anch
 
 ## Release gates
 
+### Windows distribution restoration gate
+
+Windows source compatibility, CI, and runtime tests remain supported. Official
+Windows executable/archive assets and Scoop publication are temporarily omitted;
+the PowerShell source installer and built-in upgrader fail closed to `go install`
+guidance instead of downloading an unsigned executable or executing a remote
+update script.
+
+Restore Windows distribution only after all of these conditions are enforced:
+
+1. Provision publicly trusted RSA Authenticode signing, preferably managed OIDC
+   with Azure Artifact Signing; self-signed or mock credentials are not acceptable.
+2. Sign both amd64 and arm64 executables before archive and checksum generation.
+3. Add pre-publication and remote-release verification that fails if either
+   executable is unsigned or its signature is not publicly trusted.
+4. Restore the Windows GoReleaser targets and Scoop publisher together, with
+   regression coverage proving no unsigned artifact can be emitted.
+
+Until then, `scripts/verify-release-distribution-policy.sh` blocks any Windows or
+Scoop entry in `.goreleaser.yaml`, and the exact remote asset check accepts only
+the four macOS/Linux archives plus the signed checksum manifest.
+
 The tag workflow fails unless all of these hold:
 
 - the event is an annotated exact `vMAJOR.MINOR.PATCH` tag;
@@ -77,5 +99,6 @@ The tag workflow fails unless all of these hold:
 - the worktree and module graph remain immutable (`go mod tidy -diff`);
 - tests, vet, and format checks pass under read-only token permissions;
 - the protected signing key matches a non-test injected trust anchor;
+- the Windows/Scoop omission policy passes before any publication;
 - GoReleaser signs the full `${artifact}` path with the exact trusted comment;
 - the published GitHub asset set is exact, the remote signature is valid, and every remote checksum verifies.

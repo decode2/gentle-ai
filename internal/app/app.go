@@ -432,7 +432,7 @@ func runUpdate(ctx context.Context, currentVersion string, profile system.Platfo
 //   - Snapshots agent config paths before execution (config preservation by design)
 //   - Executes binary-only upgrades; does NOT invoke install or sync pipelines
 //   - Skips gentle-ai itself when running as a dev build (version="dev")
-//   - Falls back to manual guidance for unsafe platforms (Windows binary self-replace)
+//   - Falls back to source-install guidance where official binaries are unavailable
 func runUpgrade(ctx context.Context, args []string, detection system.DetectionResult, stdout io.Writer) error {
 	dryRun := false
 	noBackup := false
