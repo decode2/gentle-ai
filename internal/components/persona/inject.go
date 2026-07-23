@@ -568,7 +568,7 @@ func mergeJSONFileToleratingMalformed(path string, overlay []byte) (filemerge.Wr
 	if err == nil {
 		return result, nil
 	}
-	if strings.Contains(err.Error(), "invalid character") || strings.Contains(err.Error(), "unexpected end of JSON") {
+	if strings.Contains(err.Error(), "invalid character") || strings.Contains(err.Error(), "unexpected end of JSON") || strings.Contains(err.Error(), "unexpected EOF") {
 		return filemerge.WriteResult{}, nil
 	}
 	return filemerge.WriteResult{}, err
