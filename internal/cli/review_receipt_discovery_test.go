@@ -179,6 +179,94 @@ func TestUnqualifiedGateDiscoveryReturnsTypedMissingAndScopeChanged(t *testing.T
 	})
 }
 
+func TestUnqualifiedPrePushDiscoveryReportsTargetResolutionWithoutMutation(t *testing.T) {
+	repo := initReviewCLIRepo(t)
+	_, store := approveDiscoveryMarkdown(t, repo, "review-discovery-missing-upstream", "docs/reviewed.md", "reviewed\n")
+	runReviewCLIGit(t, repo, "add", "-A")
+	runReviewCLIGit(t, repo, "commit", "-qm", "deliver reviewed target")
+	stateBefore, err := os.ReadFile(store.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptBefore, err := os.ReadFile(store.ReceiptPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var first bytes.Buffer
+	runErr := RunReview([]string{
+		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
+		"--gate", string(reviewtransaction.GatePrePush),
+	}, &first)
+	if runErr == nil {
+		t.Fatal("missing-upstream pre-push validation succeeded")
+	}
+	failure := decodeReviewIntegrationFailure(t, first.Bytes())
+	if failure.Phase != "pre_native" || failure.Code != "target_resolution_failed" ||
+		failure.MutationOutcome != ReviewMutationNotStarted || failure.AuthorityApplicability != "not_evaluated" ||
+		!failure.RetrySafe || failure.Replayability != reviewtransaction.ReplayabilityNotReplayable ||
+		!reflect.DeepEqual(failure.RequiredInputs, []string{"base_ref"}) || failure.NextAction != "correct_request" ||
+		!strings.Contains(failure.Message, "--base-ref") {
+		t.Fatalf("target-resolution failure = %#v", failure)
+	}
+	var targetErr *reviewtransaction.GateTargetResolutionError
+	if !errors.As(runErr, &targetErr) {
+		t.Fatalf("target-resolution cause = %T %v", runErr, runErr)
+	}
+
+	var second bytes.Buffer
+	if err := RunReview([]string{
+		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
+		"--gate", string(reviewtransaction.GatePrePush),
+	}, &second); err == nil || !bytes.Equal(first.Bytes(), second.Bytes()) {
+		t.Fatalf("repeated target-resolution failure changed: %v\nfirst=%s\nsecond=%s", err, first.String(), second.String())
+	}
+	stateAfter, stateErr := os.ReadFile(store.StatePath())
+	receiptAfter, receiptErr := os.ReadFile(store.ReceiptPath())
+	if stateErr != nil || receiptErr != nil || !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(receiptBefore, receiptAfter) {
+		t.Fatalf("target resolution mutated authority: state=%v receipt=%v", stateErr, receiptErr)
+	}
+
+	var raw bytes.Buffer
+	rawErr := RunReviewFacadeValidate([]string{"--cwd", repo, "--gate", string(reviewtransaction.GatePrePush)}, &raw)
+	var evaluation ReviewValidateResult
+	decodeStrictReviewJSON(t, raw.Bytes(), &evaluation)
+	if rawErr == nil || evaluation.Result != reviewtransaction.GateInvalidated || evaluation.Context.Denial == nil ||
+		evaluation.Context.Denial.Stage != "target-resolution" || evaluation.Context.Denial.Code != "target_resolution_failed" ||
+		!errors.As(rawErr, &targetErr) {
+		t.Fatalf("non-negotiated target resolution = %#v, %T %v", evaluation, rawErr, rawErr)
+	}
+}
+
+func TestUnqualifiedPrePushDiscoveryKeepsCorruptAuthorityPrecedence(t *testing.T) {
+	repo := initReviewCLIRepo(t)
+	approveDiscoveryMarkdown(t, repo, "review-discovery-target-and-corruption", "docs/reviewed.md", "reviewed\n")
+	runReviewCLIGit(t, repo, "add", "-A")
+	runReviewCLIGit(t, repo, "commit", "-qm", "deliver reviewed target")
+	commonDir := filepath.Clean(strings.TrimSpace(runReviewCLIGit(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")))
+	broken := filepath.Join(commonDir, "gentle-ai", "review-transactions", "v2", "corrupt-target-candidate")
+	if err := os.MkdirAll(broken, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, "review-state.json"), []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	runErr := RunReview([]string{
+		"validate", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
+		"--gate", string(reviewtransaction.GatePrePush),
+	}, &output)
+	if runErr == nil {
+		t.Fatal("corrupt authority with missing upstream validated")
+	}
+	failure := decodeReviewIntegrationFailure(t, output.Bytes())
+	var targetErr *reviewtransaction.GateTargetResolutionError
+	if failure.Code != "authority_corrupted" || failure.AuthorityApplicability != "corrupted" || errors.As(runErr, &targetErr) {
+		t.Fatalf("corrupt-authority precedence = %#v, %T %v", failure, runErr, runErr)
+	}
+}
+
 func TestUnqualifiedGateDiscoveryRoutesCommittedNextSliceWorkspace(t *testing.T) {
 	// #1401: after one approved slice is committed exactly as reviewed, new
 	// dirty tracked work on top must classify as unrelated or scope-changed,

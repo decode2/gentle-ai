@@ -483,6 +483,19 @@ func newReviewIntegrationFailure(operation string, args []string, runErr error) 
 		}
 		return failure
 	}
+	var targetResolution *reviewtransaction.GateTargetResolutionError
+	if errors.As(runErr, &targetResolution) {
+		failure.Phase = "pre_native"
+		failure.Code = "target_resolution_failed"
+		failure.Message = "The pre-push target cannot be resolved; configure an upstream or pass --base-ref <remote>/<branch>."
+		failure.MutationOutcome = ReviewMutationNotStarted
+		failure.AuthorityApplicability = "not_evaluated"
+		failure.RetrySafe = true
+		failure.Replayability = reviewtransaction.ReplayabilityNotReplayable
+		failure.RequiredInputs = []string{"base_ref"}
+		failure.NextAction = "correct_request"
+		return failure
+	}
 	var denied ReviewGateDeniedError
 	if errors.As(runErr, &denied) {
 		failure.Phase = "preflight"
@@ -864,7 +877,7 @@ func validOptionalReviewSHA256(value string) bool {
 
 func supportedReviewIntegrationFailureInput(input string) bool {
 	switch input {
-	case "lineage_id", "change", "expected_binding_revision", "predecessor_lineage_id", "expected_predecessor_revision", "successor_lineage_id", "disposition", "reason", "actor", "incident", "maintainer_authorization":
+	case "lineage_id", "change", "expected_binding_revision", "predecessor_lineage_id", "expected_predecessor_revision", "successor_lineage_id", "disposition", "reason", "actor", "incident", "maintainer_authorization", "base_ref":
 		return true
 	default:
 		return false

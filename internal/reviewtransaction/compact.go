@@ -243,7 +243,7 @@ func NewCompactState(start Start) (CompactState, error) {
 	if start.Generation < 1 {
 		return CompactState{}, errors.New("generation must be positive")
 	}
-	if err := validateSnapshot(start.Snapshot); err != nil {
+	if err := validateCompactSnapshot(start.Snapshot); err != nil {
 		return CompactState{}, err
 	}
 	if !validSHA256(start.PolicyHash) {
@@ -333,10 +333,10 @@ func (state CompactState) Validate() error {
 		}
 		return errors.New("approved compact invalidation evidence does not bind its predecessor revision")
 	}
-	if err := validateSnapshot(state.InitialSnapshot); err != nil {
+	if err := validateCompactSnapshot(state.InitialSnapshot); err != nil {
 		return fmt.Errorf("initial snapshot: %w", err)
 	}
-	if err := validateSnapshot(state.CurrentSnapshot); err != nil {
+	if err := validateCompactSnapshot(state.CurrentSnapshot); err != nil {
 		return fmt.Errorf("current snapshot: %w", err)
 	}
 	if err := validateCompactSnapshotMetadata(state.InitialSnapshot); err != nil {
@@ -735,7 +735,7 @@ func validateCompactRecoveredCorrection(state CompactState, evidence CompactReco
 		!attempt.OriginalCriteria.Passed || !attempt.CorrectionRegression.Passed {
 		return errors.New("recovered correction does not match the accounting-only source attempt")
 	}
-	if err := validateSnapshot(attempt.Snapshot); err != nil {
+	if err := validateCompactSnapshot(attempt.Snapshot); err != nil {
 		return fmt.Errorf("recovered correction snapshot: %w", err)
 	}
 	if err := validateCompactSnapshotMetadata(attempt.Snapshot); err != nil {

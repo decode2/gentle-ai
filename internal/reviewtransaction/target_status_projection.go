@@ -1,6 +1,7 @@
 package reviewtransaction
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -163,6 +164,7 @@ func loadStableCompactTargetStatusCandidate(ctx context.Context, store CompactSt
 		return targetStatusCandidate{
 			version: AuthorityVersionCompact, lineage: observed.State.LineageID, compact: &copy,
 			receiptIdentity: second.receipt.artifact.identity, receiptPublished: second.receipt.published,
+			receiptCanonical:  bytes.Equal(second.receipt.artifact.content, second.receipt.artifact.canonical),
 			receiptReplayable: second.receipt.replayable, pendingFinalize: second.journal.pending,
 		}, nil
 	}

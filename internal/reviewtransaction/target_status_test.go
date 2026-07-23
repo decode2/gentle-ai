@@ -633,6 +633,26 @@ func TestAssessTargetStatusMatchesCorrectedLegacyDelivery(t *testing.T) {
 	}
 }
 
+func TestAssessTargetStatusReportsAmbiguousApprovedStagedScopeExpansion(t *testing.T) {
+	repo, base, predecessor, _, _ := approvedBaseDiffScopeRecoveryFixture(t, "staged-status-first")
+	peer := predecessor
+	peer.LineageID = "staged-status-second"
+	writeTerminalTargetStatusAuthority(t, repo, peer)
+	stageStagedScopeExtra(t, repo)
+
+	got, err := AssessTargetStatus(context.Background(), repo, TargetStatusRequest{Target: Target{
+		Kind: TargetBaseWorkspaceOverlay, Projection: ProjectionStaged,
+		BaseRef: base, IntendedUntracked: []string{},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Applicability != TargetApplicabilityAmbiguous || got.Action != TargetStatusActionSelectLineage ||
+		!equalStrings(got.CandidateLineageIDs, []string{"staged-status-first", "staged-status-second"}) {
+		t.Fatalf("ambiguous staged scope status = %#v", got)
+	}
+}
+
 func TestAssessTargetStatusFailsClosedForMixedSameLineageAuthority(t *testing.T) {
 	requireSnapshotGit(t)
 	repo := initSnapshotRepo(t)

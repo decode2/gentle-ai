@@ -210,13 +210,38 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 	if predecessor.Revision != request.ExpectedPredecessorRevision {
 		return CompactRecord{}, fmt.Errorf("%w: expected predecessor revision %q, current %q", ErrConcurrentUpdate, request.ExpectedPredecessorRevision, predecessor.Revision)
 	}
+	stagedScopeRecovery := request.Disposition == RecoveryScopeChanged &&
+		compactApprovedStagedScopeRecoveryShape(predecessor.State, request.Successor.InitialSnapshot)
+	var predecessorReceipt compactTargetReceiptObservation
+	if stagedScopeRecovery {
+		if request.MaintainerAuthorization != compactApprovedStagedScopeRecoveryAuthorizationBinding(
+			request.PredecessorLineageID, predecessor.Revision, request.Successor.InitialSnapshot.Identity,
+			request.Successor.LineageID, request.Actor, request.Reason,
+		) {
+			return CompactRecord{}, errors.New("approved staged scope recovery requires an exact successor-bound maintainer authorization")
+		}
+		predecessorReceipt, err = inspectCompactTargetReceipt(predecessorStore, predecessor.State)
+		if err != nil || !predecessorReceipt.published ||
+			!bytes.Equal(predecessorReceipt.artifact.content, predecessorReceipt.artifact.canonical) {
+			return CompactRecord{}, errors.New("approved staged scope recovery requires a canonical published predecessor receipt")
+		}
+		eligible, eligibilityErr := compactApprovedStagedScopeRecovery(ctx, successorStore.repo, predecessor.State, request.Successor.InitialSnapshot)
+		if eligibilityErr != nil {
+			return CompactRecord{}, eligibilityErr
+		}
+		if !eligible {
+			return CompactRecord{}, errors.New("approved staged scope recovery is not a complete same-base index expansion")
+		}
+	}
 	if predecessor.State.State == StateCorrectionRequired && request.Disposition != RecoveryEscalated && request.MaintainerAuthorization != compactRecoveryAuthorizationBinding(request.PredecessorLineageID, predecessor.Revision, request.Successor.InitialSnapshot.Identity, request.Actor, request.Reason) {
 		return CompactRecord{}, errors.New("correction-required scope recovery requires an exact maintainer authorization binding")
 	}
-	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, request.Successor.InitialSnapshot.Projection) && request.Disposition != RecoveryEscalated {
+	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, request.Successor.InitialSnapshot.Projection) &&
+		request.Disposition != RecoveryEscalated && !stagedScopeRecovery {
 		return CompactRecord{}, errors.New("recovery successor must retain the predecessor projection")
 	}
 	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, request.Successor.InitialSnapshot.Projection) &&
+		!stagedScopeRecovery &&
 		request.MaintainerAuthorization != compactRecoveryAuthorizationBinding(request.PredecessorLineageID, predecessor.Revision, request.Successor.InitialSnapshot.Identity, request.Actor, request.Reason) {
 		return CompactRecord{}, compactRecoveryAuthorizationError(request.Successor.InitialSnapshot)
 	}
@@ -284,13 +309,21 @@ func RecoverCompactAuthority(ctx context.Context, repo string, request CompactRe
 			return CompactRecord{}, fmt.Errorf("%w: live release scope no longer matches successor", ErrInvalidSuccessor)
 		}
 	}
-	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, request.Successor.InitialSnapshot.Projection) {
+	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, request.Successor.InitialSnapshot.Projection) ||
+		request.Successor.InitialSnapshot.Kind == TargetBaseWorkspaceOverlay && request.Successor.InitialSnapshot.Projection == ProjectionStaged {
 		if err := validateLiveRecoverySuccessor(ctx, successorStore.repo, request.Successor.InitialSnapshot); err != nil {
 			return CompactRecord{}, fmt.Errorf("%w: repository evidence for selected recovery projection changed: %v", ErrInvalidSuccessor, err)
 		}
 	}
 	if err := validateCompactRepositoryEvidence(ctx, successorStore.repo, nil, request.Successor, "review/start"); err != nil {
 		return CompactRecord{}, fmt.Errorf("%w: %v", ErrInvalidSuccessor, err)
+	}
+	if stagedScopeRecovery {
+		currentReceipt, receiptErr := inspectCompactTargetReceipt(predecessorStore, predecessor.State)
+		if receiptErr != nil || currentReceipt.published != predecessorReceipt.published ||
+			!compactTargetArtifactObservationsEqual(currentReceipt.artifact, predecessorReceipt.artifact) {
+			return CompactRecord{}, fmt.Errorf("%w: predecessor receipt changed during staged scope recovery", ErrConcurrentUpdate)
+		}
 	}
 	record, payload, err := makeCompactRecord(request.Successor)
 	if err != nil {
@@ -310,7 +343,7 @@ func validateLiveRecoverySuccessor(ctx context.Context, repo string, expected Sn
 	if expected.Kind == TargetBaseDiff || expected.Kind == TargetBaseWorkspaceOverlay || expected.Kind == TargetFixDiff {
 		target.BaseRef = expected.BaseTree
 	}
-	live, err := (SnapshotBuilder{Repo: repo}).Build(ctx, target)
+	live, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -323,6 +356,38 @@ func validateLiveRecoverySuccessor(ctx context.Context, repo string, expected Sn
 func compactRecoveryScopeChanged(previous, next Snapshot) bool {
 	relation := classifyCompactTargetRelation(previous, next, previous.Paths, compactTargetRelationEvidence{ExplicitScopeChange: true})
 	return relation.Kind != compactTargetSame && relation.Kind != compactTargetUnsafe
+}
+
+func compactApprovedStagedScopeRecoveryShape(predecessor CompactState, next Snapshot) bool {
+	initial := predecessor.InitialSnapshot
+	initialProjection := initial.Projection
+	if initialProjection == "" {
+		initialProjection = ProjectionWorkspace
+	}
+	return predecessor.State == StateApproved && initial.Kind == TargetBaseDiff &&
+		initialProjection == ProjectionWorkspace && next.Kind == TargetBaseWorkspaceOverlay &&
+		next.Projection == ProjectionStaged && next.BaseTree == initial.BaseTree &&
+		len(initial.IntendedUntracked) == 0 && len(initial.LedgerIDs) == 0 &&
+		len(next.IntendedUntracked) == 0 && len(next.LedgerIDs) == 0 &&
+		len(predecessor.GenesisPaths) > 0 && len(next.Paths) > len(predecessor.GenesisPaths) &&
+		pathsAreSubset(predecessor.GenesisPaths, next.Paths) == nil &&
+		next.CandidateTree != predecessor.CurrentSnapshot.CandidateTree
+}
+
+func compactApprovedStagedScopeRecovery(ctx context.Context, repo string, predecessor CompactState, next Snapshot) (bool, error) {
+	if !compactApprovedStagedScopeRecoveryShape(predecessor, next) {
+		return false, nil
+	}
+	committed, err := (SnapshotBuilder{Repo: repo}).Build(ctx, Target{
+		Kind: TargetBaseDiff, Projection: ProjectionStaged,
+		BaseRef: predecessor.InitialSnapshot.BaseTree, IntendedUntracked: []string{},
+	})
+	if err != nil {
+		return false, err
+	}
+	return committed.CandidateTree == predecessor.CurrentSnapshot.CandidateTree &&
+		pathsAreSubset(predecessor.GenesisPaths, committed.Paths) == nil &&
+		len(next.Paths) > len(committed.Paths) && pathsAreSubset(committed.Paths, next.Paths) == nil, nil
 }
 
 func compactReleaseScopeRecovery(predecessor CompactState, next Snapshot) bool {
@@ -347,7 +412,10 @@ func validateCompactRecoveryEdge(predecessor CompactRecord, successor CompactSta
 	if successor.Generation != predecessor.State.Generation+1 {
 		return errors.New("recovery successor generation must follow predecessor")
 	}
-	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, successor.InitialSnapshot.Projection) && recovery.Disposition != RecoveryEscalated {
+	stagedScopeRecovery := recovery.Disposition == RecoveryScopeChanged &&
+		compactApprovedStagedScopeRecoveryShape(predecessor.State, successor.InitialSnapshot)
+	if !sameRecoveryProjection(predecessor.State.InitialSnapshot.Projection, successor.InitialSnapshot.Projection) &&
+		recovery.Disposition != RecoveryEscalated && !stagedScopeRecovery {
 		return errors.New("recovery successor must retain the predecessor projection")
 	}
 	switch recovery.Disposition {
@@ -356,6 +424,15 @@ func validateCompactRecoveryEdge(predecessor CompactRecord, successor CompactSta
 		case StateApproved:
 			previous, next := predecessor.State.CurrentSnapshot, successor.InitialSnapshot
 			releaseScope := recovery.MaintainerAuthorization == ReleaseScopeRecoveryAuthorization
+			if stagedScopeRecovery {
+				if recovery.MaintainerAuthorization != compactApprovedStagedScopeRecoveryAuthorizationBinding(
+					predecessor.State.LineageID, predecessor.Revision, next.Identity,
+					successor.LineageID, recovery.Actor, recovery.Reason,
+				) {
+					return errors.New("approved staged scope recovery authorization is not successor-bound")
+				}
+				break
+			}
 			if releaseScope && !compactReleaseScopeRecovery(predecessor.State, next) {
 				return errors.New("approved recovery target-kind transition is not a complete release scope expansion")
 			}
@@ -422,6 +499,13 @@ func compactRecoveryAuthorizationBinding(lineage, revision, targetIdentity, acto
 	return compactRecoveryAuthorizationSchema + "\npredecessor_lineage=" + lineage +
 		"\npredecessor_revision=" + revision + "\ntarget_identity=" + targetIdentity +
 		"\nactor=" + strings.TrimSpace(actor) + "\nreason=" + strings.TrimSpace(reason)
+}
+
+func compactApprovedStagedScopeRecoveryAuthorizationBinding(lineage, revision, targetIdentity, successor, actor, reason string) string {
+	return compactRecoveryAuthorizationSchema + "\npredecessor_lineage=" + lineage +
+		"\npredecessor_revision=" + revision + "\ntarget_identity=" + targetIdentity +
+		"\nsuccessor_lineage=" + successor + "\nactor=" + strings.TrimSpace(actor) +
+		"\nreason=" + strings.TrimSpace(reason)
 }
 
 func sameRecoveryProjection(left, right Projection) bool {
@@ -629,6 +713,9 @@ func onlyUnpublishedCompactCrashResidue(entries []os.DirEntry, readErr error) bo
 func StartCompactAuthority(ctx context.Context, repo string, request CompactStartRequest) (CompactStartResult, error) {
 	if err := request.State.Validate(); err != nil {
 		return CompactStartResult{}, fmt.Errorf("validate compact start: %w", err)
+	}
+	if request.State.InitialSnapshot.Kind == TargetBaseWorkspaceOverlay && request.State.InitialSnapshot.Projection == ProjectionStaged {
+		return CompactStartResult{}, errors.New("staged workspace-overlay authority requires approved recovery")
 	}
 	requestedStore, err := CompactAuthoritativeStore(ctx, repo, request.State.LineageID)
 	if err != nil {
@@ -1255,6 +1342,9 @@ func (store CompactStore) replaceContextGuarded(ctx context.Context, expectedRev
 		if operation != "review/start" || next.State != StateReviewing {
 			return "", fmt.Errorf("%w: compact authority must start in reviewing state", ErrInvalidSuccessor)
 		}
+		if next.InitialSnapshot.Kind == TargetBaseWorkspaceOverlay && next.InitialSnapshot.Projection == ProjectionStaged {
+			return "", fmt.Errorf("%w: staged workspace-overlay authority requires an approved recovery predecessor", ErrInvalidSuccessor)
+		}
 	} else if err := validateCompactSuccessor(current.Revision, current.State, next, operation); err != nil {
 		return "", err
 	}
@@ -1757,6 +1847,9 @@ func ImportCompactTransport(ctx context.Context, repo string, transport CompactT
 	validated, err := ParseCompactTransport(payload)
 	if err != nil {
 		return CompactRecord{}, err
+	}
+	if validated.Record.State.InitialSnapshot.Kind == TargetBaseWorkspaceOverlay && validated.Record.State.InitialSnapshot.Projection == ProjectionStaged {
+		return CompactRecord{}, errors.New("staged workspace-overlay authority cannot be imported")
 	}
 	store, err := CompactAuthoritativeStore(ctx, repo, validated.Record.State.LineageID)
 	if err != nil {

@@ -119,6 +119,7 @@
       "properties": {
         "operation": { "enum": ["review.start", "review.finalize", "review.recover", "review.repair", "review.validate"] },
         "arguments": { "type": "array", "items": { "$ref": "#/$defs/transition_argument" } },
+        "selector_arguments": { "type": "array", "items": { "$ref": "#/$defs/transition_argument" } },
         "preconditions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/transition_argument" } },
         "binding": { "$ref": "#/$defs/transition_binding" },
         "artifacts": { "type": "array", "items": { "$ref": "#/$defs/transition_artifact" } }

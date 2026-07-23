@@ -542,44 +542,11 @@ func authorityChangedSinceReport(report, revision string) bool {
 }
 
 func authorityFailureFields(report string) (map[string]string, bool) {
-	const emptyOutputHash = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-	lines, end, reason := parseLeadingEnvelope(report)
-	if reason != "" {
+	parsed, reason := parseVerifyReport(report)
+	if reason != "" || !parsed.AuthorityOnly {
 		return nil, false
 	}
-	allowed := map[string]bool{
-		"schema": true, "evidence_revision": true, "verdict": true, "blockers": true, "critical_findings": true,
-		"requirements": true, "scenarios": true, "test_command": true, "test_exit_code": true, "test_output_hash": true,
-		"build_command": true, "build_exit_code": true, "build_output_hash": true, "authority_only_failure": true,
-		"missing_review_authority": true, "substantive_failure": true, "command_failed": true, "observed_authority_revision": true,
-	}
-	fields, reason := parseScalarFields(lines[1:end], allowed, "authority failure")
-	if reason != "" || len(fields) != len(allowed) || fields["schema"] != VerifyResultSchema || fields["verdict"] != "fail" {
-		return nil, false
-	}
-	for _, field := range []string{"evidence_revision", "test_output_hash", "build_output_hash", "observed_authority_revision"} {
-		if !sha256IdentityPattern.MatchString(fields[field]) {
-			return nil, false
-		}
-	}
-	if fields["test_output_hash"] != emptyOutputHash || fields["build_output_hash"] != emptyOutputHash {
-		return nil, false
-	}
-	testExit, testOK := parseNonnegativeInt(fields["test_exit_code"])
-	buildExit, buildOK := parseNonnegativeInt(fields["build_exit_code"])
-	blockers, blockersOK := parseNonnegativeInt(fields["blockers"])
-	critical, criticalOK := parseNonnegativeInt(fields["critical_findings"])
-	if !testOK || !buildOK || !blockersOK || !criticalOK || blockers == 0 || critical == 0 || testExit != 125 || buildExit != 125 {
-		return nil, false
-	}
-	if _, ok := parseVerifyCompletion(fields["requirements"]); !ok {
-		return nil, false
-	}
-	if _, ok := parseVerifyCompletion(fields["scenarios"]); !ok || !isConcreteEvidence(fields["test_command"]) || !isConcreteEvidence(fields["build_command"]) {
-		return nil, false
-	}
-	return fields, true
+	return parsed.Fields, true
 }
 
 func resolveEngramStatus(workspaceRoot string, requestedChange string, includeInstructions bool) (Status, bool, error) {

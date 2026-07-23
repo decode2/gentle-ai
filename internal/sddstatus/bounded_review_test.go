@@ -1085,6 +1085,31 @@ func TestResolveRemediationIsBoundToBudgetAndFailedEvidenceRevision(t *testing.T
 	}
 }
 
+func TestResolveMalformedFailedEvidenceKeepsMatchingRevisionBound(t *testing.T) {
+	root := t.TempDir()
+	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Done\n")
+	revision := shaID("d")
+	report := strings.Replace(boundedVerifyEnvelope(revision, "fail"), "blockers: 0", "blockers: 1", 1)
+	report = strings.Replace(report, "test_output_hash: "+shaID("2"), "test_output_hash: sha256:invalid", 1)
+	admission := ValidateVerifyReportAdmission(report, SpecCounts{Requirements: 1, Scenarios: 1})
+	if admission.Valid || !strings.Contains(admission.Reason, "invalid test_output_hash") {
+		t.Fatalf("admission = %#v, want denied malformed hash", admission)
+	}
+	write(t, filepath.Join(changeRoot, "verify-report.md"), report)
+	writeJSON(t, filepath.Join(changeRoot, "reviews", "transaction.json"), remediationTransaction(t, revision, false))
+
+	status, err := Resolve(ResolveOptions{CWD: root, ChangeName: "thin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.NextRecommended != "remediate" || !status.RemediationState.Required || status.RemediationState.FailedEvidenceRevision != revision {
+		t.Fatalf("next=%q remediation=%#v, want matching bounded remediation", status.NextRecommended, status.RemediationState)
+	}
+	if status.Dependencies.Archive != DependencyBlocked {
+		t.Fatalf("archive=%q, malformed report must not become archive-ready", status.Dependencies.Archive)
+	}
+}
+
 func seedBoundedReadyChange(t *testing.T, root string) string {
 	t.Helper()
 	changeRoot := seedReadyChange(t, root, "thin", "- [x] 1.1 Work\n")

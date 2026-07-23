@@ -312,7 +312,7 @@ func buildLiveFinalVerificationSnapshot(ctx context.Context, repo string, expect
 	default:
 		return Snapshot{}, fmt.Errorf("unsupported live final-verification target kind %q", expected.Kind)
 	}
-	live, err := (SnapshotBuilder{Repo: repo}).Build(ctx, target)
+	live, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return Snapshot{}, err
 	}

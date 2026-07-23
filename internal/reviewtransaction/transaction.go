@@ -1228,12 +1228,21 @@ func (transaction *Transaction) escalateBudget(name string) error {
 }
 
 func validateSnapshot(snapshot Snapshot) error {
+	return validateSnapshotKinds(snapshot, false)
+}
+
+func validateCompactSnapshot(snapshot Snapshot) error {
+	return validateSnapshotKinds(snapshot, true)
+}
+
+func validateSnapshotKinds(snapshot Snapshot, allowStagedOverlay bool) error {
 	projection, err := canonicalProjection(snapshot.Projection)
 	if err != nil || projection != snapshot.Projection {
 		return errors.New("snapshot projection is unsupported or non-canonical")
 	}
-	if projection == ProjectionStaged && snapshot.Kind != TargetCurrentChanges && snapshot.Kind != TargetBaseDiff && snapshot.Kind != TargetFixDiff {
-		return errors.New("staged snapshot projection requires current-changes, base-diff, or fix-diff")
+	if projection == ProjectionStaged && snapshot.Kind != TargetCurrentChanges && snapshot.Kind != TargetBaseDiff &&
+		snapshot.Kind != TargetFixDiff && (!allowStagedOverlay || snapshot.Kind != TargetBaseWorkspaceOverlay) {
+		return errors.New("staged snapshot projection kind is unsupported")
 	}
 	if projection == ProjectionStaged && len(snapshot.IntendedUntracked) != 0 {
 		return errors.New("staged snapshot projection cannot contain intended-untracked paths")

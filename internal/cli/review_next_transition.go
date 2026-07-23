@@ -24,11 +24,12 @@ type ReviewNextTransition struct {
 }
 
 type ReviewTransitionExecution struct {
-	Operation     string                     `json:"operation"`
-	Arguments     []ReviewTransitionArgument `json:"arguments"`
-	Preconditions []ReviewTransitionArgument `json:"preconditions"`
-	Binding       ReviewTransitionBinding    `json:"binding"`
-	Artifacts     []ReviewTransitionArtifact `json:"artifacts,omitempty"`
+	Operation         string                      `json:"operation"`
+	Arguments         []ReviewTransitionArgument  `json:"arguments"`
+	SelectorArguments *[]ReviewTransitionArgument `json:"selector_arguments,omitempty"`
+	Preconditions     []ReviewTransitionArgument  `json:"preconditions"`
+	Binding           ReviewTransitionBinding     `json:"binding"`
+	Artifacts         []ReviewTransitionArtifact  `json:"artifacts,omitempty"`
 }
 
 type ReviewTransitionCollection struct {
@@ -81,6 +82,10 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 	if status.Applicability != reviewtransaction.TargetApplicabilityCurrent {
 		switch status.Applicability {
 		case reviewtransaction.TargetApplicabilityUnrelated:
+			if input.Selector != nil && input.Selector.Kind == reviewtransaction.TargetBaseWorkspaceOverlay &&
+				input.Selector.Projection == reviewtransaction.ProjectionStaged {
+				return reviewStopTransition("staged_workspace_overlay_recovery_unavailable")
+			}
 			return reviewExecuteTransition("fresh_target_ready", "review.start", reviewStartArguments(status, input.StartLineage), []ReviewTransitionArgument{{Name: "target_identity", Value: status.TargetIdentity}}, ReviewTransitionBinding{LineageID: input.StartLineage, TargetIdentity: status.TargetIdentity}, nil)
 		case reviewtransaction.TargetApplicabilityAmbiguous:
 			return reviewCollectTransition("lineage_selection_required", ReviewTransitionInput{
@@ -161,8 +166,24 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 	case reviewtransaction.StateInvalidated:
 		return reviewRecoveryCollection(status, binding, input)
 	case reviewtransaction.StateApproved:
+		if status.Action == reviewtransaction.TargetStatusActionRecover {
+			return reviewRecoveryCollection(status, binding, input)
+		}
 		if status.Receipt.Status == ReviewReceiptPresent {
-			return reviewExecuteTransition("approved_receipt_ready", "review.validate", []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}, {Name: "gate", Value: string(input.gate())}}, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "present"}}, binding, nil)
+			if input.Selector != nil && input.gate() == reviewtransaction.GatePrePR && !input.Selector.PrePRRepresentable {
+				return reviewStopTransition("pre_pr_selector_unrepresentable")
+			}
+			arguments := []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}, {Name: "gate", Value: string(input.gate())}}
+			selectors := []ReviewTransitionArgument{}
+			if input.Selector != nil && input.gate() == reviewtransaction.GatePrePR && input.Selector.BaseRef != "" {
+				selectors = append(selectors, ReviewTransitionArgument{Name: "base-ref", Value: input.Selector.BaseRef})
+				arguments = append(arguments, selectors...)
+			}
+			transition := reviewExecuteTransition("approved_receipt_ready", "review.validate", arguments, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "present"}}, binding, nil)
+			if input.Selector != nil {
+				transition.Execute.SelectorArguments = reviewTransitionSelectorArguments(selectors)
+			}
+			return transition
 		}
 		if status.Replayability == reviewtransaction.ReplayabilityExactReplaySafe {
 			return reviewExecuteTransition("exact_receipt_replay", "review.finalize", []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}}, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "publication_pending"}}, binding, nil)
@@ -262,6 +283,17 @@ type reviewNextTransitionInput struct {
 	ValidationRequest                              *reviewtransaction.TargetedValidationRequest
 	CorrectionForecasted                           bool
 	CaptureContext                                 *reviewCaptureContext
+	Selector                                       *reviewTransitionSelector
+}
+
+type reviewTransitionSelector struct {
+	Kind                  reviewtransaction.TargetKind
+	Projection            reviewtransaction.Projection
+	BaseRef, BaseTree     string
+	WorkspaceOverlay      bool
+	RecoveryRepresentable bool
+	RecoveryProjection    reviewtransaction.Projection
+	PrePRRepresentable    bool
 }
 
 func reviewStartArguments(status ReviewTargetStatusResult, lineage string) []ReviewTransitionArgument {
@@ -339,13 +371,69 @@ func reviewRecoveryCollection(status ReviewTargetStatusResult, binding ReviewTra
 	if disposition == "" {
 		disposition = reviewtransaction.RecoveryInvalidated
 	}
+	var selectorArguments []ReviewTransitionArgument
+	if input.Selector != nil {
+		if status.TargetIdentity == reviewAuthorityTargetIdentity(status) {
+			return reviewStopTransition("recovery_scope_unchanged")
+		}
+		var representable bool
+		selectorArguments, representable = input.Selector.recoveryArguments()
+		if !representable {
+			return reviewStopTransition("recovery_target_unrepresentable")
+		}
+	}
 	if input.recoveryAuthorized(binding) {
-		return reviewExecuteTransition("recovery_authorized", "review.recover", []ReviewTransitionArgument{{Name: "predecessor-lineage", Value: binding.LineageID}, {Name: "expected-predecessor-revision", Value: binding.Revision}, {Name: "successor-lineage", Value: input.Successor}, {Name: "disposition", Value: string(disposition)}, {Name: "reason", Value: input.Reason}, {Name: "actor", Value: input.Actor}, {Name: "maintainer-authorization", Value: input.Authorization}}, []ReviewTransitionArgument{{Name: "state", Value: string(status.Authority.State)}, {Name: "recovery_authorization", Value: "provided"}}, binding, nil)
+		arguments := []ReviewTransitionArgument{{Name: "predecessor-lineage", Value: binding.LineageID}, {Name: "expected-predecessor-revision", Value: binding.Revision}, {Name: "successor-lineage", Value: input.Successor}, {Name: "disposition", Value: string(disposition)}, {Name: "reason", Value: input.Reason}, {Name: "actor", Value: input.Actor}, {Name: "maintainer-authorization", Value: input.Authorization}}
+		transition := reviewExecuteTransition("recovery_authorized", "review.recover", append(arguments, selectorArguments...), []ReviewTransitionArgument{{Name: "state", Value: string(status.Authority.State)}, {Name: "recovery_authorization", Value: "provided"}}, binding, nil)
+		if input.Selector != nil {
+			transition.Execute.SelectorArguments = reviewTransitionSelectorArguments(selectorArguments)
+		}
+		return transition
 	}
 	return reviewCollectTransition("recovery_authorization_required", ReviewTransitionInput{
 		Name: "recovery_authorization", Schema: "gentle-ai.review-recovery-authorization/v1", CaptureOperation: "external.authorize_recovery",
 		Arguments: append(reviewBindingArguments(binding), ReviewTransitionArgument{Name: "disposition", Value: string(disposition)}),
 	})
+}
+
+func (selector reviewTransitionSelector) recoveryArguments() ([]ReviewTransitionArgument, bool) {
+	if !selector.RecoveryRepresentable {
+		return nil, false
+	}
+	arguments := []ReviewTransitionArgument{}
+	switch selector.Kind {
+	case reviewtransaction.TargetCurrentChanges:
+		if selector.BaseRef != "" || selector.BaseTree != "" || selector.WorkspaceOverlay {
+			return nil, false
+		}
+	case reviewtransaction.TargetBaseDiff:
+		if selector.BaseRef == "" || selector.BaseTree != "" || selector.WorkspaceOverlay {
+			return nil, false
+		}
+		arguments = append(arguments, ReviewTransitionArgument{Name: "base-ref", Value: selector.BaseRef}, ReviewTransitionArgument{Name: "committed-only", Value: "true"})
+	case reviewtransaction.TargetBaseWorkspaceOverlay:
+		if !selector.WorkspaceOverlay || (selector.BaseRef == "") == (selector.BaseTree == "") {
+			return nil, false
+		}
+		base := selector.BaseRef
+		if base == "" {
+			base = selector.BaseTree
+		}
+		arguments = append(arguments, ReviewTransitionArgument{Name: "base-ref", Value: base})
+		if selector.RecoveryProjection == reviewtransaction.ProjectionStaged {
+			arguments = append(arguments,
+				ReviewTransitionArgument{Name: "projection", Value: string(reviewtransaction.ProjectionStaged)},
+				ReviewTransitionArgument{Name: "workspace-overlay", Value: "true"},
+			)
+			return arguments, true
+		}
+	default:
+		return nil, false
+	}
+	if selector.RecoveryProjection != "" {
+		arguments = append(arguments, ReviewTransitionArgument{Name: "projection", Value: string(selector.RecoveryProjection)})
+	}
+	return arguments, true
 }
 
 func reviewFinalVerificationRetryCollection(status ReviewTargetStatusResult, binding ReviewTransitionBinding) ReviewNextTransition {
@@ -370,7 +458,24 @@ func reviewFinalVerificationRetryCollection(status ReviewTargetStatusResult, bin
 }
 
 func (input reviewNextTransitionInput) recoveryAuthorized(binding ReviewTransitionBinding) bool {
-	return input.Successor != "" && input.Reason != "" && input.Actor != "" && input.Authorization == "gentle-ai.review-recovery-authorization/v1\npredecessor_lineage="+binding.LineageID+"\npredecessor_revision="+binding.Revision+"\ntarget_identity="+binding.TargetIdentity+"\nactor="+input.Actor+"\nreason="+input.Reason
+	successor := ""
+	if input.Selector != nil {
+		successor = input.Successor
+	}
+	return input.Successor != "" && input.Reason != "" && input.Actor != "" && input.Authorization == reviewTransitionRecoveryAuthorization(binding, successor, input.Actor, input.Reason)
+}
+
+func reviewTransitionRecoveryAuthorization(binding ReviewTransitionBinding, successor, actor, reason string) string {
+	value := "gentle-ai.review-recovery-authorization/v1\npredecessor_lineage=" + binding.LineageID + "\npredecessor_revision=" + binding.Revision + "\ntarget_identity=" + binding.TargetIdentity
+	if successor != "" {
+		value += "\nsuccessor_lineage=" + successor
+	}
+	return value + "\nactor=" + actor + "\nreason=" + reason
+}
+
+func reviewTransitionSelectorArguments(arguments []ReviewTransitionArgument) *[]ReviewTransitionArgument {
+	selectors := append([]ReviewTransitionArgument{}, arguments...)
+	return &selectors
 }
 
 func reviewTargetArguments(status ReviewTargetStatusResult) []ReviewTransitionArgument {

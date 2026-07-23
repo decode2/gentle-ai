@@ -67,6 +67,24 @@ func (builder SnapshotBuilder) Build(ctx context.Context, target Target) (Snapsh
 	return builder.build(ctx, target, false)
 }
 
+// BuildStagedWorkspaceOverlayRecovery freezes the exact real index for the
+// single recovery-only staged overlay transition. Ordinary START keeps using
+// Build, so this representation cannot create fresh authority directly.
+func (builder SnapshotBuilder) BuildStagedWorkspaceOverlayRecovery(ctx context.Context, target Target) (Snapshot, error) {
+	if target.Kind != TargetBaseWorkspaceOverlay || target.Projection != ProjectionStaged ||
+		target.IntendedUntracked == nil || len(target.IntendedUntracked) != 0 || len(target.LedgerIDs) != 0 {
+		return Snapshot{}, errors.New("staged workspace-overlay recovery requires an explicit empty intended_untracked list and no ledger IDs")
+	}
+	return builder.build(ctx, target, true)
+}
+
+func (builder SnapshotBuilder) BuildStoredSnapshot(ctx context.Context, target Target) (Snapshot, error) {
+	if target.Kind == TargetBaseWorkspaceOverlay && target.Projection == ProjectionStaged {
+		return builder.BuildStagedWorkspaceOverlayRecovery(ctx, target)
+	}
+	return builder.Build(ctx, target)
+}
+
 func (builder SnapshotBuilder) build(ctx context.Context, target Target, allowStagedIntended bool) (Snapshot, error) {
 	repo, err := builder.repositoryRoot(ctx)
 	if err != nil {
@@ -275,7 +293,7 @@ func (builder SnapshotBuilder) ValidateLiveSnapshot(ctx context.Context, expecte
 	default:
 		return fmt.Errorf("unsupported live snapshot target kind %q", expected.Kind)
 	}
-	live, err := builder.Build(ctx, target)
+	live, err := builder.BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return fmt.Errorf("rebuild live snapshot target: %w", err)
 	}
@@ -351,7 +369,7 @@ func rebuildCurrentSnapshotEvidence(ctx context.Context, repo string, snapshot S
 	default:
 		return errors.New("invalidation supports only live current-changes or base-diff snapshots")
 	}
-	live, err := (SnapshotBuilder{Repo: repo}).Build(ctx, target)
+	live, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -755,9 +773,15 @@ func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intende
 			return "", "", "", err
 		}
 	}
+	cachedEntries, err := runGitInventoryWithEnv(ctx, builder.Repo, env, "ls-files", "--cached", "-z")
+	if err != nil {
+		return "", "", "", err
+	}
 	if projection != ProjectionStaged {
-		if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
-			return "", "", "", err
+		if len(cachedEntries) > 0 {
+			if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
+				return "", "", "", err
+			}
 		}
 		if len(intended) > 0 {
 			args := append([]string{"add", "--"}, literalPathspecs(intended)...)
@@ -1154,7 +1178,11 @@ func runGit(ctx context.Context, repo string, extraEnv []string, stdin []byte, a
 }
 
 func runGitInventory(ctx context.Context, repo string, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, nil, nil, 0, false, true, args...)
+	return runGitInventoryWithEnv(ctx, repo, nil, args...)
+}
+
+func runGitInventoryWithEnv(ctx context.Context, repo string, extraEnv []string, args ...string) ([]byte, error) {
+	return runGitCaptured(ctx, repo, extraEnv, nil, 0, false, true, args...)
 }
 
 func runGitIsolated(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {

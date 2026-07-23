@@ -97,6 +97,7 @@ type targetStatusCandidate struct {
 	legacyStore        *Store
 	receiptIdentity    string
 	receiptPublished   bool
+	receiptCanonical   bool
 	receiptReplayable  bool
 	pendingFinalize    bool
 	correctionRecovery bool
@@ -124,7 +125,7 @@ func AssessTargetStatusWithSnapshot(ctx context.Context, repo string, request Ta
 			return TargetStatusResult{}, Snapshot{}, err
 		}
 	}
-	live, err := (SnapshotBuilder{Repo: repo}).Build(ctx, request.Target)
+	live, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, request.Target)
 	if err != nil {
 		return TargetStatusResult{}, Snapshot{}, err
 	}
@@ -151,6 +152,27 @@ func assessTargetStatusSnapshot(ctx context.Context, repo string, request Target
 			continue
 		}
 		state := candidate.compact.State
+		if state.State == StateInvalidated && state.InitialSnapshot.Kind == TargetBaseWorkspaceOverlay &&
+			state.InitialSnapshot.Projection == ProjectionStaged && live.Kind == TargetBaseWorkspaceOverlay &&
+			live.Projection == ProjectionStaged && state.InitialSnapshot.BaseTree == live.BaseTree &&
+			live.Identity != state.CurrentSnapshot.Identity &&
+			(compactLiveTargetMatchesValidatedSnapshot(state, live, false) || compactRecoveryAddsGenesisPath(state, live)) {
+			candidate.correctionRecovery, candidate.recoveryDisposition = true, RecoveryInvalidated
+			candidates = append(candidates, candidate)
+			continue
+		}
+		if state.State == StateApproved && candidate.receiptPublished && candidate.receiptCanonical {
+			eligible, eligibilityErr := compactApprovedStagedScopeRecovery(ctx, repo, state, live)
+			if eligibilityErr != nil {
+				return targetStatusFailure(base, eligibilityErr)
+			}
+			if eligible {
+				candidate.correctionRecovery = true
+				candidate.recoveryDisposition = RecoveryScopeChanged
+				candidates = append(candidates, candidate)
+				continue
+			}
+		}
 		if state.State == StateEscalated {
 			requested := state
 			requested.InitialSnapshot = live
@@ -233,8 +255,10 @@ func assessTargetStatusSnapshot(ctx context.Context, repo string, request Target
 	switch len(candidates) {
 	case 0:
 		base.Applicability = TargetApplicabilityUnrelated
-		base.Action = TargetStatusActionStart
-		base.Replayability = ReplayabilityNotReplayable
+		base.Action, base.Replayability = TargetStatusActionStart, ReplayabilityNotReplayable
+		if live.Kind == TargetBaseWorkspaceOverlay && live.Projection == ProjectionStaged {
+			base.Action, base.Replayability = TargetStatusActionStop, ReplayabilityManualActionRequired
+		}
 		return base, nil
 	case 1:
 		return targetStatusForCandidate(base, candidates[0]), nil
