@@ -795,6 +795,175 @@ func TestBaseWorkspaceOverlayFreezesFullBoundaryWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestBaseWorkspaceOverlayBuildsAllUntrackedCandidateFromEmptyIndex(t *testing.T) {
+	tests := []struct {
+		name         string
+		missingIndex bool
+		files        map[string]string
+		intended     []string
+	}{
+		{
+			name: "existing empty index",
+			files: map[string]string{
+				"first.txt":         "first\n",
+				"nested/second.txt": "second\n",
+			},
+			intended: []string{"first.txt", "nested/second.txt"},
+		},
+		{
+			name:         "missing index",
+			missingIndex: true,
+			files:        map[string]string{"nested/only.txt": "only\n"},
+			intended:     []string{"nested/only.txt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitSnapshot(t, repo, "init")
+			gitSnapshot(t, repo, "config", "user.email", "test@example.com")
+			gitSnapshot(t, repo, "config", "user.name", "Test")
+			gitSnapshot(t, repo, "commit", "--allow-empty", "-m", "empty base")
+			base := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+			gitSnapshot(t, repo, "read-tree", "--empty")
+
+			indexPath := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", "--git-path", "index"))
+			if !filepath.IsAbs(indexPath) {
+				indexPath = filepath.Join(repo, indexPath)
+			}
+			if tt.missingIndex {
+				if err := os.Remove(indexPath); err != nil {
+					t.Fatalf("Remove(index): %v", err)
+				}
+			}
+
+			for name, content := range tt.files {
+				writeSnapshotFile(t, repo, name, content)
+			}
+			writeSnapshotFile(t, repo, "unrelated.txt", "outside scope\n")
+
+			beforeIndex, beforeIndexErr := os.ReadFile(indexPath)
+			if beforeIndexErr != nil && !errors.Is(beforeIndexErr, os.ErrNotExist) {
+				t.Fatalf("ReadFile(index): %v", beforeIndexErr)
+			}
+			beforeStatus := gitSnapshot(t, repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+			expectedTree := buildEmptyIndexCandidateTree(t, repo, tt.intended)
+
+			snapshot, err := (SnapshotBuilder{Repo: repo}).Build(context.Background(), Target{
+				Kind: TargetBaseWorkspaceOverlay, BaseRef: base, IntendedUntracked: tt.intended,
+			})
+			if err != nil {
+				t.Fatalf("Build() error = %v", err)
+			}
+			if snapshot.CandidateTree != expectedTree {
+				t.Fatalf("CandidateTree = %q, want manually built %q", snapshot.CandidateTree, expectedTree)
+			}
+			if !reflect.DeepEqual(snapshot.Paths, tt.intended) {
+				t.Fatalf("Paths = %v, want only intended paths %v", snapshot.Paths, tt.intended)
+			}
+			if afterIndex, err := os.ReadFile(indexPath); errors.Is(err, os.ErrNotExist) != errors.Is(beforeIndexErr, os.ErrNotExist) || (err != nil && !errors.Is(err, os.ErrNotExist)) || !bytes.Equal(afterIndex, beforeIndex) {
+				t.Fatalf("real index changed: before error=%v bytes=%x, after error=%v bytes=%x", beforeIndexErr, beforeIndex, err, afterIndex)
+			}
+			if afterStatus := gitSnapshot(t, repo, "status", "--porcelain=v1", "-z", "--untracked-files=all"); afterStatus != beforeStatus {
+				t.Fatalf("worktree status changed: before=%q after=%q", beforeStatus, afterStatus)
+			}
+			for name, want := range tt.files {
+				content, err := os.ReadFile(filepath.Join(repo, filepath.FromSlash(name)))
+				if err != nil || string(content) != want {
+					t.Fatalf("worktree file %q changed: content=%q error=%v", name, content, err)
+				}
+			}
+			if content, err := os.ReadFile(filepath.Join(repo, "unrelated.txt")); err != nil || string(content) != "outside scope\n" {
+				t.Fatalf("unrelated worktree file changed: content=%q error=%v", content, err)
+			}
+		})
+	}
+}
+
+func buildEmptyIndexCandidateTree(t *testing.T, repo string, intended []string) string {
+	t.Helper()
+	tempIndex := filepath.Join(t.TempDir(), "index")
+	env := []string{"GIT_INDEX_FILE=" + tempIndex}
+	if _, err := runGit(context.Background(), repo, env, nil, "read-tree", "--empty"); err != nil {
+		t.Fatalf("read empty temporary index: %v", err)
+	}
+	args := append([]string{"add", "--"}, literalPathspecs(intended)...)
+	if _, err := runGit(context.Background(), repo, env, nil, args...); err != nil {
+		t.Fatalf("add intended paths to temporary index: %v", err)
+	}
+	tree, err := runGit(context.Background(), repo, env, nil, "write-tree")
+	if err != nil {
+		t.Fatalf("write temporary candidate tree: %v", err)
+	}
+	return strings.TrimSpace(string(tree))
+}
+
+func TestBaseWorkspaceOverlayPropagatesTemporaryIndexInventoryErrors(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	writeSnapshotFile(t, repo, "new.txt", "intended\n")
+	realIndex := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", "--git-path", "index"))
+	if !filepath.IsAbs(realIndex) {
+		realIndex = filepath.Join(repo, realIndex)
+	}
+	t.Setenv("GENTLE_AI_TEST_REAL_INDEX", realIndex)
+
+	originalCommand := gitCommandContext
+	gitCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if slicesContain(args, "ls-files") && slicesContain(args, "--cached") && slicesContain(args, "-z") {
+			return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEmptyIndexInventoryHelperProcess$")
+		}
+		return originalCommand(ctx, name, args...)
+	}
+	t.Cleanup(func() { gitCommandContext = originalCommand })
+
+	tests := []struct {
+		name     string
+		mode     string
+		wantText string
+		wantExit int
+	}{
+		{name: "diagnostic", mode: "diagnostic", wantText: "git inventory produced diagnostics: inventory diagnostic"},
+		{name: "command failure", mode: "failure", wantText: "inventory failure", wantExit: 23},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GENTLE_AI_EMPTY_INDEX_INVENTORY_HELPER", tt.mode)
+			_, err := (SnapshotBuilder{Repo: repo}).Build(context.Background(), Target{
+				Kind: TargetBaseWorkspaceOverlay, BaseRef: "HEAD", IntendedUntracked: []string{"new.txt"},
+			})
+			if tt.wantExit == 0 {
+				if err == nil || err.Error() != tt.wantText {
+					t.Fatalf("Build() error = %T %v, want exact diagnostic %q", err, err, tt.wantText)
+				}
+				return
+			}
+			commandErr, ok := err.(*GitCommandError)
+			if !ok || commandErr.ExitCode != tt.wantExit || commandErr.Output != tt.wantText {
+				t.Fatalf("Build() error = %#v, want direct GitCommandError exit=%d output=%q", err, tt.wantExit, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestEmptyIndexInventoryHelperProcess(t *testing.T) {
+	mode := os.Getenv("GENTLE_AI_EMPTY_INDEX_INVENTORY_HELPER")
+	if mode == "" {
+		return
+	}
+	index := os.Getenv("GIT_INDEX_FILE")
+	if index == "" || filepath.Clean(index) == filepath.Clean(os.Getenv("GENTLE_AI_TEST_REAL_INDEX")) {
+		_, _ = fmt.Fprint(os.Stderr, "temporary index environment missing")
+		os.Exit(72)
+	}
+	if mode == "diagnostic" {
+		_, _ = fmt.Fprint(os.Stderr, "inventory diagnostic")
+		os.Exit(0)
+	}
+	_, _ = fmt.Fprint(os.Stderr, "inventory failure")
+	os.Exit(23)
+}
+
 func TestSnapshotBuilderCurrentChangesSupportsUnbornHeadStagedProjection(t *testing.T) {
 	requireSnapshotGit(t)
 	repo := initUnbornSnapshotRepo(t)

@@ -755,9 +755,15 @@ func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intende
 			return "", "", "", err
 		}
 	}
+	cachedEntries, err := runGitInventoryWithEnv(ctx, builder.Repo, env, "ls-files", "--cached", "-z")
+	if err != nil {
+		return "", "", "", err
+	}
 	if projection != ProjectionStaged {
-		if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
-			return "", "", "", err
+		if len(cachedEntries) > 0 {
+			if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
+				return "", "", "", err
+			}
 		}
 		if len(intended) > 0 {
 			args := append([]string{"add", "--"}, literalPathspecs(intended)...)
@@ -1154,7 +1160,11 @@ func runGit(ctx context.Context, repo string, extraEnv []string, stdin []byte, a
 }
 
 func runGitInventory(ctx context.Context, repo string, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, nil, nil, 0, false, true, args...)
+	return runGitInventoryWithEnv(ctx, repo, nil, args...)
+}
+
+func runGitInventoryWithEnv(ctx context.Context, repo string, extraEnv []string, args ...string) ([]byte, error) {
+	return runGitCaptured(ctx, repo, extraEnv, nil, 0, false, true, args...)
 }
 
 func runGitIsolated(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {
