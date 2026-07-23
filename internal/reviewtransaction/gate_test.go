@@ -617,6 +617,52 @@ func TestExplicitPrePushBaseAllowsAbsentTracking(t *testing.T) {
 	}
 }
 
+func TestDefaultPrePushBaseReportsTypedTargetResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		prepare func(*testing.T, string, string)
+	}{
+		{name: "missing upstream"},
+		{name: "detached head", prepare: func(t *testing.T, repo, _ string) {
+			gitSnapshot(t, repo, "checkout", "--detach")
+		}},
+		{name: "non-branch upstream", prepare: func(t *testing.T, repo, branch string) {
+			configurePublicationRemote(t, repo, branch)
+			gitSnapshot(t, repo, "config", "branch."+branch+".remote", "origin")
+			gitSnapshot(t, repo, "config", "branch."+branch+".merge", "refs/tags/not-a-branch")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			branch := currentBranch(context.Background(), repo)
+			if tt.prepare != nil {
+				tt.prepare(t, repo, branch)
+			}
+			_, _, _, err := resolveTrackingUpstreamBase(context.Background(), repo)
+			var targetErr *GateTargetResolutionError
+			if !errors.As(err, &targetErr) || targetErr.RequiredInput != "base_ref" || !strings.Contains(err.Error(), "--base-ref") {
+				t.Fatalf("target resolution error = %T %v", err, err)
+			}
+		})
+	}
+}
+
+func TestDefaultPrePushBaseKeepsInfrastructureErrorsUntyped(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	branch := currentBranch(context.Background(), repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, _, err := resolveTrackingUpstreamBase(ctx, repo)
+	var targetErr *GateTargetResolutionError
+	if !errors.Is(err, context.Canceled) || errors.As(err, &targetErr) {
+		t.Fatalf("cancelled target resolution error = %T %v", err, err)
+	}
+	_, _, _, upstreamErr := configuredUpstreamRef(ctx, repo, branch)
+	if !errors.Is(upstreamErr, context.Canceled) || errors.As(upstreamErr, &targetErr) {
+		t.Fatalf("cancelled upstream lookup error = %T %v", upstreamErr, upstreamErr)
+	}
+}
+
 func TestExplicitPrePushBasePropagatesConfiguredTrackingResolutionError(t *testing.T) {
 	repo := initSnapshotRepo(t)
 	branch := currentBranch(context.Background(), repo)

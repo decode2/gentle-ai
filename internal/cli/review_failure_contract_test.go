@@ -947,6 +947,10 @@ func TestReviewIntegrationFailureSchemaAndFixtureAreStrict(t *testing.T) {
 		schema["$id"] != ReviewIntegrationFailureSchemaID || schema["additionalProperties"] != false {
 		t.Fatalf("failure schema header = %#v", schema)
 	}
+	inputs := schemaStringArray(t, schema["properties"].(map[string]any)["required_inputs"].(map[string]any)["items"].(map[string]any)["enum"])
+	if !containsString(inputs, "base_ref") {
+		t.Fatalf("failure required_inputs vocabulary = %v", inputs)
+	}
 	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "failure.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -1004,6 +1008,27 @@ func TestReviewIntegrationFailureSchemaAndFixtureAreStrict(t *testing.T) {
 	bindingDecoder.DisallowUnknownFields()
 	if err := bindingDecoder.Decode(&ReviewIntegrationFailure{}); err == nil {
 		t.Fatal("strict failure decoder accepted a private binding-revision field")
+	}
+}
+
+func TestReviewIntegrationFailureMapsTargetResolutionBeforeGateDenial(t *testing.T) {
+	targetErr := &reviewtransaction.GateTargetResolutionError{
+		RequiredInput: "base_ref",
+		Err:           errors.New("configured upstream is missing; pass --base-ref <remote>/<branch>"),
+	}
+	failure := newReviewIntegrationFailure(ReviewIntegrationOperationValidate, nil, ReviewGateDeniedError{
+		Result: reviewtransaction.GateInvalidated,
+		Cause:  targetErr,
+	})
+	if failure.Phase != "pre_native" || failure.Code != "target_resolution_failed" ||
+		failure.MutationOutcome != ReviewMutationNotStarted || failure.AuthorityApplicability != "not_evaluated" ||
+		!failure.RetrySafe || failure.Replayability != reviewtransaction.ReplayabilityNotReplayable ||
+		!reflect.DeepEqual(failure.RequiredInputs, []string{"base_ref"}) || failure.NextAction != "correct_request" ||
+		!strings.Contains(failure.Message, "--base-ref") {
+		t.Fatalf("target-resolution failure mapping = %#v", failure)
+	}
+	if err := failure.Validate(); err != nil {
+		t.Fatalf("target-resolution failure validation = %v", err)
 	}
 }
 

@@ -1755,6 +1755,15 @@ func runReviewFacadeValidate(ctx context.Context, args []string, stdout io.Write
 		}
 	}
 	if !negotiated {
+		var targetResolution *reviewtransaction.GateTargetResolutionError
+		if errors.As(compactErr, &targetResolution) {
+			return emitFacadeGateEvaluationNegotiated(stdout, reviewtransaction.NativeGateEvaluation{
+				Result: reviewtransaction.GateInvalidated, Reason: targetResolution.Error(), Cause: compactErr,
+				Context: reviewtransaction.GateContext{
+					Gate: gateInput.Gate, Denial: &reviewtransaction.GateDenial{Stage: "target-resolution", Code: "target_resolution_failed"},
+				},
+			}, false)
+		}
 		var discovery *ReviewReceiptDiscoveryError
 		if errors.As(compactErr, &discovery) {
 			result := reviewtransaction.GateInvalidated
@@ -1822,6 +1831,11 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 	scopeChanged := []candidate{}
 	scopeWithoutContext := []string{}
 	assessmentUnknown := []string{}
+	type targetResolutionFailure struct {
+		lineage string
+		err     error
+	}
+	targetResolution := []targetResolutionFailure{}
 	terminalCount := 0
 	allLineages := []string{}
 	for _, store := range stores {
@@ -1848,6 +1862,11 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 		candidateInput.IntendedUntracked = append([]string(nil), record.State.CurrentSnapshot.IntendedUntracked...)
 		assessment, assessErr := reviewtransaction.AssessCompactGateTarget(ctx, repo, record.State, candidateInput)
 		if assessErr != nil {
+			var targetErr *reviewtransaction.GateTargetResolutionError
+			if errors.As(assessErr, &targetErr) {
+				targetResolution = append(targetResolution, targetResolutionFailure{lineage: record.State.LineageID, err: assessErr})
+				continue
+			}
 			assessmentUnknown = append(assessmentUnknown, record.State.LineageID)
 			continue
 		}
@@ -1888,23 +1907,32 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewReceiptMissing}
 	}
 	scopeCandidateCount := len(scopeChanged) + len(scopeWithoutContext)
-	if scopeCandidateCount > 0 && scopeCandidateCount+len(assessmentUnknown) > 1 {
-		lineages := make([]string, 0, scopeCandidateCount+len(assessmentUnknown))
+	if scopeCandidateCount > 0 && scopeCandidateCount+len(assessmentUnknown)+len(targetResolution) > 1 {
+		lineages := make([]string, 0, scopeCandidateCount+len(assessmentUnknown)+len(targetResolution))
 		for index := range scopeChanged {
 			lineages = append(lineages, scopeChanged[index].record.State.LineageID)
 		}
 		lineages = append(lineages, scopeWithoutContext...)
 		lineages = append(lineages, assessmentUnknown...)
+		for _, failure := range targetResolution {
+			lineages = append(lineages, failure.lineage)
+		}
 		sort.Strings(lineages)
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewReceiptAmbiguous, Candidates: lineages}
 	}
-	if len(scopeChanged) == 1 && len(scopeWithoutContext) == 0 && len(assessmentUnknown) == 0 {
+	if len(scopeChanged) == 1 && len(scopeWithoutContext) == 0 && len(assessmentUnknown) == 0 && len(targetResolution) == 0 {
 		context := scopeChanged[0].context
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{
 			Kind: ReviewReceiptScopeChanged, Candidates: []string{scopeChanged[0].record.State.LineageID}, Context: &context,
 		}
 	}
 	if len(scopeWithoutContext) > 0 || len(assessmentUnknown) > 0 {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewAuthorityCorrupted}
+	}
+	if len(targetResolution) == terminalCount {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, targetResolution[0].err
+	}
+	if len(targetResolution) > 0 {
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewAuthorityCorrupted}
 	}
 	sort.Strings(allLineages)
