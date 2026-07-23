@@ -2,6 +2,7 @@ package filemerge
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -397,4 +398,19 @@ func TestMergeJSONObjects_Issue278_ReplaceSentinelFixesWildcard(t *testing.T) {
 	}
 
 	t.Logf("CONFIRMED: __replace__ produces exactly %d task keys (no wildcard)", len(task))
+}
+
+func TestMergeJSONObjectsPreservesLargeIntegers(t *testing.T) {
+	base := []byte(`{"unrelated_id":9007199254740993,"name":"test"}`)
+	overlay := []byte(`{"other_key":"val"}`)
+
+	merged, err := MergeJSONObjects(base, overlay)
+	if err != nil {
+		t.Fatalf("MergeJSONObjects() error = %v", err)
+	}
+
+	mergedStr := string(merged)
+	if !strings.Contains(mergedStr, "9007199254740993") {
+		t.Fatalf("MergeJSONObjects() lost large integer precision; merged output =\n%s", mergedStr)
+	}
 }

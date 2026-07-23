@@ -2,6 +2,7 @@
 package pi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -368,8 +369,12 @@ func readPiJSONObject(path string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 
+	// Use UseNumber() so that large integers (>2^53) are not silently
+	// rounded by conversion through float64 during decode.
 	var object map[string]any
-	if err := json.Unmarshal(base, &object); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(base))
+	dec.UseNumber()
+	if err := dec.Decode(&object); err != nil {
 		return nil, fmt.Errorf("unmarshal pi json file %q: %w", path, err)
 	}
 	if object == nil {

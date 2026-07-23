@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 func MergeJSONObjects(baseJSON []byte, overlayJSON []byte) ([]byte, error) {
@@ -30,22 +31,42 @@ func MergeJSONObjects(baseJSON []byte, overlayJSON []byte) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
+// decodeJSONObjectPreservingNumbers decodes a JSON object using json.Decoder
+// with UseNumber() enabled so that large integers (>2^53) are not silently
+// rounded by conversion through float64.
+func decodeJSONObjectPreservingNumbers(raw []byte) (map[string]any, error) {
+	object := map[string]any{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&object); err != nil {
+		return nil, err
+	}
+	// Ensure the input is fully consumed — no trailing payload.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("unexpected trailing JSON payload")
+		}
+		return nil, err
+	}
+	return object, nil
+}
+
 func unmarshalJSONObject(raw []byte) (map[string]any, error) {
 	object := map[string]any{}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return object, nil
 	}
 
-	if err := json.Unmarshal(raw, &object); err == nil {
-		return object, nil
+	if obj, err := decodeJSONObjectPreservingNumbers(raw); err == nil {
+		return obj, nil
 	}
 
 	normalized := normalizeJSON(raw)
-	if err := json.Unmarshal(normalized, &object); err != nil {
+	if obj, err := decodeJSONObjectPreservingNumbers(normalized); err != nil {
 		return nil, err
+	} else {
+		return obj, nil
 	}
-
-	return object, nil
 }
 
 // UnmarshalJSONObject decodes a JSON object using the same JSONC normalization
