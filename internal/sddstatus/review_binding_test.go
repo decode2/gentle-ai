@@ -483,14 +483,13 @@ func TestBindingFailsClosedForLedgerDriftAndChangedLiveEvidence(t *testing.T) {
 
 func TestResolveRejectsCorruptOrChangedBoundEvidence(t *testing.T) {
 	for _, tt := range []struct {
-		name     string
-		wantNext string
-		mutate   func(t *testing.T, root string, store reviewtransaction.CompactStore, binding ReviewBinding)
+		name, wantNext, wantReason string
+		mutate                     func(t *testing.T, root string, store reviewtransaction.CompactStore, binding ReviewBinding)
 	}{
-		{name: "corrupt binding", wantNext: "resolve-blockers", mutate: func(t *testing.T, root string, _ reviewtransaction.CompactStore, _ ReviewBinding) {
+		{name: "corrupt binding", wantNext: "resolve-blockers", wantReason: "native SDD runtime authority is unreadable", mutate: func(t *testing.T, root string, _ reviewtransaction.CompactStore, _ ReviewBinding) {
 			corruptNativeRuntimeBinding(t, mustRuntimeStore(t, root, "thin"))
 		}},
-		{name: "changed receipt", wantNext: "resolve-review", mutate: func(t *testing.T, _ string, store reviewtransaction.CompactStore, _ ReviewBinding) {
+		{name: "changed receipt", wantNext: "resolve-review", wantReason: "receipt", mutate: func(t *testing.T, _ string, store reviewtransaction.CompactStore, _ ReviewBinding) {
 			if err := os.WriteFile(store.ReceiptPath(), []byte("{}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -512,6 +511,9 @@ func TestResolveRejectsCorruptOrChangedBoundEvidence(t *testing.T) {
 			}
 			if status.NextRecommended != tt.wantNext || status.Dependencies.Verify != DependencyBlocked {
 				t.Fatalf("%s status = %#v", tt.name, status)
+			}
+			if !strings.Contains(strings.Join(status.BlockedReasons, "\n"), tt.wantReason) {
+				t.Fatalf("%s BlockedReasons = %v, want containing %q", tt.name, status.BlockedReasons, tt.wantReason)
 			}
 		})
 	}
