@@ -140,8 +140,16 @@ var codexLegacyPermissionValues = [][2]string{
 	{`permissions.gentle-dev.filesystem.":workspace_roots"."."`, `"write"`},
 	{`permissions.gentle-dev.filesystem.":workspace_roots".".git/**"`, `"write"`},
 	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.env"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.env.local"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.env.*.local"`, `"deny"`},
 	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/*.pem"`, `"deny"`},
 	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/*.key"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/secrets/**"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.ssh/**"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.credentials/**"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/credentials.json"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.aws/credentials"`, `"deny"`},
+	{`permissions.gentle-dev.filesystem.":workspace_roots"."**/.config/gh/hosts.yml"`, `"deny"`},
 	{`permissions.gentle-dev.workspace_roots."~"`, `true`},
 }
 

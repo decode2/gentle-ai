@@ -702,6 +702,64 @@ func TestInjectCodexRemovesInjectedGentleDevProfile(t *testing.T) {
 	}
 }
 
+func TestInjectCodexRemovesResidualGeneratedGentleDevProfile(t *testing.T) {
+	home := t.TempDir()
+	initial := `model = "gpt-5.5"
+
+[permissions.gentle-dev]
+
+[permissions.gentle-dev.network]
+
+[permissions.gentle-dev.network.domains]
+
+[permissions.gentle-dev.filesystem]
+
+[permissions.gentle-dev.filesystem.":workspace_roots"]
+"**/.config/gh/hosts.yml" = "deny"
+"**/.aws/credentials" = "deny"
+"**/credentials.json" = "deny"
+"**/.credentials/**" = "deny"
+"**/.ssh/**" = "deny"
+"**/secrets/**" = "deny"
+"**/.env.*.local" = "deny"
+"**/.env.local" = "deny"
+
+[permissions.gentle-dev.workspace_roots]
+
+[mcp_servers.engram]
+command = "engram"
+`
+	want := `model = "gpt-5.5"
+
+[mcp_servers.engram]
+command = "engram"
+`
+	configPath := writeCodexConfig(t, home, initial)
+
+	result, err := Inject(home, codexAdapter())
+	if err != nil {
+		t.Fatalf("Inject() error = %v", err)
+	}
+	if !result.Changed {
+		t.Fatal("Inject() changed = false, want true")
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	text := string(content)
+	if strings.Contains(text, "[permissions.gentle-dev") {
+		t.Fatalf("cleaned config.toml still contains the retired gentle-dev profile; got:\n%s", text)
+	}
+	if strings.Contains(text, "default_permissions") {
+		t.Fatalf("cleaned config.toml restored a default_permissions pointer; got:\n%s", text)
+	}
+	if text != want {
+		t.Fatalf("cleaned config.toml = %q, want %q", text, want)
+	}
+}
+
 func TestInjectCodexCleanupIsIdempotent(t *testing.T) {
 	home := t.TempDir()
 	configPath := writeCodexConfig(t, home, codexInjectedLegacyConfig)
