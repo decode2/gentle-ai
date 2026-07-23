@@ -359,3 +359,54 @@ func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+func TestRestoreRecoversFromWriteErrorAfterAtomicReplacement(t *testing.T) {
+	origWriteFileAtomic := writeFileAtomic
+	t.Cleanup(func() {
+		writeFileAtomic = origWriteFileAtomic
+	})
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "atomic_fail.txt")
+	if err := os.WriteFile(target, []byte("before-content"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	j := New(dir)
+	if err := j.Capture(target); err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	// Stub writeFileAtomic to write the new bytes to disk (simulating os.Rename
+	// succeeding), but return a parent-directory sync error on the first write.
+	calls := 0
+	writeFileAtomic = func(path string, data []byte, perm os.FileMode) (filemerge.WriteResult, error) {
+		calls++
+		if calls == 1 {
+			_ = os.WriteFile(path, data, perm)
+			return filemerge.WriteResult{}, errors.New("sync parent directory: injected error")
+		}
+		return origWriteFileAtomic(path, data, perm)
+	}
+
+	_, err := j.Write(target, []byte("replacement-content"))
+	if err == nil {
+		t.Fatal("Write expected error, got nil")
+	}
+
+	// Verify that replacement content is currently on disk despite the Write error
+	onDisk, readErr := os.ReadFile(target)
+	if readErr != nil || string(onDisk) != "replacement-content" {
+		t.Fatalf("file on disk = %q, want replacement-content", string(onDisk))
+	}
+
+	// Restore must recognize that disk state changed and revert it to before-content
+	if restoreErr := j.Restore(); restoreErr != nil {
+		t.Fatalf("Restore error: %v", restoreErr)
+	}
+
+	restored, readErr := os.ReadFile(target)
+	if readErr != nil || string(restored) != "before-content" {
+		t.Fatalf("file on disk after Restore = %q, want before-content", string(restored))
+	}
+}
