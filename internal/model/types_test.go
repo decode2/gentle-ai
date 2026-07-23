@@ -14,10 +14,12 @@ func TestNormalizeAgentID(t *testing.T) {
 		want  AgentID
 	}{
 		{"gemini-cli", AgentAntigravity},
+		{"  gemini-cli  ", AgentAntigravity},
 		{"gemini", AgentAntigravity},
 		{"antigravity", AgentAntigravity},
 		{"opencode", AgentOpenCode},
 		{"claude-code", AgentClaudeCode},
+		{"  custom-agent  ", "custom-agent"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {

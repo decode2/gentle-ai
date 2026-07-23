@@ -369,7 +369,7 @@ func TestDefaultAgentsFromDetection_AllAgentsMappedCorrectly(t *testing.T) {
 		{"claude-code", model.AgentClaudeCode},
 		{"opencode", model.AgentOpenCode},
 		{"kilocode", model.AgentKilocode},
-		{"gemini-cli", model.AgentGeminiCLI},
+		{"gemini-cli", model.AgentAntigravity},
 		{"cursor", model.AgentCursor},
 		{"vscode-copilot", model.AgentVSCodeCopilot},
 		{"codex", model.AgentCodex},

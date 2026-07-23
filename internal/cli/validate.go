@@ -166,39 +166,12 @@ func defaultAgentsFromDetection(detection system.DetectionResult) []model.AgentI
 			continue
 		}
 
-		switch strings.TrimSpace(state.Agent) {
-		case string(model.AgentClaudeCode):
-			agents = append(agents, model.AgentClaudeCode)
-		case string(model.AgentOpenCode):
-			agents = append(agents, model.AgentOpenCode)
-		case string(model.AgentKilocode):
-			agents = append(agents, model.AgentKilocode)
-		case string(model.AgentGeminiCLI):
-			agents = append(agents, model.AgentGeminiCLI)
-		case string(model.AgentCursor):
-			agents = append(agents, model.AgentCursor)
-		case string(model.AgentVSCodeCopilot):
-			agents = append(agents, model.AgentVSCodeCopilot)
-		case string(model.AgentCodex):
-			agents = append(agents, model.AgentCodex)
-		case string(model.AgentAntigravity):
-			agents = append(agents, model.AgentAntigravity)
-		case string(model.AgentWindsurf):
-			agents = append(agents, model.AgentWindsurf)
-		case string(model.AgentKimi):
-			agents = append(agents, model.AgentKimi)
-		case string(model.AgentQwenCode):
-			agents = append(agents, model.AgentQwenCode)
-		case string(model.AgentKiroIDE):
-			agents = append(agents, model.AgentKiroIDE)
-		case string(model.AgentOpenClaw):
-			agents = append(agents, model.AgentOpenClaw)
-		case string(model.AgentPi):
-			agents = append(agents, model.AgentPi)
-		case string(model.AgentTrae):
-			agents = append(agents, model.AgentTrae)
-		case string(model.AgentHermes):
-			agents = append(agents, model.AgentHermes)
+		switch normalized := model.NormalizeAgentID(state.Agent); normalized {
+		case model.AgentClaudeCode, model.AgentOpenCode, model.AgentKilocode, model.AgentCursor,
+			model.AgentVSCodeCopilot, model.AgentCodex, model.AgentAntigravity, model.AgentWindsurf,
+			model.AgentKimi, model.AgentQwenCode, model.AgentKiroIDE, model.AgentOpenClaw,
+			model.AgentPi, model.AgentTrae, model.AgentHermes:
+			agents = append(agents, normalized)
 		}
 	}
 
