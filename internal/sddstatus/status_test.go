@@ -1,6 +1,7 @@
 package sddstatus
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -250,7 +251,8 @@ func TestResolvePlanningRoutesOmitExpectedBlockersForBothStores(t *testing.T) {
 					seedPlanningRoute(t, root, "thin", tt.route)
 				} else {
 					mkdir(t, filepath.Join(root, ".engram"))
-					write(t, filepath.Join(root, ".git", "config"), "[remote \"origin\"]\n\turl = git@github.com:Gentleman-Programming/gentle-ai.git\n")
+					runRuntimeLedgerGit(t, root, "init", "-q")
+					runRuntimeLedgerGit(t, root, "remote", "add", "origin", "git@github.com:Gentleman-Programming/gentle-ai.git")
 					restore := stubEngramExport(t, engramPlanningRoute("thin", tt.route))
 					t.Cleanup(restore)
 				}
@@ -307,6 +309,66 @@ func TestResolveTaskIntegrityBlockerSurvivesPlanningAndResolveBlockersRoutes(t *
 			want := []string{"tasks.md has no markdown task checkboxes."}
 			if !reflect.DeepEqual(status.BlockedReasons, want) {
 				t.Fatalf("BlockedReasons = %v, want %v", status.BlockedReasons, want)
+			}
+		})
+	}
+}
+
+func TestResolveEngramPlanningRouteRetainsGenuineBlocker(t *testing.T) {
+	root := t.TempDir()
+	mkdir(t, filepath.Join(root, ".engram"))
+	runRuntimeLedgerGit(t, root, "init", "-q")
+	runRuntimeLedgerGit(t, root, "remote", "add", "origin", "git@github.com:Gentleman-Programming/gentle-ai.git")
+	restore := stubEngramExport(t, []engramObservation{
+		{Title: "sdd/thin/tasks", Content: "not a checklist\n", Project: "gentle-ai", Scope: "project"},
+	})
+	defer restore()
+
+	status, err := Resolve(ResolveOptions{CWD: root, ChangeName: "thin"})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if status.NextRecommended != "propose" {
+		t.Fatalf("NextRecommended = %q, want propose", status.NextRecommended)
+	}
+	want := []string{"tasks.md has no markdown task checkboxes."}
+	if !reflect.DeepEqual(status.BlockedReasons, want) {
+		t.Fatalf("BlockedReasons = %v, want %v", status.BlockedReasons, want)
+	}
+}
+
+func TestResolveRuntimeOverrideRestoresExpectedPlanningBlockersForBothStores(t *testing.T) {
+	for _, store := range []string{"openspec", "engram"} {
+		t.Run(store, func(t *testing.T) {
+			root := initRuntimeLedgerRepo(t)
+			if store == "openspec" {
+				seedPlanningRoute(t, root, "thin", "propose")
+			} else {
+				mkdir(t, filepath.Join(root, ".engram"))
+				runRuntimeLedgerGit(t, root, "remote", "add", "origin", "git@github.com:Gentleman-Programming/gentle-ai.git")
+				restore := stubEngramExport(t, engramPlanningRoute("thin", "propose"))
+				t.Cleanup(restore)
+			}
+			store := mustRuntimeStore(t, root, "thin")
+			if _, err := store.Begin(context.Background(), BeginAttemptRequest{
+				ExpectedRevision: "", RequestID: "begin-thin", WorkUnit: "apply",
+				EvidenceGoal: "prove final-route blocker filtering", MaxAttempts: 2, MaxChangedLines: 20,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			status, err := Resolve(ResolveOptions{CWD: root, ChangeName: "thin"})
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if status.NextRecommended != "resolve-blockers" {
+				t.Fatalf("NextRecommended = %q, want resolve-blockers", status.NextRecommended)
+			}
+			reasons := strings.Join(status.BlockedReasons, "\n")
+			for _, want := range []string{"proposal.md is missing or partial.", "native SDD runtime attempt 1 is active"} {
+				if !strings.Contains(reasons, want) {
+					t.Fatalf("BlockedReasons = %v, want containing %q", status.BlockedReasons, want)
+				}
 			}
 		})
 	}

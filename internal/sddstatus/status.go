@@ -101,11 +101,15 @@ type blockerReasons struct {
 }
 
 func (reasons blockerReasons) forRoute(nextRecommended string) []string {
+	return reasons.finalize(nextRecommended, reasons.genuine)
+}
+
+func (reasons blockerReasons) finalize(nextRecommended string, accumulated []string) []string {
 	switch Phase(nextRecommended) {
 	case PhasePropose, PhaseSpec, PhaseDesign, PhaseTasks:
-		return append([]string{}, reasons.genuine...)
+		return append([]string{}, accumulated...)
 	default:
-		return append(append([]string{}, reasons.expectedPlanning...), reasons.genuine...)
+		return append(append([]string{}, reasons.expectedPlanning...), accumulated...)
 	}
 }
 
@@ -407,7 +411,7 @@ func Resolve(options ResolveOptions) (Status, error) {
 		applyPreVerifyReviewRouting(&dependencies, &nextRecommended, &blockedReasons, applyState, artifacts["verifyReport"] == ArtifactDone, reviewState, reviewStateReason)
 	}
 
-	status := baseStatus(workspaceRoot, &changeName, &changeRoot, nextRecommended, blockedReasons.forRoute(nextRecommended))
+	status := baseStatus(workspaceRoot, &changeName, &changeRoot, nextRecommended, append([]string{}, blockedReasons.genuine...))
 	status.ArtifactPaths = artifactPaths
 	status.ContextFiles = artifactPaths
 	status.Artifacts = artifacts
@@ -437,6 +441,7 @@ func Resolve(options ResolveOptions) (Status, error) {
 	} else {
 		applyNativeRuntimeRouting(&status)
 	}
+	status.BlockedReasons = blockedReasons.finalize(status.NextRecommended, status.BlockedReasons)
 	if options.IncludeInstructions {
 		instructions := renderPhaseInstructions(status)
 		status.PhaseInstructions = &instructions
@@ -678,7 +683,7 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 			dependencies.Verify = DependencyBlocked
 			dependencies.Archive = DependencyBlocked
 			nextRecommended = "resolve-review"
-			blockedReasons = append(blockedReasons, bindingErr.Error())
+			blockedReasons.genuine = append(blockedReasons.genuine, bindingErr.Error())
 		}
 	} else {
 		if applyState == ApplyAllDone && artifacts["verifyReport"] != ArtifactDone && compactBridgeableReviewArtifact(artifacts["reviewState"], reviewStateReason) {
@@ -691,7 +696,7 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 	}
 
 	changeRoot := fmt.Sprintf("engram:sdd/%s", changeName)
-	status := baseStatus(workspaceRoot, &changeName, &changeRoot, nextRecommended, blockedReasons.forRoute(nextRecommended))
+	status := baseStatus(workspaceRoot, &changeName, &changeRoot, nextRecommended, append([]string{}, blockedReasons.genuine...))
 	status.ArtifactStore = ArtifactStoreEngram
 	status.PlanningHome = PlanningHome{Mode: ActionModeRepoLocal, Path: "engram:sdd"}
 	status.ArtifactPaths = artifactPaths
@@ -723,6 +728,7 @@ func resolveEngramStatus(workspaceRoot string, requestedChange string, includeIn
 	} else {
 		applyNativeRuntimeRouting(&status)
 	}
+	status.BlockedReasons = blockedReasons.finalize(status.NextRecommended, status.BlockedReasons)
 	if includeInstructions {
 		instructions := renderPhaseInstructions(status)
 		status.PhaseInstructions = &instructions
