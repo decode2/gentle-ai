@@ -451,6 +451,15 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 			artifacts := []ReviewTransitionArtifact{}
 			evidenceAvailable := false
 			var artifactErr error
+			input := reviewNextTransitionInput{
+				Gate:          reviewtransaction.GateKind(*gate),
+				Successor:     *recoverySuccessor,
+				Reason:        *recoveryReason,
+				Actor:         *recoveryActor,
+				Authorization: *recoveryAuthorization,
+				BaseRef:       selectedBaseRef,
+				Projection:    selectedProjection,
+			}
 			if native.Applicability == reviewtransaction.TargetApplicabilityCurrent && native.AuthorityVersion == reviewtransaction.AuthorityVersionCompact {
 				store, storeErr := reviewtransaction.CompactAuthoritativeStore(ctx, root, native.LineageID)
 				if storeErr != nil {
@@ -463,10 +472,17 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 						artifacts, artifactErr = discoverCapturedReviewerArtifacts(store.Dir, record.State)
 						_, evidenceErr := readCapturedFinalEvidence(store.Dir, record.State, record.Revision)
 						evidenceAvailable = evidenceErr == nil
+						if target.Kind == reviewtransaction.TargetBaseDiff || record.State.InitialSnapshot.Kind == reviewtransaction.TargetBaseDiff {
+							input.TargetKind = reviewtransaction.TargetBaseDiff
+							input.CommittedOnly = true
+						}
+						if native.TargetIdentity == record.State.InitialSnapshot.Identity {
+							input.RecoveryScopeUnchanged = true
+						}
 					}
 				}
 			}
-			transition := newReviewNextTransition(result, native.SelectedLenses, artifacts, evidenceAvailable, artifactErr, reviewNextTransitionInput{Gate: reviewtransaction.GateKind(*gate), Successor: *recoverySuccessor, Reason: *recoveryReason, Actor: *recoveryActor, Authorization: *recoveryAuthorization})
+			transition := newReviewNextTransition(result, native.SelectedLenses, artifacts, evidenceAvailable, artifactErr, input)
 			result.NextTransition = &transition
 		}
 		if err := result.Validate(); err != nil {
@@ -1524,10 +1540,16 @@ func runReviewFacadeValidate(ctx context.Context, args []string, stdout io.Write
 			context := reviewtransaction.GateContext{
 				Gate: gateInput.Gate, Denial: &reviewtransaction.GateDenial{Stage: "receipt-discovery", Code: string(discovery.Kind)},
 			}
+			if discovery.Context != nil {
+				context = *discovery.Context
+			}
 			if discovery.Kind == ReviewReceiptScopeChanged {
 				result = reviewtransaction.GateScopeChanged
-				if discovery.Context != nil {
-					context = *discovery.Context
+			}
+			if gateInput.Gate == reviewtransaction.GatePrePR && strings.TrimSpace(gateInput.BaseRef) != "" && context.PrePRBoundary == nil {
+				context.PrePRBoundary = &reviewtransaction.PrePRBoundarySelection{
+					Source:   reviewtransaction.PrePRBoundaryExplicit,
+					Selector: strings.TrimSpace(gateInput.BaseRef),
 				}
 			}
 			return emitFacadeGateEvaluationNegotiated(stdout, reviewtransaction.NativeGateEvaluation{

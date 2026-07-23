@@ -126,7 +126,11 @@ func newReviewNextTransition(status ReviewTargetStatusResult, selectedLenses []s
 		return reviewRecoveryCollection(status, binding, input)
 	case reviewtransaction.StateApproved:
 		if status.Receipt.Status == ReviewReceiptPresent {
-			return reviewExecuteTransition("approved_receipt_ready", "review.validate", []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}, {Name: "gate", Value: string(input.gate())}}, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "present"}}, binding, nil)
+			args := []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}, {Name: "gate", Value: string(input.gate())}}
+			if input.gate() == reviewtransaction.GatePrePR && strings.TrimSpace(input.BaseRef) != "" {
+				args = append(args, ReviewTransitionArgument{Name: "base-ref", Value: strings.TrimSpace(input.BaseRef)})
+			}
+			return reviewExecuteTransition("approved_receipt_ready", "review.validate", args, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "present"}}, binding, nil)
 		}
 		if status.Replayability == reviewtransaction.ReplayabilityExactReplaySafe {
 			return reviewExecuteTransition("exact_receipt_replay", "review.finalize", []ReviewTransitionArgument{{Name: "lineage", Value: binding.LineageID}}, []ReviewTransitionArgument{{Name: "state", Value: "approved"}, {Name: "receipt", Value: "publication_pending"}}, binding, nil)
@@ -188,6 +192,12 @@ func reviewCaptureInput(binding ReviewTransitionBinding, lens string, order int)
 type reviewNextTransitionInput struct {
 	Gate                                    reviewtransaction.GateKind
 	Successor, Reason, Actor, Authorization string
+	BaseRef                                 string
+	TargetKind                              reviewtransaction.TargetKind
+	CommittedOnly                           bool
+	Projection                              reviewtransaction.Projection
+	RecoveryScopeUnchanged                  bool
+	ReleaseScope                            bool
 }
 
 func (input reviewNextTransitionInput) gate() reviewtransaction.GateKind {
@@ -203,7 +213,31 @@ func reviewRecoveryCollection(status ReviewTargetStatusResult, binding ReviewTra
 		disposition = reviewtransaction.RecoveryInvalidated
 	}
 	if input.recoveryAuthorized(binding) {
-		return reviewExecuteTransition("recovery_authorized", "review.recover", []ReviewTransitionArgument{{Name: "predecessor-lineage", Value: binding.LineageID}, {Name: "expected-predecessor-revision", Value: binding.Revision}, {Name: "successor-lineage", Value: input.Successor}, {Name: "disposition", Value: string(disposition)}, {Name: "reason", Value: input.Reason}, {Name: "actor", Value: input.Actor}, {Name: "maintainer-authorization", Value: input.Authorization}}, []ReviewTransitionArgument{{Name: "state", Value: string(status.Authority.State)}, {Name: "recovery_authorization", Value: "provided"}}, binding, nil)
+		if input.RecoveryScopeUnchanged {
+			return reviewStopTransition("recovery_scope_unchanged")
+		}
+		args := []ReviewTransitionArgument{
+			{Name: "predecessor-lineage", Value: binding.LineageID},
+			{Name: "expected-predecessor-revision", Value: binding.Revision},
+			{Name: "successor-lineage", Value: input.Successor},
+			{Name: "disposition", Value: string(disposition)},
+			{Name: "reason", Value: input.Reason},
+			{Name: "actor", Value: input.Actor},
+			{Name: "maintainer-authorization", Value: input.Authorization},
+		}
+		if strings.TrimSpace(input.BaseRef) != "" || input.TargetKind == reviewtransaction.TargetBaseDiff || input.CommittedOnly {
+			if strings.TrimSpace(input.BaseRef) != "" {
+				args = append(args, ReviewTransitionArgument{Name: "base-ref", Value: strings.TrimSpace(input.BaseRef)})
+			}
+			args = append(args, ReviewTransitionArgument{Name: "committed-only", Value: "true"})
+		}
+		if input.Projection == reviewtransaction.ProjectionStaged {
+			args = append(args, ReviewTransitionArgument{Name: "projection", Value: string(input.Projection)})
+		}
+		if input.ReleaseScope {
+			args = append(args, ReviewTransitionArgument{Name: "release-scope", Value: "true"})
+		}
+		return reviewExecuteTransition("recovery_authorized", "review.recover", args, []ReviewTransitionArgument{{Name: "state", Value: string(status.Authority.State)}, {Name: "recovery_authorization", Value: "provided"}}, binding, nil)
 	}
 	return reviewCollectTransition("recovery_authorization_required", ReviewTransitionInput{
 		Name: "recovery_authorization", Schema: "gentle-ai.review-recovery-authorization/v1", CaptureOperation: "external.authorize_recovery",

@@ -212,6 +212,9 @@ func AssessTargetStatus(ctx context.Context, repo string, request TargetStatusRe
 				candidates = append(candidates, candidate)
 				continue
 			}
+		} else if state.State == StateInvalidated {
+			candidates = append(candidates, candidate)
+			continue
 		} else if compactLiveTargetMatchesSnapshot(ctx, repo, state, live, true) {
 			candidates = append(candidates, candidate)
 			continue
