@@ -33,9 +33,9 @@ func TestOrdinaryMarkdownLowRiskLifecycleNeedsNoExternalEvidence(t *testing.T) {
 
 	startedAt := time.Now()
 	var startOutput bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
-	}, &startOutput); err != nil {
+	}), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	var started ReviewIntegrationStartResult
@@ -159,7 +159,7 @@ func TestStaticMDXRequiresReviewerEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := RunReview([]string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo}, &output); err != nil {
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo}), &output); err != nil {
 		t.Fatal(err)
 	}
 	var started ReviewIntegrationStartResult
@@ -224,9 +224,9 @@ func TestLowRiskNativeVerificationSupportsStagedProjection(t *testing.T) {
 	runReviewCLIGit(t, repo, "add", "--", "docs/staged-guide.md")
 
 	var output bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--projection", "staged",
-	}, &output); err != nil {
+	}), &output); err != nil {
 		t.Fatal(err)
 	}
 	var started ReviewIntegrationStartResult

@@ -2210,29 +2210,23 @@ func TestRunSyncWithProfilesIntegration(t *testing.T) {
 		t.Errorf("opencode.json should contain balanced orchestrator model 'claude-sonnet-4-5'")
 	}
 
-	// Verify prompt files exist in ~/.config/opencode/prompts/sdd/.
+	// Verify prompt references are relative to the generated OpenCode settings.
 	// Note: prompt files are written only for multi-mode. For single-mode syncs,
 	// profile sub-agents use {file:...} references that rely on prompts being written
 	// during a prior multi-mode sync. Check that the profile overlay is written correctly
 	// by verifying the agent keys themselves are present (already done above).
-	// The prompt directory is populated by the profile generator which calls
-	// SharedPromptDir internally — verify the directory path is referenced correctly.
-	promptDir := filepath.Join(home, ".config", "opencode", "prompts", "sdd")
 	promptPhases := []string{
 		"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design",
 		"sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive", "sdd-onboard",
 	}
-	// Verify the opencode.json file references mention the correct prompt directory.
-	slashPromptDir := filepath.ToSlash(promptDir)
-	if !strings.Contains(settingsStr, slashPromptDir) {
-		t.Errorf("opencode.json should reference prompt directory %q", slashPromptDir)
-	}
-	// Verify all phase prompt file references appear in the settings.
 	for _, phase := range promptPhases {
-		promptRef := filepath.ToSlash(filepath.Join(promptDir, phase+".md"))
+		promptRef := "{file:./prompts/sdd/" + phase + ".md}"
 		if !strings.Contains(settingsStr, promptRef) {
 			t.Errorf("opencode.json should contain prompt file reference for %q", promptRef)
 		}
+	}
+	if slashHome := filepath.ToSlash(home); strings.Contains(settingsStr, slashHome) {
+		t.Errorf("opencode.json should not contain temp home path %q", slashHome)
 	}
 
 	// Run 2: same selection → all assets already current → filesChanged=0.

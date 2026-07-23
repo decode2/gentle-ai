@@ -532,7 +532,7 @@ func buildCompactLifecycleSnapshot(ctx context.Context, repo string, request Gat
 		request.Target.IntendedUntracked = []string{}
 	}
 	if request.Target.Kind == TargetFixDiff || (request.Target.Kind == TargetBaseDiff || request.Target.Kind == TargetBaseWorkspaceOverlay) && (request.Gate == GatePostApply || request.Gate == GatePreCommit) {
-		snapshot, err := (SnapshotBuilder{Repo: repo}).build(ctx, request.Target, request.Gate == GatePreCommit)
+		snapshot, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, request.Target)
 		return snapshot, nil, err
 	}
 	return buildLifecycleSnapshot(ctx, repo, request)
@@ -719,8 +719,9 @@ func validateCompactCommittedTrackedScope(ctx context.Context, repo string, requ
 // validateReviewedPublicationRange enforces the governing publication
 // invariant: nothing newly published may exceed what review authorized. The
 // receipt's authority is the reviewed base→candidate delta plus the immutable
-// base tree it binds, so every path touched anywhere in the delivered range
-// base..head must stay inside the immutable genesis scope. For an empty-remote
+// base tree it binds, so every path touched in HEAD outside the reviewed and
+// tracking reachability boundaries must stay inside the immutable genesis
+// scope. For an empty-remote
 // bootstrap the range base is the resolved reviewed delivery base commit —
 // never the zero-OID sentinel — and the pre-base ancestry published in full by
 // the first push must additionally satisfy the reviewed base tree disclosure
@@ -731,11 +732,35 @@ func validateReviewedPublicationRange(ctx context.Context, repo string, genesis 
 			return err
 		}
 	}
-	output, err := runGit(ctx, repo, nil, nil, "log", "-m", "--format=", "--name-only", "-z", "--no-renames", refs.BaseCommit+".."+refs.HeadCommit)
-	if err != nil {
-		return fmt.Errorf("inspect complete publication range: %w", err)
+	reviewed := refs.Selection.Commit
+	if reviewed == "" || refs.Selection.Source == PrePRBoundaryEmptyRemoteBootstrap {
+		reviewed = refs.BaseCommit
 	}
-	paths, err := canonicalPaths(splitNullSeparatedPaths(output))
+	revisions := []string{refs.HeadCommit}
+	exclusions := []string{reviewed}
+	if refs.TrackingPresent {
+		exclusions = append(exclusions, refs.TrackingBoundary.Commit)
+	}
+	seen := map[string]struct{}{}
+	for _, excluded := range exclusions {
+		if excluded == "" {
+			continue
+		}
+		if _, duplicate := seen[excluded]; duplicate {
+			continue
+		}
+		seen[excluded] = struct{}{}
+		_, err := runGit(ctx, repo, nil, nil, "merge-base", "--is-ancestor", refs.HeadCommit, excluded)
+		if err == nil {
+			return errors.New("publication exclusion contains HEAD and would erase the publication range")
+		}
+		var commandErr *GitCommandError
+		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+			return fmt.Errorf("validate publication exclusion ancestry: %w", err)
+		}
+		revisions = append(revisions, "^"+excluded)
+	}
+	paths, err := collectReviewedPublicationPaths(ctx, repo, revisions)
 	if err == nil {
 		err = pathsAreSubset(paths, genesis)
 	}
@@ -743,6 +768,76 @@ func validateReviewedPublicationRange(ctx context.Context, repo string, genesis 
 		return fmt.Errorf("publication range exceeds immutable genesis scope: %w", err)
 	}
 	return nil
+}
+
+func collectReviewedPublicationPaths(ctx context.Context, repo string, revisions []string) ([]string, error) {
+	pathSet := func(args ...string) (map[string]bool, error) {
+		output, err := runGit(ctx, repo, nil, nil, args...)
+		if err != nil {
+			return nil, err
+		}
+		paths := map[string]bool{}
+		for _, path := range splitNullSeparatedPaths(output) {
+			paths[path] = true
+		}
+		return paths, nil
+	}
+	args := append([]string{"log", "--no-merges", "--format=", "--name-only", "-z", "--no-renames"}, revisions...)
+	paths, err := pathSet(args...)
+	if err != nil {
+		return nil, err
+	}
+	args = append([]string{"rev-list", "--merges"}, revisions...)
+	output, err := runGit(ctx, repo, nil, nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, merge := range strings.Fields(string(output)) {
+		output, err = runGit(ctx, repo, nil, nil, "rev-list", "--parents", "-n", "1", merge)
+		if err != nil {
+			return nil, err
+		}
+		parents := strings.Fields(string(output))
+		if len(parents) != 3 || parents[0] != merge {
+			return nil, fmt.Errorf("publication merge %s must have exactly two parents", merge)
+		}
+		output, err = runGit(ctx, repo, nil, nil, "merge-base", "--all", parents[1], parents[2])
+		if err != nil {
+			return nil, err
+		}
+		bases := strings.Fields(string(output))
+		if len(bases) != 1 {
+			return nil, fmt.Errorf("publication merge %s must have exactly one merge base", merge)
+		}
+		pairs := [][2]string{{bases[0], parents[1]}, {bases[0], parents[2]}, {parents[1], merge}, {parents[2], merge}}
+		sets := make([]map[string]bool, len(pairs))
+		for i, pair := range pairs {
+			sets[i], err = pathSet("diff-tree", "--no-commit-id", "--name-only", "-z", "--no-renames", "-r", pair[0], pair[1])
+			if err != nil {
+				return nil, err
+			}
+		}
+		candidates := map[string]bool{}
+		for path := range sets[2] {
+			candidates[path] = true
+		}
+		for path := range sets[3] {
+			candidates[path] = true
+		}
+		for path := range candidates {
+			// Exclude only a path carried unchanged from exactly one parent;
+			// every other merge delta is candidate-authored publication scope.
+			if (sets[0][path] && !sets[1][path] && !sets[2][path]) || (sets[1][path] && !sets[0][path] && !sets[3][path]) {
+				continue
+			}
+			paths[path] = true
+		}
+	}
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	return canonicalPaths(result)
 }
 
 func isPostReviewLifecycleArtifact(path string) bool {

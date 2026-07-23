@@ -39,6 +39,11 @@ type reviewRepositoryIdentityRecord struct {
 	RepositoryIdentity string `json:"repository_identity"`
 }
 
+type reviewRepositoryDirectoryIdentity struct {
+	path string
+	info fs.FileInfo
+}
+
 type reviewRepositoryContextFile struct {
 	Schema             string `json:"schema"`
 	Handle             string `json:"handle"`
@@ -377,40 +382,117 @@ func reviewRepositoryIdentity(ctx context.Context, repo string) (reviewRepositor
 	if err != nil {
 		return reviewRepositoryIdentityRecord{}, err
 	}
-	root, err = canonicalLocatorDirectory(root)
+	return reviewRepositoryIdentityAtRoot(ctx, root)
+}
+
+func reviewRepositoryIdentityAtRoot(ctx context.Context, root string) (reviewRepositoryIdentityRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	rootIdentity, err := captureReviewRepositoryDirectory(root)
 	if err != nil {
 		return reviewRepositoryIdentityRecord{}, err
 	}
-	topPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--show-toplevel")
+	control, err := os.Lstat(filepath.Join(rootIdentity.path, ".git"))
 	if err != nil {
 		return reviewRepositoryIdentityRecord{}, err
 	}
-	top, err := canonicalLocatorDirectory(strings.TrimSpace(string(topPayload)))
-	if err != nil || !sameLocatorDirectory(root, top) {
+	controlData, _ := os.ReadFile(filepath.Join(rootIdentity.path, ".git"))
+	directories, err := resolveReviewRepositoryDirectories(ctx, rootIdentity.path)
+	if err != nil {
+		return reviewRepositoryIdentityRecord{}, err
+	}
+	top, commonDir, gitDir := directories[0], directories[1], directories[2]
+	if !os.SameFile(rootIdentity.info, top.info) {
 		return reviewRepositoryIdentityRecord{}, errors.New("repository root identity changed")
 	}
-	commonPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
+	if err := validateReviewGitCommonDirectory(gitDir, commonDir); err != nil {
 		return reviewRepositoryIdentityRecord{}, err
 	}
-	commonDir, err := canonicalLocatorDirectory(strings.TrimSpace(string(commonPayload)))
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return reviewRepositoryIdentityRecord{}, err
 	}
-	gitPayload, err := runGit(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-dir")
-	if err != nil {
-		return reviewRepositoryIdentityRecord{}, err
+	for _, directory := range []reviewRepositoryDirectoryIdentity{rootIdentity, top, commonDir, gitDir} {
+		current, statErr := os.Stat(directory.path)
+		if statErr != nil || !current.IsDir() || !os.SameFile(directory.info, current) {
+			return reviewRepositoryIdentityRecord{}, errors.New("repository directory identity changed during resolution")
+		}
 	}
-	gitDir, err := canonicalLocatorDirectory(strings.TrimSpace(string(gitPayload)))
-	if err != nil {
-		return reviewRepositoryIdentityRecord{}, err
+	currentControl, controlErr := os.Lstat(filepath.Join(rootIdentity.path, ".git"))
+	currentData, currentDataErr := os.ReadFile(filepath.Join(rootIdentity.path, ".git"))
+	if controlErr != nil || !os.SameFile(control, currentControl) ||
+		control.Mode().IsRegular() && (currentDataErr != nil || !bytes.Equal(controlData, currentData)) {
+		return reviewRepositoryIdentityRecord{}, errors.New("repository Git control entry changed during resolution")
 	}
-	if !sameLocatorDirectory(gitDir, commonDir) && !locatorPathWithin(commonDir, gitDir) {
-		return reviewRepositoryIdentityRecord{}, errors.New("Git directory escapes its common directory")
+	identity := reviewRepositoryIdentityRecord{
+		RepositoryRoot: rootIdentity.path, GitCommonDir: commonDir.path, GitDir: gitDir.path,
 	}
-	identity := reviewRepositoryIdentityRecord{RepositoryRoot: root, GitCommonDir: commonDir, GitDir: gitDir}
 	identity.RepositoryIdentity = reviewRepositoryIdentityHash(identity)
 	return identity, nil
+}
+
+func captureReviewRepositoryDirectory(path string) (reviewRepositoryDirectoryIdentity, error) {
+	canonical, err := canonicalLocatorDirectory(path)
+	if err != nil {
+		return reviewRepositoryDirectoryIdentity{}, err
+	}
+	info, err := os.Stat(canonical)
+	if err != nil || !info.IsDir() {
+		return reviewRepositoryDirectoryIdentity{}, errors.New("review repository identity path is not a directory")
+	}
+	return reviewRepositoryDirectoryIdentity{path: canonical, info: info}, nil
+}
+
+func resolveReviewRepositoryDirectory(ctx context.Context, root, selector string) (reviewRepositoryDirectoryIdentity, error) {
+	path, err := resolveGitDirectory(ctx, root, selector)
+	if err != nil {
+		return reviewRepositoryDirectoryIdentity{}, err
+	}
+	return captureReviewRepositoryDirectory(path)
+}
+
+func resolveReviewRepositoryDirectories(ctx context.Context, root string) ([]reviewRepositoryDirectoryIdentity, error) {
+	output, err := runGit(ctx, root, nil, nil, "rev-parse", "--show-toplevel", "--git-common-dir", "--git-dir")
+	if err != nil {
+		return nil, err
+	}
+	records := bytes.Split(bytes.TrimSuffix(output, []byte{'\n'}), []byte{'\n'})
+	if len(records) != 3 {
+		return nil, errors.New("Git repository selection must return exactly three path records")
+	}
+	directories := make([]reviewRepositoryDirectoryIdentity, 3)
+	for index, record := range records {
+		path, pathErr := canonicalGitDirectory(root, bytes.TrimSuffix(record, []byte{'\r'}))
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		directories[index], pathErr = captureReviewRepositoryDirectory(path)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+	}
+	return directories, nil
+}
+
+func validateReviewGitCommonDirectory(gitDir, commonDir reviewRepositoryDirectoryIdentity) error {
+	if os.SameFile(gitDir.info, commonDir.info) {
+		return nil
+	}
+	record, err := os.ReadFile(filepath.Join(gitDir.path, "commondir"))
+	record = bytes.TrimSuffix(bytes.TrimSuffix(record, []byte{'\n'}), []byte{'\r'})
+	if err != nil || len(record) == 0 || bytes.IndexByte(record, 0) >= 0 || bytes.ContainsAny(record, "\r\n") ||
+		strings.TrimSpace(string(record)) == "" || bytes.HasPrefix(record, []byte("--")) {
+		return errors.New("Git common directory relationship is invalid")
+	}
+	path := string(record)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(gitDir.path, path)
+	}
+	resolved, err := captureReviewRepositoryDirectory(path)
+	if err != nil || !os.SameFile(resolved.info, commonDir.info) {
+		return errors.New("Git common directory relationship is invalid")
+	}
+	return nil
 }
 
 func reviewRepositoryIdentityHash(identity reviewRepositoryIdentityRecord) string {
@@ -504,6 +586,12 @@ func privateLocatorFileModeSafe(mode fs.FileMode) bool {
 func locatorPathWithin(base, candidate string) bool {
 	relative, err := filepath.Rel(filepath.Clean(base), filepath.Clean(candidate))
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+func locatorPathStrictlyWithin(base, candidate string) bool {
+	relative, err := filepath.Rel(filepath.Clean(base), filepath.Clean(candidate))
+	return err == nil && relative != "." && relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
 func sameLocatorDirectory(left, right string) bool {

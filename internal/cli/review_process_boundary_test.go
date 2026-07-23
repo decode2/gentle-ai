@@ -24,9 +24,9 @@ func TestReviewStartSelectsCanonicalFourRForSubprocessWrapper(t *testing.T) {
 	writeReviewCLIModule(t, repo, "tools/procwrap/__init__.py", paddedReviewCLIModule([]string{`"""Package marker."""`}, 8))
 
 	var startOutput bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo,
-	}, &startOutput); err != nil {
+	}), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	var started ReviewIntegrationStartResult

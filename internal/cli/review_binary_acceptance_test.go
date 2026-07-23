@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -62,7 +63,7 @@ func TestWindowsPowerShell51ArtifactManifestFileFinalize(t *testing.T) {
 	evidence := filepath.Join(temp, "evidence.txt")
 	manifest := filepath.Join(temp, "manifest.json")
 	script := filepath.Join(temp, "finalize.ps1")
-	if err := os.WriteFile(input, []byte(`{"findings":[],"evidence":["checked exact target through Windows PowerShell 5.1"]}`), 0o600); err != nil {
+	if err := os.WriteFile(input, powerShell51ReviewerPayloadForTest(t, repo, record, record.State.SelectedLenses[0], 0), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(evidence, []byte("focused artifact transport acceptance passed\n"), 0o600); err != nil {
@@ -102,6 +103,38 @@ exit $LASTEXITCODE
 	if finalized.State != reviewtransaction.StateApproved || status.Authority == nil || status.Authority.State != reviewtransaction.StateApproved || status.Receipt.Status != ReviewReceiptPresent || status.Receipt.Identity == "" {
 		t.Fatalf("approved status = %#v, finalize = %#v", status, finalized)
 	}
+}
+
+func TestPowerShell51ReviewerPayloadBindsProviderArtifactSubject(t *testing.T) {
+	repo, started, _, record := newArtifactReview(t, false)
+	lens := record.State.SelectedLenses[0]
+	input := filepath.Join(t.TempDir(), "reviewer.json")
+	if err := os.WriteFile(input, powerShell51ReviewerPayloadForTest(t, repo, record, lens, 0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := RunReviewCaptureResult([]string{
+		"--cwd", repo,
+		"--lineage", started.LineageID,
+		"--target", record.State.InitialSnapshot.Identity,
+		"--lens", lens,
+		"--order", "0",
+		"--input", input,
+	}, &output); err != nil {
+		t.Fatalf("PowerShell reviewer fixture omitted its provider-owned artifact subject: %v", err)
+	}
+	var artifact reviewResultArtifact
+	decodeStrictReviewJSON(t, output.Bytes(), &artifact)
+	if artifact.SubjectHash == "" {
+		t.Fatal("captured PowerShell reviewer fixture has no provider-owned artifact subject")
+	}
+}
+
+func powerShell51ReviewerPayloadForTest(t *testing.T, repo string, record reviewtransaction.CompactRecord, lens string, order int) []byte {
+	t.Helper()
+	return admittedReviewerPayloadForTest(t, repo, record, lens, order,
+		"checked exact target through Windows PowerShell 5.1")
 }
 
 func TestMainBinaryAcceptsCorrectedCandidateFromLinkedWorktree(t *testing.T) {
