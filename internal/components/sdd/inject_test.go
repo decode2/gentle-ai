@@ -584,11 +584,11 @@ func TestInjectOpenCodeUsesOpenCodeSpecificOrchestratorPrompt(t *testing.T) {
 			for _, wanted := range []string{
 				"Gentle AI",
 				"Read the configured models from `opencode.json`",
-				"present the proceed/adjust/stop options via the `question` tool",
-				"Use the `question` tool for this between-phase decision",
-				"present the proceed/adjust/stop options through a single `question` tool call",
-				"present that decision via the `question` tool",
-				"Use the `question` tool for this choice: present the two strategy options",
+				"Use the `question` tool for SDD Session Preflight only when it is available in the current interactive runtime and all four groups are exactly representable",
+				"present the proceed/adjust/stop options through the lossless blocking-prompt route",
+				"present the correct/second-round/continue choice through the lossless blocking-prompt route",
+				"Present the two strategy options through one `question` tool call when the lossless native route is usable",
+				"otherwise emit the complete choice through the plain chat or terminal fallback and STOP",
 			} {
 				if !strings.Contains(text, wanted) {
 					t.Fatalf("opencode.json missing OpenCode orchestrator prompt content %q", wanted)
