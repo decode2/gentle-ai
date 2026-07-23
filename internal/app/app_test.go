@@ -293,6 +293,13 @@ func TestRunArgsSDDStatusIsDispatchedBeforePlatformValidation(t *testing.T) {
 	}
 }
 
+func TestRunArgsSDDVerifyValidateIsDispatchedBeforePlatformValidation(t *testing.T) {
+	err := RunArgs([]string{"sdd-verify-validate", "--input", filepath.Join(t.TempDir(), "missing"), "--requirements", "1", "--scenarios", "1"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "read verify report") {
+		t.Fatalf("RunArgs(sdd-verify-validate) error = %v", err)
+	}
+}
+
 func TestRunArgsSDDAttemptIsDispatchedBeforePlatformValidation(t *testing.T) {
 	origEnsure := ensureCurrentOSSupported
 	t.Cleanup(func() { ensureCurrentOSSupported = origEnsure })

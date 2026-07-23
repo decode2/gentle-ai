@@ -372,6 +372,32 @@ observed_authority_revision: sha256:{observed-authority-revision}`
 	}
 }
 
+func TestSDDVerifyAdmissionPrecedesPersistence(t *testing.T) {
+	for _, path := range []string{"skills/sdd-verify/SKILL.md", "skills/sdd-verify/references/report-format.md", "skills/_shared/sdd-phase-common.md", "skills/_shared/persistence-contract.md"} {
+		content := MustRead(path)
+		for _, want := range []string{"sdd-verify-validate", "exact candidate bytes", "before any OpenSpec or Engram write", "validator is unavailable", "valid `fail`"} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s missing admission contract %q", path, want)
+			}
+		}
+	}
+	contract := MustRead("skills/_shared/persistence-contract.md")
+	for _, want := range []string{"Do not create, truncate, delete, or overwrite any prior `verify-report`", "A valid `fail` report must be persisted", "validator is unavailable"} {
+		if !strings.Contains(contract, want) {
+			t.Fatalf("persistence contract missing %q", want)
+		}
+	}
+	if count := strings.Count(MustRead("skills/sdd-verify/SKILL.md"), "sdd-verify-validate"); count < 2 {
+		t.Fatalf("both sdd-verify model sections require admission, got %d occurrences", count)
+	}
+	for _, path := range []string{"claude/agents/sdd-verify.md", "claude/commands/sdd-verify.md", "cursor/agents/sdd-verify.md", "kimi/agents/sdd-verify.md", "kiro/agents/sdd-verify.md"} {
+		content := MustRead(path)
+		if skill, save := strings.Index(content, "sdd-verify/SKILL.md"), strings.LastIndex(content, "mem_save"); skill < 0 || save < 0 || skill > save {
+			t.Fatalf("%s must load the shared verify contract before persistence", path)
+		}
+	}
+}
+
 func TestOpenCodeEmbeddedAssetLayout(t *testing.T) {
 	entries, err := FS.ReadDir("opencode")
 	if err != nil {
