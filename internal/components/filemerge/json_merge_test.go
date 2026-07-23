@@ -1,8 +1,8 @@
 package filemerge
 
 import (
+	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -409,8 +409,18 @@ func TestMergeJSONObjectsPreservesLargeIntegers(t *testing.T) {
 		t.Fatalf("MergeJSONObjects() error = %v", err)
 	}
 
-	mergedStr := string(merged)
-	if !strings.Contains(mergedStr, "9007199254740993") {
-		t.Fatalf("MergeJSONObjects() lost large integer precision; merged output =\n%s", mergedStr)
+	var obj map[string]any
+	dec := json.NewDecoder(bytes.NewReader(merged))
+	dec.UseNumber()
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	num, ok := obj["unrelated_id"].(json.Number)
+	if !ok {
+		t.Fatalf("unrelated_id type = %T, want json.Number", obj["unrelated_id"])
+	}
+	if num.String() != "9007199254740993" {
+		t.Fatalf("unrelated_id = %s, want 9007199254740993", num.String())
 	}
 }

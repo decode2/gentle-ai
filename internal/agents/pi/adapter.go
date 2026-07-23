@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -375,6 +376,12 @@ func readPiJSONObject(path string) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(base))
 	dec.UseNumber()
 	if err := dec.Decode(&object); err != nil {
+		return nil, fmt.Errorf("unmarshal pi json file %q: %w", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("unmarshal pi json file %q: unexpected trailing JSON payload", path)
+		}
 		return nil, fmt.Errorf("unmarshal pi json file %q: %w", path, err)
 	}
 	if object == nil {
