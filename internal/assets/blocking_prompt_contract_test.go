@@ -83,8 +83,8 @@ func TestCoordinatorOrchestratorsCarryLosslessBlockingPromptRule(t *testing.T) {
 				if !strings.Contains(rule, "never render it as plain chat text") {
 					t.Fatalf("%s lossless rule must forbid plain-chat-text rendering: %q", path, rule)
 				}
-				if !strings.Contains(rule, "every option intact") {
-					t.Fatalf("%s lossless rule must require every option be grouped and intact: %q", path, rule)
+				if !strings.Contains(rule, "as a single grouped call with every option intact") {
+					t.Fatalf("%s lossless rule must require a single grouped call with every option intact: %q", path, rule)
 				}
 				return
 			}
