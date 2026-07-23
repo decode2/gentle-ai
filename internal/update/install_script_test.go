@@ -256,3 +256,22 @@ func TestWindowsInstallScriptFallbackChecksumExecution(t *testing.T) {
 	}
 	t.Logf("PowerShell fallback test output:\n%s", string(out))
 }
+
+func TestInstallScriptAtomicBinaryReplacementStructure(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "install.sh")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+
+	script := string(content)
+	for _, want := range []string{
+		"local stage_file=",
+		"mv -f \"$stage_file\"",
+		"cleanup_stage",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("scripts/install.sh is missing %q for atomic binary replacement", want)
+		}
+	}
+}
