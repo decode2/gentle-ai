@@ -305,6 +305,16 @@ In **Automatic** mode the orchestrator is the gatekeeper between phases. The gat
 
 The gatekeeper runs in addition to the Review Workload Guard and the Mandatory Delegation Triggers; it never relaxes them and never auto-marks anything reviewed in engram.
 
+### Native Runtime Attempt Authority (MANDATORY)
+
+Use the provider-owned Git-common-dir runtime ledger for every runtime-bearing `sdd-apply`, `sdd-verify`, or remediation continuation. It is the single attempt/budget authority for both OpenSpec and Engram; never persist caller-authored counters in OpenSpec files, Engram topics, prompts, or Pi state.
+
+1. Before any actor or harness launch, read `gentle-ai sdd-attempt status --cwd <repo> --change <change>`. Treat its exact `revision`, `active_attempt`, `decision_required`, and `next_action` as authoritative.
+2. If `active_attempt` is populated, do not launch again. Finish that charged ordinal with `gentle-ai sdd-attempt finish --cwd <repo> --change <change> --expected-revision <revision> ...`, recording passed, failed, or interrupted outcome plus evidence revision, diagnosis, harness disposition, cleanup evidence, and process evidence.
+3. If `decision_required` is true, stop execution and report the native diagnosis/budget state. Only an explicit maintainer scope decision may call `gentle-ai sdd-attempt reset --cwd <repo> --change <change> --expected-revision <revision> ...`; a renamed work unit or new process never resets cumulative budgets.
+4. When `next_action` is `begin`, consume the ordinal before launch with `gentle-ai sdd-attempt begin --cwd <repo> --change <change> --expected-revision <revision> ...`. After `next_action: complete`, never rerun the same objective; a genuinely distinct objective requires an explicit reset.
+5. A passing bound remediation MUST add `--expected-binding-revision`, `--successor-lineage`, and `--remediates-evidence-revision` to `gentle-ai sdd-attempt finish`. The native command charges the attempt, persists evidence, and selects the already-approved compact recovery successor in one HEAD CAS; do not publish those steps separately.
+
 ### Artifact Store Mode
 
 When the user invokes `/sdd-new`, `/sdd-ff`, or `/sdd-continue` for the first time in a session, also ask which artifact store they want:
@@ -337,6 +347,19 @@ After `sdd-tasks` completes and before launching `sdd-apply`, inspect the task r
 If it says `Chained PRs recommended: Yes`, `400-line budget risk: High`, estimated changed lines exceed 400, or `Decision needed before apply: Yes`, apply the cached `delivery_strategy`: `ask-on-risk` asks, `auto-chain` asks for a missing `chain_strategy` and applies only the next PR slice, `single-pr` requires `size:exception`, and `exception-ok` records the exception.
 
 When launching `sdd-apply`, include the resolved `delivery_strategy`, `chain_strategy`, and any chosen PR boundary/exception in the prompt.
+
+### Apply/Verify Context Forwarding (MANDATORY)
+
+Before spawning each delegated `sdd-apply` or `sdd-verify` phase:
+
+1. Search `mem_search(query: "sdd-init/{project}", project: "{project}")`, then call `mem_get_observation(id)` for the matching ID and read the full project init. Search previews are not sufficient. Resolve the exact `strict_tdd` value and `test_command`; if the full project init cannot be retrieved, STOP instead of inferring Standard Mode.
+2. Search `mem_search(query: "sdd/{change-name}/apply-progress", project: "{project}")`. When it exists, call `mem_get_observation(id)` and read the full prior apply-progress before launch. Record an explicit `none` when it does not exist.
+3. Add both resolved values to the Codex phase prompt for apply **and** verify:
+   - `strict_tdd: true|false` plus the exact test command. When active, state that RED → GREEN → REFACTOR is non-negotiable and Standard Mode is forbidden.
+   - `previous_apply_progress: <full prior apply-progress | none>`. Verify consumes it as evidence; apply treats it as cumulative state.
+4. For `sdd-apply`, add: `READ-MERGE-WRITE the apply-progress artifact. Preserve every prior completed task, merge this batch, and persist the full combined apply-progress. Do NOT overwrite prior progress.`
+
+The phase result must prove that persistence contract. Refresh prior progress before every apply/verify launch; do not rely on a cached search preview or conversation history.
 
 ### Artifact store (engram default)
 

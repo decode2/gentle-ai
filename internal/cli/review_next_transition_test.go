@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -69,6 +72,25 @@ func TestValidatingEvidenceCollectionUnblocksFinalizeAndPreCommit(t *testing.T) 
 	}
 }
 
+func TestFinalizeNextTransitionBindsCorrectedCurrentSnapshot(t *testing.T) {
+	initialTarget := strings.Repeat("a", 64)
+	currentTarget := strings.Repeat("b", 64)
+	transition := reviewFinalizeNextTransition(reviewtransaction.CompactState{
+		LineageID:       "corrected-validating-lineage",
+		State:           reviewtransaction.StateValidating,
+		RiskLevel:       reviewtransaction.RiskMedium,
+		InitialSnapshot: reviewtransaction.Snapshot{Identity: initialTarget},
+		CurrentSnapshot: reviewtransaction.Snapshot{Identity: currentTarget},
+	}, strings.Repeat("c", 64), nil, nil)
+	if transition.Kind != reviewNextTransitionCollect || transition.Collect == nil || len(transition.Collect.Inputs) != 1 {
+		t.Fatalf("corrected validating transition = %#v", transition)
+	}
+	arguments := transition.Collect.Inputs[0].Arguments
+	if len(arguments) != 3 || arguments[2].Name != "target" || arguments[2].Value != currentTarget {
+		t.Fatalf("corrected validating target arguments = %#v, want current snapshot %q", arguments, currentTarget)
+	}
+}
+
 func TestNegotiatedNextTransitionDiscoversCapturedArtifactsAndAdvances(t *testing.T) {
 	repo, started, _, record, _ := capturedArtifact(t)
 	args := []string{"status", "--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", started.LineageID}
@@ -103,6 +125,211 @@ func TestNegotiatedNextTransitionDiscoversCapturedArtifactsAndAdvances(t *testin
 	decodeStrictReviewJSON(t, result.Result, &public)
 	if public.NextTransition == nil || public.NextTransition.Kind != reviewNextTransitionCollect || public.NextTransition.ReasonCode != "verification_evidence_required" {
 		t.Fatalf("finalize transition = %#v\n%s", public.NextTransition, finalized.String())
+	}
+}
+
+func TestCorrectionNextTransitionAgreesBetweenFinalizeAndRestartStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name, reason string
+		forecast     bool
+		change       bool
+		kind         string
+	}{
+		{name: "forecast absent", reason: "correction_plan_required", kind: reviewNextTransitionCollect},
+		{name: "forecast present candidate unchanged", reason: "corrected_candidate_unavailable", forecast: true, kind: reviewNextTransitionStop},
+		{name: "forecast present candidate changed", reason: "targeted_validation_required", forecast: true, change: true, kind: reviewNextTransitionCollect},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initReviewCLIRepo(t)
+			candidatePath := filepath.Join(repo, "candidate.go")
+			if err := os.WriteFile(candidatePath, []byte("package candidate\n\nfunc value() int { return 1 }\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			started := runNegotiatedReviewStart(t, repo, "correction-routing-"+strings.ReplaceAll(tt.name, " ", "-"))
+			resultPath := filepath.Join(t.TempDir(), "blocking-result.json")
+			writeReviewCLIJSON(t, resultPath, facadeReviewerResult{
+				Lens: started.SelectedLenses[0], Findings: []facadeFinding{{
+					Location: "candidate.go:3", Severity: "CRITICAL", Claim: "candidate value is wrong",
+					ProofRefs: []string{"candidate.go:3 changed hunk"}, EvidenceClass: reviewtransaction.EvidenceDeterministic,
+					CausalDisposition: reviewtransaction.CausalIntroduced,
+				}}, Evidence: []string{"inspected exact candidate"},
+			})
+			if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result", resultPath}, &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
+			if tt.forecast {
+				if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--correction-lines", "1"}, &bytes.Buffer{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.change {
+				if err := os.WriteFile(candidatePath, []byte("package candidate\n\nfunc value() int { return 2 }\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var directOutput bytes.Buffer
+			if err := RunReviewFacadeFinalize([]string{
+				"--cwd", repo, "--contract", ReviewIntegrationContractV1, "--next-transition", "--lineage", started.LineageID,
+			}, &directOutput); err != nil {
+				t.Fatalf("direct FINALIZE: %v\n%s", err, directOutput.String())
+			}
+			var direct ReviewIntegrationFinalizeResult
+			decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, directOutput.Bytes()).Result, &direct)
+
+			var statusOutput bytes.Buffer
+			if err := RunReview([]string{
+				"status", "--cwd", repo, "--contract", ReviewIntegrationContractV1, "--next-transition", "--lineage", started.LineageID,
+			}, &statusOutput); err != nil {
+				t.Fatalf("restarted STATUS: %v\n%s", err, statusOutput.String())
+			}
+			var status ReviewTargetStatusResult
+			decodeStrictReviewJSON(t, statusOutput.Bytes(), &status)
+			if direct.NextTransition == nil || status.NextTransition == nil || direct.NextTransition.Kind != tt.kind ||
+				direct.NextTransition.ReasonCode != tt.reason || !reflect.DeepEqual(direct.NextTransition, status.NextTransition) ||
+				!reflect.DeepEqual(direct.ValidationRequest, status.ValidationRequest) {
+				t.Fatalf("FINALIZE/STATUS routing mismatch:\ndirect=%#v request=%#v\nstatus=%#v request=%#v", direct.NextTransition, direct.ValidationRequest, status.NextTransition, status.ValidationRequest)
+			}
+		})
+	}
+}
+
+func TestConsumedHistoricalCorrectionRoutesToRecoveryOrStop(t *testing.T) {
+	forecast := 1
+	for _, proposed := range []*int{nil, &forecast} {
+		for _, changed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("forecasted=%t/changed=%t", proposed != nil, changed), func(t *testing.T) {
+				repo, lineage, store, before := historicalConsumedCorrectionRoutingFixture(t, proposed)
+				if changed {
+					writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(3), 0o644)
+				}
+				statusArgs := []string{"status", "--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", lineage}
+				var first, restarted bytes.Buffer
+				if err := RunReview(statusArgs, &first); err != nil {
+					t.Fatal(err)
+				}
+				var status ReviewTargetStatusResult
+				decodeStrictReviewJSON(t, first.Bytes(), &status)
+				wantAction, wantKind, wantReason := reviewtransaction.TargetStatusActionStop, reviewNextTransitionStop, "unchanged_or_unverified_authority"
+				if changed {
+					wantAction, wantKind, wantReason = reviewtransaction.TargetStatusActionRecover, reviewNextTransitionCollect, "recovery_authorization_required"
+				}
+				if status.Action != wantAction || status.ValidationRequest != nil || status.NextTransition == nil || status.NextTransition.Kind != wantKind || status.NextTransition.ReasonCode != wantReason {
+					t.Fatalf("historical status = action %q request %#v transition %#v", status.Action, status.ValidationRequest, status.NextTransition)
+				}
+				var directOutput bytes.Buffer
+				if err := RunReviewFacadeFinalize([]string{"--contract", ReviewIntegrationContractV1, "--next-transition", "--cwd", repo, "--lineage", lineage}, &directOutput); err != nil {
+					t.Fatal(err)
+				}
+				var direct ReviewIntegrationFinalizeResult
+				decodeStrictReviewJSON(t, decodeReviewOperationEnvelope(t, directOutput.Bytes()).Result, &direct)
+				if direct.ValidationRequest != nil || direct.NextTransition == nil || direct.NextTransition.Kind != reviewNextTransitionStop || direct.NextTransition.ReasonCode != "unchanged_or_unverified_authority" {
+					t.Fatalf("historical direct FINALIZE = request %#v transition %#v", direct.ValidationRequest, direct.NextTransition)
+				}
+				if err := RunReview(statusArgs, &restarted); err != nil || restarted.String() != first.String() {
+					t.Fatalf("restarted STATUS changed: %v\nfirst=%s\nrestarted=%s", err, first.String(), restarted.String())
+				}
+				after, _ := os.ReadFile(store.StatePath())
+				if !bytes.Equal(before, after) {
+					t.Fatal("routing mutated historical predecessor authority")
+				}
+			})
+		}
+	}
+}
+
+func historicalConsumedCorrectionRoutingFixture(t *testing.T, proposed *int) (string, string, reviewtransaction.CompactStore, []byte) {
+	t.Helper()
+	repo := initReviewCLIRepo(t)
+	writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(1), 0o644)
+	started := runNegotiatedReviewStart(t, repo, "historical-consumed-routing")
+	result := filepath.Join(t.TempDir(), "blocking-result.json")
+	writeReviewCLIJSON(t, result, facadeReviewerResult{Lens: started.SelectedLenses[0], Findings: []facadeFinding{{Location: "candidate.go:3", Severity: "CRITICAL", Claim: "candidate value is wrong", ProofRefs: []string{"candidate.go:3 changed hunk"}, EvidenceClass: reviewtransaction.EvidenceDeterministic, CausalDisposition: reviewtransaction.CausalIntroduced}}, Evidence: []string{"reviewed exact candidate"}})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--result", result, "--correction-lines", "2"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	writeReviewStartCandidate(t, repo, "candidate.go", historicalRoutingCandidate(2), 0o644)
+	validation := filepath.Join(t.TempDir(), "validation.json")
+	writeReviewCLIJSON(t, validation, facadeValidationResult{OriginalCriteria: facadeValidationCheck{Evidence: []string{"acceptance still fails"}}, CorrectionRegression: facadeValidationCheck{Evidence: []string{"regression still fails"}}, FollowUps: []reviewtransaction.FollowUp{}})
+	if err := RunReviewFacadeFinalize([]string{"--cwd", repo, "--lineage", started.LineageID, "--validation", validation}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, started.LineageID)
+	record, _ := store.Load()
+	record.State.State, record.State.ProposedCorrectionLines, record.State.ActualCorrectionLines = reviewtransaction.StateCorrectionRequired, proposed, nil
+	record.State.FixDeltaHash, record.State.OriginalCriteria, record.State.CorrectionRegression = reviewtransaction.EmptyFixDeltaHash, nil, nil
+	if err := record.State.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	record.Revision, _ = reviewtransaction.CompactRevisionForState(record.State)
+	record.Schema = "gentle-ai.review-state-record/v2"
+	payload, _ := json.MarshalIndent(record, "", "  ")
+	payload = append(payload, '\n')
+	if err := os.WriteFile(store.StatePath(), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(store.ReceiptPath())
+	_ = os.Remove(filepath.Join(store.Dir, "finalize-attempt-journal.json"))
+	return repo, started.LineageID, store, payload
+}
+
+func historicalRoutingCandidate(value int) string {
+	return fmt.Sprintf("package candidate\n\nfunc value() int { return %d }\nfunc spare1() int { return 0 }\nfunc spare2() int { return 0 }\nfunc spare3() int { return 0 }\n", value)
+}
+
+func TestNegotiatedRestartStatusSuppliesFrozenContextForEveryMissingReviewer(t *testing.T) {
+	repo, started, _, record := newArtifactReview(t, true)
+	var output bytes.Buffer
+	if err := RunReview([]string{
+		"status", "--contract", ReviewIntegrationContractV1, "--next-transition",
+		"--cwd", repo, "--lineage", started.LineageID,
+	}, &output); err != nil {
+		t.Fatal(err)
+	}
+	var status ReviewTargetStatusResult
+	decodeStrictReviewJSON(t, output.Bytes(), &status)
+	if status.NextTransition == nil || status.NextTransition.Collect == nil ||
+		len(status.NextTransition.Collect.Inputs) != len(record.State.SelectedLenses) {
+		t.Fatalf("restart transition = %#v", status.NextTransition)
+	}
+	wantContext, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).FrozenCandidateContext(context.Background(), record.State.InitialSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for order, input := range status.NextTransition.Collect.Inputs {
+		payload, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &document); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"artifact_subject", "candidate_diff", "changed_path_manifest"} {
+			if len(document[field]) == 0 {
+				t.Fatalf("restart reviewer input %d omits %q: %s", order, field, payload)
+			}
+		}
+		var subject reviewtransaction.ArtifactSubject
+		var diff reviewtransaction.FrozenCandidateDiff
+		var manifest []reviewtransaction.ChangedPathManifestEntry
+		if err := json.Unmarshal(document["artifact_subject"], &subject); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(document["candidate_diff"], &diff); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(document["changed_path_manifest"], &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if subject.LineageID != record.State.LineageID || subject.AuthorityRevision != record.Revision ||
+			subject.TargetIdentity != record.State.InitialSnapshot.Identity || subject.Lens != record.State.SelectedLenses[order] ||
+			subject.SelectedOrder != order || subject.CandidateDiffSHA256 != wantContext.CandidateDiff.SHA256 {
+			t.Fatalf("restart subject %d = %#v", order, subject)
+		}
+		if !reflect.DeepEqual(diff, wantContext.CandidateDiff) || !reflect.DeepEqual(manifest, wantContext.ChangedPathManifest) {
+			t.Fatalf("restart context %d differs from frozen candidate\ngot diff=%#v manifest=%#v\nwant diff=%#v manifest=%#v", order, diff, manifest, wantContext.CandidateDiff, wantContext.ChangedPathManifest)
+		}
 	}
 }
 
@@ -146,6 +373,7 @@ func TestReviewNextTransitionStateTable(t *testing.T) {
 			input := reviewNextTransitionInput{}
 			if tt.status.Authority != nil && tt.status.Authority.State == reviewtransaction.StateReviewing {
 				input.RepositoryContext = "rctx1_" + strings.Repeat("d", 64)
+				input.CaptureContext = nextTransitionTestCaptureContext(t, tt.status, tt.lenses)
 			}
 			if tt.status.Authority.State == reviewtransaction.StateApproved {
 				tt.status.Receipt.Status = ReviewReceiptPresent
@@ -166,6 +394,32 @@ func TestReviewNextTransitionStateTable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func nextTransitionTestCaptureContext(t *testing.T, status ReviewTargetStatusResult, lenses []string) *reviewCaptureContext {
+	t.Helper()
+	diff, err := reviewtransaction.NewFrozenCandidateDiff([]byte("immutable candidate\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := reviewtransaction.FrozenCandidateContext{
+		CandidateDiff: diff,
+		ChangedPathManifest: []reviewtransaction.ChangedPathManifestEntry{{
+			Path: "tracked.txt", Status: reviewtransaction.CandidatePathModified, OldMode: "100644", NewMode: "100644",
+		}},
+	}
+	state := reviewtransaction.CompactState{
+		LineageID: status.Authority.LineageID,
+		InitialSnapshot: reviewtransaction.Snapshot{
+			Identity: status.TargetIdentity, Paths: []string{"tracked.txt"},
+		},
+		SelectedLenses: append([]string{}, lenses...),
+	}
+	context, err := newReviewCaptureContext(state, status.Authority.Revision, frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return context
 }
 
 func TestReviewNextTransitionRefusesTargetDriftAndUnverifiableCaptures(t *testing.T) {

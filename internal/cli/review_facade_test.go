@@ -617,6 +617,7 @@ func TestReviewFacadeFinalizeReceiptPublicationFailureIsExactlyReplayable(t *tes
 		return reviewtransaction.WriteCompactReceiptAtomic(path, got)
 	}
 	defer func() { writeCompactFacadeReceipt = original }()
+	writeReviewStartCandidate(t, fixture.repo, "tracked.txt", "later worktree drift\n", 0o644)
 	var output bytes.Buffer
 	if err := RunReviewFacadeFinalize([]string{"--cwd", fixture.repo, "--lineage", fixture.started.LineageID}, &output); err != nil {
 		t.Fatalf("exact receipt replay: %v", err)
@@ -734,6 +735,7 @@ func TestReviewFacadeFinalizePlannedTransitionInterruptionResumesWithoutDuplicat
 		t.Fatalf("planned interruption journal = %#v, %v", pending, err)
 	}
 	reviewFacadePlannedTransitionHook = original
+	writeReviewStartCandidate(t, repo, "tracked.txt", "later worktree drift\n", 0o644)
 	if err := RunReviewFacadeFinalize(args, io.Discard); err != nil {
 		t.Fatalf("exact replay after planned interruption: %v", err)
 	}
@@ -1101,7 +1103,7 @@ func TestReviewFacadeStartCannotResetActiveCorrectionBudget(t *testing.T) {
 
 			var output bytes.Buffer
 			if tt.negotiated {
-				err = RunReview([]string{"start", "--cwd", repo, "--contract", ReviewIntegrationContractV1}, &output)
+				err = RunReview(boundNegotiatedStartArgs(t, []string{"start", "--cwd", repo, "--contract", ReviewIntegrationContractV1}), &output)
 			} else {
 				err = RunReviewFacadeStart([]string{"--cwd", repo}, &output)
 			}
@@ -1402,7 +1404,9 @@ func TestReviewSchemaExamplesMatchStrictFacadeContracts(t *testing.T) {
 				if err := readFacadeJSON(path, &value); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := value.compact(reviewtransaction.EmptyFixDeltaHash, []string{}); err != nil {
+				if _, err := value.compact(reviewtransaction.EmptyFixDeltaHash, []string{}, reviewtransaction.TargetedValidationRequest{
+					RequestHash: reviewtransaction.EmptyFixDeltaHash, CorrectionTargetIdentity: reviewtransaction.EmptyFixDeltaHash,
+				}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1693,6 +1697,10 @@ func TestReviewBindSDDRequiresExplicitInputs(t *testing.T) {
 	err := RunReview([]string{"bind-sdd", "--cwd", t.TempDir(), "--change", "thin", "--lineage", "approved"}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "expected-binding-revision") {
 		t.Fatalf("bind-sdd missing explicit CAS input error = %v", err)
+	}
+	err = RunReview([]string{"bind-sdd", "--cwd", t.TempDir(), "--change", "thin", "--lineage", "approved", "--expected-binding-revision", "sha256:deadbeef"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "empty or sha256") {
+		t.Fatalf("bind-sdd malformed CAS input error = %v", err)
 	}
 }
 

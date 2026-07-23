@@ -67,6 +67,24 @@ func (builder SnapshotBuilder) Build(ctx context.Context, target Target) (Snapsh
 	return builder.build(ctx, target, false)
 }
 
+// BuildStagedWorkspaceOverlayRecovery freezes the exact real index for the
+// single recovery-only staged overlay transition. Ordinary START keeps using
+// Build, so this representation cannot create fresh authority directly.
+func (builder SnapshotBuilder) BuildStagedWorkspaceOverlayRecovery(ctx context.Context, target Target) (Snapshot, error) {
+	if target.Kind != TargetBaseWorkspaceOverlay || target.Projection != ProjectionStaged ||
+		target.IntendedUntracked == nil || len(target.IntendedUntracked) != 0 || len(target.LedgerIDs) != 0 {
+		return Snapshot{}, errors.New("staged workspace-overlay recovery requires an explicit empty intended_untracked list and no ledger IDs")
+	}
+	return builder.build(ctx, target, true)
+}
+
+func (builder SnapshotBuilder) BuildStoredSnapshot(ctx context.Context, target Target) (Snapshot, error) {
+	if target.Kind == TargetBaseWorkspaceOverlay && target.Projection == ProjectionStaged {
+		return builder.BuildStagedWorkspaceOverlayRecovery(ctx, target)
+	}
+	return builder.Build(ctx, target)
+}
+
 func (builder SnapshotBuilder) build(ctx context.Context, target Target, allowStagedIntended bool) (Snapshot, error) {
 	repo, err := builder.repositoryRoot(ctx)
 	if err != nil {
@@ -258,6 +276,33 @@ func (builder SnapshotBuilder) ValidateEvidence(ctx context.Context, snapshot Sn
 	return nil
 }
 
+// ValidateLiveSnapshot proves that a frozen snapshot still describes its exact live target.
+func (builder SnapshotBuilder) ValidateLiveSnapshot(ctx context.Context, expected Snapshot) error {
+	if err := builder.ValidateEvidence(ctx, expected); err != nil {
+		return fmt.Errorf("validate frozen snapshot Git evidence: %w", err)
+	}
+	target := Target{
+		Kind: expected.Kind, Projection: expected.Projection,
+		IntendedUntracked: append([]string{}, expected.IntendedUntracked...),
+		LedgerIDs:         append([]string(nil), expected.LedgerIDs...),
+	}
+	switch expected.Kind {
+	case TargetCurrentChanges:
+	case TargetBaseDiff, TargetBaseWorkspaceOverlay, TargetFixDiff:
+		target.BaseRef = expected.BaseTree
+	default:
+		return fmt.Errorf("unsupported live snapshot target kind %q", expected.Kind)
+	}
+	live, err := builder.BuildStoredSnapshot(ctx, target)
+	if err != nil {
+		return fmt.Errorf("rebuild live snapshot target: %w", err)
+	}
+	if live.UnbornHead != expected.UnbornHead || !snapshotsEqual(live, expected) {
+		return fmt.Errorf("live repository snapshot no longer matches frozen target: expected %s, got %s", expected.Identity, live.Identity)
+	}
+	return nil
+}
+
 func (builder SnapshotBuilder) CandidateLocationSupportsCausality(ctx context.Context, snapshot Snapshot, location string, causality CausalDisposition) (bool, error) {
 	if err := builder.ValidateEvidence(ctx, snapshot); err != nil {
 		return false, err
@@ -324,7 +369,7 @@ func rebuildCurrentSnapshotEvidence(ctx context.Context, repo string, snapshot S
 	default:
 		return errors.New("invalidation supports only live current-changes or base-diff snapshots")
 	}
-	live, err := (SnapshotBuilder{Repo: repo}).Build(ctx, target)
+	live, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return err
 	}
@@ -492,13 +537,13 @@ func (builder SnapshotBuilder) ResolveRepositoryRoot(ctx context.Context) (strin
 	if err != nil {
 		return "", err
 	}
-	output, err := runGit(ctx, abs, nil, nil, "rev-parse", "--show-toplevel")
+	root, err := resolveGitDirectory(ctx, abs, "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
-	root, err := canonicalRepositoryPath(strings.TrimSpace(string(output)))
-	if err != nil {
-		return "", err
+	relative, err := filepath.Rel(root, abs)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", errors.New("resolved repository root does not contain the requested path")
 	}
 	return root, nil
 }
@@ -519,6 +564,34 @@ func (builder SnapshotBuilder) DiscoverIntendedUntracked(ctx context.Context) ([
 	for _, item := range parts {
 		if len(item) > 0 {
 			paths = append(paths, string(item))
+		}
+	}
+	return canonicalPaths(paths)
+}
+
+// DiscoverTrackedAndUnignoredPaths returns the canonical Git-owned workspace
+// inventory: every cached path plus every unignored untracked path.
+func (builder SnapshotBuilder) DiscoverTrackedAndUnignoredPaths(ctx context.Context) ([]string, error) {
+	root, err := builder.ResolveRepositoryRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	output, err := runGitInventory(ctx, root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	parts := bytes.Split(output, []byte{0})
+	paths := make([]string, 0, len(parts))
+	for _, item := range parts {
+		if len(item) > 0 {
+			value := string(item)
+			if strings.HasSuffix(value, "/") {
+				value = strings.TrimSuffix(value, "/")
+				if value == "" || strings.HasSuffix(value, "/") {
+					return nil, fmt.Errorf("invalid opaque Git inventory path %q", item)
+				}
+			}
+			paths = append(paths, value)
 		}
 	}
 	return canonicalPaths(paths)
@@ -548,6 +621,57 @@ func canonicalRepositoryPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(resolved), nil
+}
+
+func resolveGitDirectory(ctx context.Context, repo, selector string) (string, error) {
+	switch selector {
+	case "--show-toplevel", "--git-common-dir", "--git-dir":
+	default:
+		return "", fmt.Errorf("unsupported Git directory selector %q", selector)
+	}
+	output, err := runGit(ctx, repo, nil, nil, "rev-parse", selector)
+	if err != nil {
+		return "", err
+	}
+	return canonicalGitDirectory(repo, output)
+}
+
+func canonicalGitDirectory(repo string, output []byte) (string, error) {
+	if len(output) == 0 || bytes.IndexByte(output, 0) >= 0 {
+		return "", errors.New("Git directory output is empty or contains NUL")
+	}
+	record := output
+	if record[len(record)-1] == '\n' {
+		record = record[:len(record)-1]
+		if len(record) > 0 && record[len(record)-1] == '\r' {
+			record = record[:len(record)-1]
+		}
+	}
+	if len(record) == 0 || bytes.ContainsAny(record, "\r\n") || strings.TrimSpace(string(record)) == "" || bytes.HasPrefix(record, []byte("--")) {
+		return "", errors.New("Git directory output is not exactly one valid path record")
+	}
+	root, err := canonicalRepositoryPath(repo)
+	if err != nil {
+		return "", err
+	}
+	directory := string(record)
+	relative := !filepath.IsAbs(directory)
+	if relative {
+		directory = filepath.Join(root, directory)
+		rel, relErr := filepath.Rel(root, directory)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return "", errors.New("relative Git directory escapes the repository root")
+		}
+	}
+	directory, err = canonicalRepositoryPath(directory)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(directory)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("Git directory output is not a directory")
+	}
+	return filepath.Clean(directory), nil
 }
 
 func readSnapshotIndex(path string) ([]byte, time.Time, error) {
@@ -649,9 +773,15 @@ func (builder *SnapshotBuilder) buildCurrentChanges(ctx context.Context, intende
 			return "", "", "", err
 		}
 	}
+	cachedEntries, err := runGitInventoryWithEnv(ctx, builder.Repo, env, "ls-files", "--cached", "-z")
+	if err != nil {
+		return "", "", "", err
+	}
 	if projection != ProjectionStaged {
-		if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
-			return "", "", "", err
+		if len(cachedEntries) > 0 {
+			if _, err := runGit(ctx, builder.Repo, env, nil, "add", "-u", "--", "."); err != nil {
+				return "", "", "", err
+			}
 		}
 		if len(intended) > 0 {
 			args := append([]string{"add", "--"}, literalPathspecs(intended)...)
@@ -1044,21 +1174,29 @@ var gitCommandContext = exec.CommandContext
 var gitProcessTreeStarter = startGitProcessTree
 
 func runGit(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, false, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, false, false, args...)
+}
+
+func runGitInventory(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	return runGitInventoryWithEnv(ctx, repo, nil, args...)
+}
+
+func runGitInventoryWithEnv(ctx context.Context, repo string, extraEnv []string, args ...string) ([]byte, error) {
+	return runGitCaptured(ctx, repo, extraEnv, nil, 0, false, true, args...)
 }
 
 func runGitIsolated(ctx context.Context, repo string, extraEnv []string, stdin []byte, args ...string) ([]byte, error) {
-	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, true, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, 0, true, false, args...)
 }
 
 func runGitLimited(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, args ...string) ([]byte, error) {
 	if outputLimit <= 0 {
 		return nil, &GitOutputLimitError{Args: append([]string{}, args...), Limit: outputLimit}
 	}
-	return runGitCaptured(ctx, repo, extraEnv, stdin, outputLimit, true, args...)
+	return runGitCaptured(ctx, repo, extraEnv, stdin, outputLimit, true, false, args...)
 }
 
-func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, isolateConfig bool, args ...string) ([]byte, error) {
+func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin []byte, outputLimit int, isolateConfig, rejectStderr bool, args ...string) ([]byte, error) {
 	remote := len(args) > 0 && args[0] == "ls-remote"
 	timeout := localGitCommandTimeout
 	if remote {
@@ -1073,12 +1211,14 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	if stdin != nil {
 		command.Stdin = bytes.NewReader(stdin)
 	}
-	var combined bytes.Buffer
+	var combined, machineStdout, machineStderr bytes.Buffer
 	var stdout, stderr *boundedGitOutput
 	if outputLimit > 0 {
 		stdout = &boundedGitOutput{limit: outputLimit}
 		stderr = &boundedGitOutput{limit: 64 << 10}
 		command.Stdout, command.Stderr = stdout, stderr
+	} else if rejectStderr {
+		command.Stdout, command.Stderr = &machineStdout, &machineStderr
 	} else {
 		command.Stdout, command.Stderr = &combined, &combined
 	}
@@ -1104,6 +1244,8 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	output, diagnostic := combined.Bytes(), combined.Bytes()
 	if stdout != nil {
 		output, diagnostic = stdout.Bytes(), stderr.Bytes()
+	} else if rejectStderr {
+		output, diagnostic = machineStdout.Bytes(), machineStderr.Bytes()
 	}
 	if errors.Is(err, exec.ErrWaitDelay) && commandContext.Err() == nil {
 		err = nil
@@ -1134,6 +1276,9 @@ func runGitCaptured(ctx context.Context, repo string, extraEnv []string, stdin [
 	}
 	if stdout != nil && stdout.exceeded {
 		return nil, &GitOutputLimitError{Args: append([]string{}, args...), Limit: outputLimit}
+	}
+	if rejectStderr && len(diagnostic) != 0 {
+		return nil, fmt.Errorf("git inventory produced diagnostics: %s", strings.TrimSpace(string(diagnostic)))
 	}
 	return output, nil
 }

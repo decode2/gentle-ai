@@ -22,12 +22,18 @@ COMMANDS
                Print native SDD phase status for orchestrators
   sdd-continue [change]
                Print native SDD dispatcher routing output
+  sdd-attempt <status|begin|finish|reset> --cwd <repo> --change <change>
+               Read or mutate the artifact-store-agnostic runtime-attempt ledger
+  sdd-verify-validate --input <path|-> --requirements <n> --scenarios <n>
+               Validate exact verification-report bytes without persistence
   review start [--cwd <repo>] [--base-ref <ref>] [--focus <risk|resilience|readability|reliability>]
   review finalize [--cwd <repo>] [--result <review.json> ...] [--evidence <path>]
   review validate --gate <gate> [--cwd <repo>]
                Normal review path; ordinary authority is compact state plus receipt
   review status [--cwd <repo>]
                Read-only inventory of compact-v2 and shipped legacy-v1 authority
+  review repair --preflight [--cwd <repo>]
+               Classify the complete authority inventory before provider-owned repair
 
 COMPATIBILITY COMMANDS
   review-start --cwd <repo> --lineage <id> --policy-file <path>

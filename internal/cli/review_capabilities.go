@@ -21,8 +21,12 @@ const ReviewIntegrationCapabilitiesSchemaV1 = "gentle-ai.review-integration.capa
 const ReviewIntegrationCapabilitiesSchemaIDV1 = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities.schema.json"
 const ReviewIntegrationCapabilitiesSchemaV11 = "gentle-ai.review-integration.capabilities/v1.1"
 const ReviewIntegrationCapabilitiesSchemaIDV11 = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities-v1.1.schema.json"
-const ReviewIntegrationCapabilitiesSchema = "gentle-ai.review-integration.capabilities/v1.2"
-const ReviewIntegrationCapabilitiesSchemaID = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities-v1.2.schema.json"
+const ReviewIntegrationCapabilitiesSchemaV12 = "gentle-ai.review-integration.capabilities/v1.2"
+const ReviewIntegrationCapabilitiesSchemaIDV12 = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities-v1.2.schema.json"
+const ReviewIntegrationCapabilitiesSchemaV13 = "gentle-ai.review-integration.capabilities/v1.3"
+const ReviewIntegrationCapabilitiesSchemaIDV13 = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities-v1.3.schema.json"
+const ReviewIntegrationCapabilitiesSchema = "gentle-ai.review-integration.capabilities/v1.4"
+const ReviewIntegrationCapabilitiesSchemaID = "https://gentle-ai.dev/contracts/review-integration/v1/schemas/capabilities-v1.4.schema.json"
 
 const (
 	reviewRefuterSchemaID   = "https://gentle-ai.dev/schema/review/refuter/v1"
@@ -177,24 +181,27 @@ func buildReviewCapabilities() (ReviewCapabilitiesResult, error) {
 
 func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 	return ReviewCapabilitiesResult{
-		Schema:   ReviewIntegrationCapabilitiesSchema,
-		Contract: ReviewIntegrationContractV1,
-		Protocol: ReviewCapabilitiesProtocol{Major: 1, Minor: 2},
-		Operations: []string{
-			"review.bind_sdd", "review.capabilities", "review.finalize", "review.start", "review.status", "review.validate",
-		},
+		Schema:     ReviewIntegrationCapabilitiesSchema,
+		Contract:   ReviewIntegrationContractV1,
+		Protocol:   ReviewCapabilitiesProtocol{Major: 1, Minor: 4},
+		Operations: reviewIntegrationOperationNames(),
 		Gates: []string{
 			string(reviewtransaction.GatePostApply), string(reviewtransaction.GatePreCommit), string(reviewtransaction.GatePrePush),
 			string(reviewtransaction.GatePrePR), string(reviewtransaction.GateRelease),
 		},
 		Projections: []string{string(reviewtransaction.ProjectionStaged), string(reviewtransaction.ProjectionWorkspace)},
 		Schemas: []string{
+			reviewtransaction.AdmittedReviewerResultSchema,
+			reviewtransaction.ArtifactSubjectSchema,
+			reviewtransaction.AuthorityRepairAssessmentSchema,
 			reviewtransaction.ReviewAuthorityStatusSchema,
 			reviewtransaction.GateRequestSchema,
 			ReviewIntegrationCapabilitiesSchema,
 			ReviewIntegrationFailureSchema,
+			reviewtransaction.FinalVerificationIncidentSchema,
 			ReviewIntegrationOperationSchema,
 			ReviewIntegrationProjectionSchema,
+			ReviewIntegrationRepairSchema,
 			ReviewIntegrationStartSchema,
 			ReviewIntegrationStatusSchema,
 			reviewtransaction.ReceiptSchema,
@@ -221,14 +228,19 @@ func reviewCapabilitiesStaticSurface() ReviewCapabilitiesResult {
 			Optional: []ReviewCapabilityFeature{
 				{Name: "base_ref_workspace_overlay", Supported: true, Requires: []string{"immutable_snapshot", "restart_safe_projection"}},
 				{Name: "bounded_process_waits", Supported: true, Requires: []string{"uniform_failure_envelope"}},
+				{Name: "classified_authority_repair", Supported: true, Requires: []string{"native_next_transition", "uniform_failure_envelope"}},
 				{Name: "exact_gate_receipt_discovery", Supported: true, Requires: []string{"five_delivery_gates"}},
 				{Name: "native_frozen_candidate_context", Supported: true, Requires: []string{"immutable_snapshot"}},
 				{Name: "native_low_risk_verification", Supported: true, Requires: []string{"compact_v2_authority"}},
 				{Name: "native_next_transition", Supported: true, Requires: []string{"target_scoped_status"}},
+				{Name: "one_shot_final_verification_retry", Supported: true, Requires: []string{"compact_v2_authority", "exact_receipt_replay", "native_next_transition"}},
 				{Name: "opaque_repository_context", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
+				{Name: "provider_artifact_admission", Supported: true, Requires: []string{"compact_v2_authority", "native_frozen_candidate_context", "opaque_repository_context"}},
 				{Name: "provider_targeted_validation_request", Supported: true, Requires: []string{"compact_v2_authority", "native_next_transition"}},
+				{Name: "recovered_correction_evidence", Supported: true, Requires: []string{"compact_v2_authority", "provider_targeted_validation_request"}},
 				{Name: "risk_reasons", Supported: true, Requires: []string{"repository_independent_capabilities"}},
 				{Name: "scope_change_diagnostics", Supported: true, Requires: []string{"uniform_failure_envelope"}},
+				{Name: "validating_result_reopen", Supported: true, Requires: []string{"compact_v2_authority", "provider_artifact_admission"}},
 			},
 		},
 		Bootstrap: &ReviewCapabilitiesBootstrap{
