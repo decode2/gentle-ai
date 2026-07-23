@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gentleman-programming/gentle-ai/internal/doctor"
 )
 
 // --- checkOneTool ---
@@ -27,7 +30,7 @@ func TestCheckOneTool_MissingBinary(t *testing.T) {
 	if !strings.Contains(got.Detail, "not found in PATH") {
 		t.Errorf("unexpected detail: %s", got.Detail)
 	}
-	if got.Remedy == "" {
+	if got.Remedy == nil {
 		t.Error("expected non-empty remedy")
 	}
 }
@@ -67,7 +70,7 @@ func TestCheckOneTool_ShadowedBinary(t *testing.T) {
 	if !strings.Contains(got.Detail, "2 copies found") {
 		t.Errorf("unexpected detail: %s", got.Detail)
 	}
-	if got.Remedy == "" {
+	if got.Remedy == nil {
 		t.Error("expected non-empty remedy")
 	}
 }
@@ -352,7 +355,7 @@ func TestCheckEngramReachable_ConnectionRefused(t *testing.T) {
 	if got.Status != CheckStatusFail {
 		t.Errorf("expected fail, got %s", got.Status)
 	}
-	if got.Remedy == "" {
+	if got.Remedy == nil {
 		t.Error("expected non-empty remedy")
 	}
 }
@@ -397,7 +400,7 @@ func TestCheckDiskSpace_CriticallyLow(t *testing.T) {
 	if got.Status != CheckStatusFail {
 		t.Errorf("expected fail, got %s", got.Status)
 	}
-	if got.Remedy == "" {
+	if got.Remedy == nil {
 		t.Error("expected non-empty remedy")
 	}
 }
@@ -475,7 +478,8 @@ func TestRunDoctor_IntegrationAllMocked(t *testing.T) {
 	}
 	availableBytesFn = func(string) (int64, error) { return 1024 * 1024 * 1024, nil } // 1 GB
 	httpGetFn = func(string, time.Duration) (int, error) { return 200, nil }
-	pathDirsFn = func() []string { return []string{"/usr/local/bin"} }
+	pathSnapshots := 0
+	pathDirsFn = func() []string { pathSnapshots++; return []string{"/usr/local/bin"} }
 	osUserHomeDirDoctor = func() (string, error) { return homeDir, nil }
 
 	var buf bytes.Buffer
@@ -483,15 +487,25 @@ func TestRunDoctor_IntegrationAllMocked(t *testing.T) {
 		t.Fatalf("RunDoctor returned error: %v", err)
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "gentle-ai doctor") {
-		t.Error("expected header in output")
+	want := fmt.Sprintf(`gentle-ai doctor — system health check
+=======================================
+
+  [ok]  tool:gentle-ai                 gentle-ai found at /usr/local/bin/gentle-ai
+  [ok]  tool:gga                       gga found at /usr/local/bin/gga
+  [ok]  tool:engram                    engram found at /usr/local/bin/engram
+  [ok]  tool:claude                    claude found at /usr/local/bin/claude
+  [ok]  state:json                     state file OK — 1 agent(s) installed: claude-code
+  [ok]  engram:reachable               engram health endpoint OK at http://localhost:7437/health (HTTP 200)
+  [ok]  disk:space                     1024 MB free on %s filesystem
+
+Summary: 7 passed, 0 failed, 0 warnings
+Status:  healthy
+`, filepath.Join(homeDir, ".gentle-ai"))
+	if got := buf.String(); got != want {
+		t.Fatalf("RunDoctor output mismatch\ngot:\n%s\nwant:\n%s", got, want)
 	}
-	if !strings.Contains(output, "Summary:") {
-		t.Error("expected summary in output")
-	}
-	if !strings.Contains(output, "Status:") {
-		t.Error("expected status in output")
+	if pathSnapshots != 1 {
+		t.Fatalf("PATH snapshots = %d, want 1", pathSnapshots)
 	}
 }
 
@@ -595,7 +609,7 @@ func TestCheckToolBinaries_StateMissing_ChecksCoreOnly(t *testing.T) {
 
 	required := make(map[string]struct{}, len(results))
 	for _, r := range results {
-		required[r.Name] = struct{}{}
+		required[string(r.Name)] = struct{}{}
 	}
 	for _, core := range []string{"tool:gentle-ai", "tool:gga", "tool:engram"} {
 		if _, ok := required[core]; !ok {
@@ -760,5 +774,14 @@ func TestRunDoctor_OnlySelectedAgentsAreRequired(t *testing.T) {
 	}
 	if !strings.Contains(output, "Status:  healthy") {
 		t.Errorf("expected healthy status for pi-only install with all binaries present; got:\n%s", output)
+	}
+}
+
+func TestRenderDoctorReportDoesNotRenderRemedyMetadata(t *testing.T) {
+	var buf bytes.Buffer
+	renderDoctorReport(&buf, DoctorReport{Checks: []CheckResult{{Name: doctor.CheckDiskSpace, Status: CheckStatusFail, Detail: "cleanup needed", Remedy: doctor.NewRemedy(doctor.RemedyFreeDiskSpace, "Free disk space")}}})
+	want := "gentle-ai doctor — system health check\n=======================================\n\n  [xx]  disk:space                     cleanup needed\n       Remedy: Free disk space\n\nSummary: 0 passed, 1 failed, 0 warnings\nStatus:  unhealthy\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("rendered report mismatch\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
