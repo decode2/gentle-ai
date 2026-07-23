@@ -316,6 +316,8 @@ func EvaluateNativeGate(ctx context.Context, repo string, receipt Receipt, reque
 
 type resolvedPrePRRefs struct {
 	Selection            PrePRBoundarySelection
+	TrackingBoundary     PrePRBoundarySelection
+	TrackingPresent      bool
 	HeadCommit           string
 	BaseCommit           string
 	DeliveredCommitCount int
@@ -424,6 +426,11 @@ func selectPrePRBoundary(ctx context.Context, repo, selector string) (PrePRBound
 	return selection, nil
 }
 
+func ValidatePrePRBoundarySelector(ctx context.Context, repo, selector string) error {
+	_, err := selectPrePRBoundary(ctx, repo, selector)
+	return err
+}
+
 func buildPrePRTarget(ctx context.Context, repo, selector, ciAttestation string, intendedUntracked []string) (Target, *PrePRRequest, error) {
 	selection, err := selectPrePRBoundary(ctx, repo, selector)
 	if err != nil {
@@ -469,14 +476,51 @@ func resolveAuthoritativePublicationBase(ctx context.Context, repo string) (stri
 	return selection.RemoteRef, selection.Remote, selection.Commit, nil
 }
 
-func resolveTrackingUpstreamBase(ctx context.Context, repo string) (string, string, string, error) {
-	branch := currentBranch(ctx, repo)
-	if branch == "" {
-		return "", "", "", errors.New("configured upstream is unavailable on detached HEAD; pass --base-ref <remote>/<branch>")
+// GateTargetResolutionError reports a semantic target-selection failure that
+// the caller can correct by supplying the named input. It does not represent
+// receipt-authority corruption or a Git process failure.
+type GateTargetResolutionError struct {
+	RequiredInput string
+	Err           error
+}
+
+func (err *GateTargetResolutionError) Error() string {
+	if err == nil || err.Err == nil {
+		return "review gate target resolution failed"
 	}
-	remote, ref, ok := configuredUpstreamRef(ctx, repo, branch)
+	return err.Err.Error()
+}
+
+func (err *GateTargetResolutionError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Err
+}
+
+func prePushTargetResolutionError(message string) error {
+	return &GateTargetResolutionError{RequiredInput: "base_ref", Err: errors.New(message)}
+}
+
+func resolveTrackingUpstreamBase(ctx context.Context, repo string) (string, string, string, error) {
+	branchOutput, err := runGit(ctx, repo, nil, nil, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		var commandErr *GitCommandError
+		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+			return "", "", "", prePushTargetResolutionError("configured upstream is unavailable on detached HEAD; pass --base-ref <remote>/<branch>")
+		}
+		return "", "", "", fmt.Errorf("resolve configured tracking branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(branchOutput))
+	if branch == "" {
+		return "", "", "", prePushTargetResolutionError("configured upstream is unavailable on detached HEAD; pass --base-ref <remote>/<branch>")
+	}
+	remote, ref, ok, err := configuredUpstreamRef(ctx, repo, branch)
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve configured tracking ref: %w", err)
+	}
 	if !ok {
-		return "", "", "", errors.New("configured upstream is missing or ambiguous; pass --base-ref <remote>/<branch>")
+		return "", "", "", prePushTargetResolutionError("configured upstream is missing or ambiguous; pass --base-ref <remote>/<branch>")
 	}
 	selection, err := advertisedRemoteRef(ctx, repo, remote, ref, remote+"/"+strings.TrimPrefix(ref, "refs/heads/"), PrePRBoundaryPublicationDefault)
 	if err != nil {
@@ -676,16 +720,60 @@ func selectPrePushBoundary(ctx context.Context, repo, selector string) (PrePRBou
 	return PrePRBoundarySelection{Source: PrePRBoundaryPublicationDefault, Selector: ref, Commit: commit, Remote: remote, RemoteRef: ref, RemoteIdentity: identity}, err
 }
 
+func resolvePrePushTrackingBoundary(ctx context.Context, repo string, selected PrePRBoundarySelection) (PrePRBoundarySelection, bool, error) {
+	switch selected.Source {
+	case PrePRBoundaryEmptyRemoteBootstrap:
+		return PrePRBoundarySelection{}, false, nil
+	case PrePRBoundaryPublicationDefault:
+		return selected, true, nil
+	case PrePRBoundaryExplicit:
+	default:
+		return PrePRBoundarySelection{}, false, errors.New("unsupported pre-push boundary source")
+	}
+	branchOutput, err := runGit(ctx, repo, nil, nil, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		var commandErr *GitCommandError
+		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+			return PrePRBoundarySelection{}, false, nil
+		}
+		return PrePRBoundarySelection{}, false, fmt.Errorf("resolve configured tracking branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(branchOutput))
+	upstream, err := runGit(ctx, repo, nil, nil, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", "refs/heads/"+branch)
+	if err != nil {
+		return PrePRBoundarySelection{}, false, fmt.Errorf("resolve configured tracking ref: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(upstream)), "\x00", 2)
+	if len(parts) == 2 && parts[0] == "" && parts[1] == "" {
+		return PrePRBoundarySelection{}, false, nil
+	}
+	if len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
+		return PrePRBoundarySelection{}, false, errors.New("configured tracking upstream is not a remote branch")
+	}
+	remote, ref := parts[0], parts[1]
+	if _, empty := emptyRemoteBootstrapBoundary(ctx, repo); empty {
+		return PrePRBoundarySelection{}, false, nil
+	}
+	tracking, err := advertisedRemoteRef(ctx, repo, remote, ref, remote+"/"+strings.TrimPrefix(ref, "refs/heads/"), PrePRBoundaryPublicationDefault)
+	if err != nil {
+		return PrePRBoundarySelection{}, false, fmt.Errorf("resolve configured tracking boundary: %w", err)
+	}
+	return tracking, true, nil
+}
+
 // configuredUpstreamRef resolves the configured upstream remote and branch
 // ref for a local branch. It reports false when the upstream is missing,
-// ambiguous, or not a branch ref.
-func configuredUpstreamRef(ctx context.Context, repo, branch string) (string, string, bool) {
+// ambiguous, or not a branch ref, and preserves Git execution failures.
+func configuredUpstreamRef(ctx context.Context, repo, branch string) (string, string, bool, error) {
 	output, err := runGit(ctx, repo, nil, nil, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", "refs/heads/"+branch)
-	parts := strings.SplitN(strings.TrimSpace(string(output)), "\x00", 2)
-	if err != nil || len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
-		return "", "", false
+	if err != nil {
+		return "", "", false, err
 	}
-	return parts[0], parts[1], true
+	parts := strings.SplitN(strings.TrimSpace(string(output)), "\x00", 2)
+	if len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
+		return "", "", false, nil
+	}
+	return parts[0], parts[1], true, nil
 }
 
 // emptyRemoteBootstrapBoundary recognizes the first-publication case only:
@@ -702,8 +790,8 @@ func emptyRemoteBootstrapBoundary(ctx context.Context, repo string) (PrePRBounda
 	if branch == "" {
 		return PrePRBoundarySelection{}, false
 	}
-	remote, ref, ok := configuredUpstreamRef(ctx, repo, branch)
-	if !ok {
+	remote, ref, ok, err := configuredUpstreamRef(ctx, repo, branch)
+	if err != nil || !ok {
 		return PrePRBoundarySelection{}, false
 	}
 	advertised, err := runGit(ctx, repo, nil, nil, "ls-remote", remote)
@@ -1013,6 +1101,10 @@ func prePushTargetForRequest(ctx context.Context, repo string, request GateReque
 	if request.Target.Kind == TargetBaseDiff && request.Target.BaseRef != "" && request.Target.BaseRef != target.BaseRef {
 		return Target{}, nil, errors.New("committed publication merge base changed during validation")
 	}
+	tracking, trackingPresent, err := resolvePrePushTrackingBoundary(ctx, repo, push.Boundary)
+	if err != nil {
+		return Target{}, nil, err
+	}
 	head, err := resolveCommit(ctx, repo, "HEAD")
 	if err != nil {
 		return Target{}, nil, err
@@ -1029,7 +1121,10 @@ func prePushTargetForRequest(ctx context.Context, repo string, request GateReque
 		// that publication-range and ancestry-disclosure checks scope to.
 		baseCommit = target.BaseRef
 	}
-	return target, &resolvedPrePRRefs{Selection: push.Boundary, HeadCommit: head, BaseCommit: baseCommit, DeliveredCommitCount: count, PushRemote: push.PushRemote}, nil
+	return target, &resolvedPrePRRefs{
+		Selection: push.Boundary, TrackingBoundary: tracking, TrackingPresent: trackingPresent,
+		HeadCommit: head, BaseCommit: baseCommit, DeliveredCommitCount: count, PushRemote: push.PushRemote,
+	}, nil
 }
 
 func commitCount(ctx context.Context, repo, base, head string) (int, error) {
@@ -1248,6 +1343,15 @@ func readGateArtifactPreimages(request GateRequest) (gateArtifactPreimages, erro
 		}
 	}
 	return result, nil
+}
+
+// rereadGateArtifactPreimages deliberately ignores any request-local preimage
+// cache. Final authorization uses it for path-backed evidence whose current
+// bytes, presence, signature, and trust binding must still match the proof
+// derived earlier in the gate evaluation.
+func rereadGateArtifactPreimages(request GateRequest) (gateArtifactPreimages, error) {
+	request.preimages = nil
+	return readGateArtifactPreimages(request)
 }
 
 func hasArtifactSource(path, content string) bool {

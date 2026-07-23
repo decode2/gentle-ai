@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -565,6 +566,161 @@ func TestPublicationTargetBindsAdvertisedUpstreamSeparatelyFromPushRemote(t *tes
 	gitSnapshot(t, repo, "config", "--unset", "branch."+branch+".merge")
 	if _, _, err := buildPushTarget(context.Background(), repo, "", "", ""); err == nil || !strings.Contains(err.Error(), "--base-ref") {
 		t.Fatalf("missing upstream error = %v", err)
+	}
+}
+
+func TestPrePushRefsKeepReviewedAndTrackingBoundariesIndependent(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	branch := currentBranch(context.Background(), repo)
+	base := trimGit(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+	remote := configurePublicationRemote(t, repo, branch)
+	gitSnapshot(t, repo, "config", "branch."+branch+".remote", "origin")
+	gitSnapshot(t, repo, "config", "branch."+branch+".merge", "refs/heads/"+branch)
+	gitSnapshot(t, repo, "--git-dir", remote, "branch", "reviewed-base", base)
+	writeSnapshotFile(t, repo, "upstream.txt", "tracking advance\n")
+	gitSnapshot(t, repo, "add", "upstream.txt")
+	gitSnapshot(t, repo, "commit", "-m", "tracking advance")
+	tracking := trimGit(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+	gitSnapshot(t, repo, "push", "origin", "HEAD:refs/heads/"+branch)
+	writeSnapshotFile(t, repo, "approved.txt", "reviewed delivery\n")
+	gitSnapshot(t, repo, "add", "approved.txt")
+	gitSnapshot(t, repo, "commit", "-m", "reviewed delivery")
+
+	target, push, err := buildPushTarget(context.Background(), repo, "origin/reviewed-base", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refs, err := prePushTargetForRequest(context.Background(), repo, GateRequest{Gate: GatePrePush, Target: target, Push: push})
+	if err != nil || refs.Selection.Commit != base || !refs.TrackingPresent || refs.TrackingBoundary.Commit != tracking {
+		t.Fatalf("independent reviewed/tracking refs = %#v, %v", refs, err)
+	}
+}
+
+func TestExplicitPrePushBaseAllowsAbsentTracking(t *testing.T) {
+	for _, detached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing", true: "detached"}[detached], func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			branch := currentBranch(context.Background(), repo)
+			configurePublicationRemote(t, repo, branch)
+			if detached {
+				gitSnapshot(t, repo, "checkout", "--detach")
+			}
+			target, push, err := buildPushTarget(context.Background(), repo, "origin/"+branch, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, refs, err := prePushTargetForRequest(context.Background(), repo, GateRequest{Gate: GatePrePush, Target: target, Push: push})
+			if err != nil || refs.TrackingPresent {
+				t.Fatalf("explicit base with absent tracking = %#v, %v", refs, err)
+			}
+		})
+	}
+}
+
+func TestDefaultPrePushBaseReportsTypedTargetResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		prepare func(*testing.T, string, string)
+	}{
+		{name: "missing upstream"},
+		{name: "detached head", prepare: func(t *testing.T, repo, _ string) {
+			gitSnapshot(t, repo, "checkout", "--detach")
+		}},
+		{name: "non-branch upstream", prepare: func(t *testing.T, repo, branch string) {
+			configurePublicationRemote(t, repo, branch)
+			gitSnapshot(t, repo, "config", "branch."+branch+".remote", "origin")
+			gitSnapshot(t, repo, "config", "branch."+branch+".merge", "refs/tags/not-a-branch")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := initSnapshotRepo(t)
+			branch := currentBranch(context.Background(), repo)
+			if tt.prepare != nil {
+				tt.prepare(t, repo, branch)
+			}
+			_, _, _, err := resolveTrackingUpstreamBase(context.Background(), repo)
+			var targetErr *GateTargetResolutionError
+			if !errors.As(err, &targetErr) || targetErr.RequiredInput != "base_ref" || !strings.Contains(err.Error(), "--base-ref") {
+				t.Fatalf("target resolution error = %T %v", err, err)
+			}
+		})
+	}
+}
+
+func TestDefaultPrePushBaseKeepsInfrastructureErrorsUntyped(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	branch := currentBranch(context.Background(), repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, _, err := resolveTrackingUpstreamBase(ctx, repo)
+	var targetErr *GateTargetResolutionError
+	if !errors.Is(err, context.Canceled) || errors.As(err, &targetErr) {
+		t.Fatalf("cancelled target resolution error = %T %v", err, err)
+	}
+	_, _, _, upstreamErr := configuredUpstreamRef(ctx, repo, branch)
+	if !errors.Is(upstreamErr, context.Canceled) || errors.As(upstreamErr, &targetErr) {
+		t.Fatalf("cancelled upstream lookup error = %T %v", upstreamErr, upstreamErr)
+	}
+}
+
+func TestExplicitPrePushBasePropagatesConfiguredTrackingResolutionError(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	branch := currentBranch(context.Background(), repo)
+	configurePublicationRemote(t, repo, branch)
+	gitSnapshot(t, repo, "remote", "add", "tracking", filepath.Join(t.TempDir(), "missing.git"))
+	gitSnapshot(t, repo, "config", "branch."+branch+".remote", "tracking")
+	gitSnapshot(t, repo, "config", "branch."+branch+".merge", "refs/heads/main")
+	gitSnapshot(t, repo, "config", "branch."+branch+".pushRemote", "origin")
+	target, push, err := buildPushTarget(context.Background(), repo, "origin/"+branch, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = prePushTargetForRequest(context.Background(), repo, GateRequest{Gate: GatePrePush, Target: target, Push: push})
+	var gitErr *GitCommandError
+	if !errors.As(err, &gitErr) {
+		t.Fatalf("configured tracking resolution error = %T %v", err, err)
+	}
+}
+
+func TestExplicitPrePushBasePropagatesTrackingContextCancellation(t *testing.T) {
+	repo := initSnapshotRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := resolvePrePushTrackingBoundary(ctx, repo, PrePRBoundarySelection{Source: PrePRBoundaryExplicit})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("tracking context cancellation = %T %v", err, err)
+	}
+}
+
+func TestPrePushFinalAuthorizationRechecksTrackingBesidesExplicitBase(t *testing.T) {
+	repo, receipt, artifacts := approvedCurrentChangesGateFixture(t, "pre-push-tracking-recheck")
+	branch := currentBranch(context.Background(), repo)
+	reviewed := trimGit(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+	remote := trimGit(gitSnapshot(t, repo, "remote", "get-url", "origin"))
+	gitSnapshot(t, repo, "branch", "reviewed-base", reviewed)
+	gitSnapshot(t, repo, "push", "origin", "reviewed-base:refs/heads/reviewed-base")
+	gitSnapshot(t, repo, "add", "tracked.txt")
+	gitSnapshot(t, repo, "commit", "-m", "reviewed delivery")
+	request, err := BuildNativeGateRequest(context.Background(), repo, NativeGateRequestInput{
+		Gate: GatePrePush, LineageID: receipt.LineageID, BaseRef: "origin/reviewed-base",
+		PolicyArtifact: artifacts.PolicyArtifact, LedgerArtifact: artifacts.LedgerArtifact, EvidenceArtifact: artifacts.EvidenceArtifact,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, refs, err := prePushTargetForRequest(context.Background(), repo, request)
+	if err != nil || !refs.TrackingPresent || refs.TrackingBoundary.Commit == refs.Selection.Commit {
+		t.Fatalf("distinct frozen tracking setup = %#v, %v", refs, err)
+	}
+
+	originalHook := finalGateAuthorizationHook
+	finalGateAuthorizationHook = func() {
+		finalGateAuthorizationHook = originalHook
+		gitSnapshot(t, repo, "--git-dir", remote, "update-ref", "refs/heads/"+branch, reviewed)
+	}
+	t.Cleanup(func() { finalGateAuthorizationHook = originalHook })
+	if got := EvaluateNativeGate(context.Background(), repo, receipt, request); got.Result != GateInvalidated || !strings.Contains(got.Reason, "final authorization") {
+		t.Fatalf("moving tracking boundary = %#v", got)
 	}
 }
 
@@ -1581,6 +1737,10 @@ func TestBuildPushTargetBootstrapsFirstPublicationOnEmptyRemote(t *testing.T) {
 	}
 	if target.BaseRef != reviewedBase {
 		t.Fatalf("bootstrap target base = %q, want reviewed base %q", target.BaseRef, reviewedBase)
+	}
+	_, refs, err := prePushTargetForRequest(context.Background(), repo, GateRequest{Gate: GatePrePush, Target: target, Push: push})
+	if err != nil || refs.TrackingPresent {
+		t.Fatalf("empty-remote tracking boundary = %#v, %v", refs, err)
 	}
 }
 

@@ -189,9 +189,11 @@ type facadeFinding struct {
 }
 
 type facadeReviewerResult struct {
-	Lens     string          `json:"lens,omitempty"`
-	Findings []facadeFinding `json:"findings"`
-	Evidence []string        `json:"evidence"`
+	SubjectHash string                               `json:"subject_hash"`
+	Inspection  reviewtransaction.ArtifactInspection `json:"inspection"`
+	Lens        string                               `json:"lens,omitempty"`
+	Findings    []facadeFinding                      `json:"findings"`
+	Evidence    []string                             `json:"evidence"`
 }
 
 type facadeValidationCheck struct {
@@ -223,10 +225,29 @@ var reviewFacadeOperationTimeout = 25 * time.Second
 var reviewFacadeCommandRunner = runReviewCommandContext
 var reviewFacadePlannedTransitionHook = func(context.Context, string, string, string) error { return nil }
 var reviewFacadeCommittedTransitionHook = func(context.Context, string, string, string) error { return nil }
+var renderReviewStartFrozenCandidateContext = func(ctx context.Context, builder reviewtransaction.SnapshotBuilder, snapshot reviewtransaction.Snapshot) (reviewtransaction.FrozenCandidateContext, error) {
+	return builder.FrozenCandidateContext(ctx, snapshot)
+}
+
+type reviewStartContextError struct {
+	AuthoritySelected bool
+	LineageID         string
+	StoreRevision     string
+	Cause             error
+}
+
+func (err *reviewStartContextError) Error() string {
+	if err.AuthoritySelected {
+		return fmt.Sprintf("render frozen context for selected durable START authority %q at revision %s: %v", err.LineageID, err.StoreRevision, err.Cause)
+	}
+	return fmt.Sprintf("render frozen context before START authority creation for %q: %v", err.LineageID, err.Cause)
+}
+
+func (err *reviewStartContextError) Unwrap() error { return err.Cause }
 
 func RunReview(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "Usage: gentle-ai review <capabilities|start|finalize|validate|status|invalidate|abandon|recover|reclaim|reconcile-authority|dispose-result|quarantine-legacy|repair-legacy-alias|schema|bind-sdd> [flags]\n\nOrdinary review facade; repository scope, authority, canonical artifacts, and lifecycle transitions are derived by Go.")
+		_, _ = fmt.Fprintln(stdout, "Usage: gentle-ai review <capabilities|start|finalize|validate|status|repair|invalidate|abandon|recover|retry-final-verification|reclaim|inspect-authority|reconcile-authority|reconcile-authority-batch|dispose-result|reopen-results|quarantine-legacy|quarantine-legacy-fix-scope|repair-legacy-alias|schema|bind-sdd> [flags]\n\nOrdinary review facade; repository scope, authority, canonical artifacts, and lifecycle transitions are derived by Go. Use review retry-final-verification only for a provider-proven completed failed final-verification tooling incident. Generic review recover remains unchanged. Use review repair --preflight for provider-owned classified authority repair; repair-legacy-alias is compatibility-only.")
 		_, _ = fmt.Fprintln(stdout, "Additive headless capabilities: gentle-ai review capture-result (with --preflight) and gentle-ai review preserve-result.")
 		return nil
 	}
@@ -244,6 +265,8 @@ func RunReview(args []string, stdout io.Writer) error {
 	defer cancel()
 	var committed atomic.Pointer[reviewFacadeOperationProgressError]
 	ctx = context.WithValue(ctx, reviewFacadeOperationProgressError{}, &committed)
+	metadata, _ := reviewIntegrationOperationByName(operation)
+	joinOnTimeout := metadata.JoinOnTimeout && reviewIntegrationOperationMutates(metadata, args[1:])
 	var output bytes.Buffer
 	result := make(chan error, 1)
 	go func(runner func(context.Context, []string, io.Writer) error) { result <- runner(ctx, args, &output) }(reviewFacadeCommandRunner)
@@ -254,8 +277,11 @@ func RunReview(args []string, stdout io.Writer) error {
 			runErr = ctx.Err()
 		}
 	case <-ctx.Done():
-		if operation == ReviewIntegrationOperationBindSDD {
+		if operation == ReviewIntegrationOperationBindSDD || joinOnTimeout {
 			runErr = <-result
+			if runErr == nil && operation != ReviewIntegrationOperationBindSDD {
+				runErr = ctx.Err()
+			}
 		} else if progress := committed.Load(); progress != nil {
 			progress.Cause = &reviewtransaction.GitCommandTimeoutError{Timeout: reviewFacadeOperationTimeout, Aggregate: true, Cause: ctx.Err()}
 			runErr = progress
@@ -280,12 +306,18 @@ func runReviewCommandContext(ctx context.Context, args []string, stdout io.Write
 		return runReviewFacadeStart(ctx, args[1:], stdout)
 	case "status":
 		return runReviewStatus(ctx, args[1:], stdout)
+	case "repair":
+		return runReviewRepair(ctx, args[1:], stdout)
+	case "retry-final-verification":
+		return runReviewRetryFinalVerification(ctx, args[1:], stdout)
 	case "finalize":
 		return runReviewFacadeFinalize(ctx, args[1:], stdout)
 	case "validate":
 		return runReviewFacadeValidate(ctx, args[1:], stdout)
 	case "bind-sdd":
 		return runReviewBindSDD(ctx, args[1:], stdout)
+	case "reconcile-authority-batch":
+		return runReviewReconcileAuthorityBatch(ctx, args[1:], stdout)
 	default:
 		return runReviewCommand(args, stdout)
 	}
@@ -295,6 +327,8 @@ func runReviewCommand(args []string, stdout io.Writer) error {
 	switch args[0] {
 	case "capture-result":
 		return RunReviewCaptureResult(args[1:], stdout)
+	case "capture-evidence":
+		return RunReviewCaptureEvidence(args[1:], stdout)
 	case "preserve-result":
 		return RunReviewPreserveResult(args[1:], stdout)
 	case "capabilities":
@@ -307,20 +341,32 @@ func runReviewCommand(args []string, stdout io.Writer) error {
 		return RunReviewFacadeValidate(args[1:], stdout)
 	case "status":
 		return RunReviewStatus(args[1:], stdout)
+	case "repair":
+		return RunReviewRepair(args[1:], stdout)
 	case "invalidate":
 		return RunReviewInvalidate(args[1:], stdout)
 	case "abandon":
 		return RunReviewAbandon(args[1:], stdout)
 	case "recover":
 		return RunReviewRecover(args[1:], stdout)
+	case "retry-final-verification":
+		return RunReviewRetryFinalVerification(args[1:], stdout)
 	case "reclaim":
 		return RunReviewReclaim(args[1:], stdout)
+	case "inspect-authority":
+		return RunReviewInspectAuthority(args[1:], stdout)
 	case "reconcile-authority":
 		return RunReviewReconcileAuthority(args[1:], stdout)
+	case "reconcile-authority-batch":
+		return RunReviewReconcileAuthorityBatch(args[1:], stdout)
 	case "dispose-result":
 		return RunReviewDisposeResult(args[1:], stdout)
+	case "reopen-results":
+		return RunReviewReopenResults(args[1:], stdout)
 	case "quarantine-legacy":
 		return RunReviewLegacyQuarantine(args[1:], stdout)
+	case "quarantine-legacy-fix-scope":
+		return RunReviewLegacyFixScopeQuarantine(args[1:], stdout)
 	case "repair-legacy-alias":
 		return RunReviewLegacyAliasRepair(args[1:], stdout)
 	case "schema":
@@ -340,11 +386,21 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 	flags := newReviewFlagSet("review status", stdout, "Read every compact-v2 and shipped legacy-v1 authority from the shared Git common directory without mutation.")
 	cwd := flags.String("cwd", ".", "repository path")
 	contract := flags.String("contract", "", "optional negotiated review integration contract")
+	actionEligibility := flags.Bool("action-eligibility", false, "include optional machine-readable review action eligibility in negotiated output")
+	nextTransition := flags.Bool("next-transition", false, "include the optional canonical native next transition in negotiated output")
 	lineage := flags.String("lineage", "", "optional explicit lineage selector for negotiated target status")
 	projection := flags.String("projection", string(reviewtransaction.ProjectionWorkspace), "negotiated target projection: workspace or staged")
 	baseRef := flags.String("base-ref", "", "optional negotiated immutable base-to-HEAD target")
 	baseTree := flags.String("base-tree", "", "optional negotiated resolved immutable overlay base tree")
 	workspaceOverlay := flags.Bool("workspace-overlay", false, "select a negotiated base-ref workspace overlay target")
+	gate := flags.String("gate", string(reviewtransaction.GatePreCommit), "lifecycle gate for an approved receipt transition")
+	recoverySuccessor := flags.String("recovery-successor-lineage", "", "authorized successor lineage for a recovery transition")
+	recoveryReason := flags.String("recovery-reason", "", "authorized recovery reason")
+	recoveryActor := flags.String("recovery-actor", "", "authorized recovery actor")
+	recoveryAuthorization := flags.String("recovery-authorization", "", "exact authorized recovery binding")
+	repairActor := flags.String("repair-actor", "", "authorized classified repair actor")
+	repairReason := flags.String("repair-reason", "", "authorized classified repair reason")
+	repairAuthorization := flags.String("repair-authorization", "", "exact classified repair authorization binding")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
 	}
@@ -358,13 +414,21 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 		if err := validateReviewIntegrationContract(*contract); err != nil {
 			return err
 		}
+		if !validReviewIntegrationGate(reviewtransaction.GateKind(*gate)) {
+			return fmt.Errorf("unsupported review lifecycle gate %q", *gate)
+		}
 		selectedProjection := reviewtransaction.Projection(strings.TrimSpace(*projection))
 		if selectedProjection != reviewtransaction.ProjectionWorkspace && selectedProjection != reviewtransaction.ProjectionStaged {
 			return fmt.Errorf("unsupported review projection %q", *projection)
 		}
 		selectedBaseRef := strings.TrimSpace(*baseRef)
 		selectedBaseTree := strings.TrimSpace(*baseTree)
-		if *workspaceOverlay && ((selectedBaseRef == "") == (selectedBaseTree == "") || selectedProjection != reviewtransaction.ProjectionWorkspace) {
+		stagedRecoveryOverlay := *workspaceOverlay && selectedProjection == reviewtransaction.ProjectionStaged
+		if *workspaceOverlay && stagedRecoveryOverlay && (selectedBaseRef == "" || selectedBaseTree != "") {
+			return errors.New("staged --workspace-overlay requires exactly --base-ref")
+		}
+		if *workspaceOverlay && !stagedRecoveryOverlay &&
+			((selectedBaseRef == "") == (selectedBaseTree == "") || selectedProjection != reviewtransaction.ProjectionWorkspace) {
 			return errors.New("--workspace-overlay requires exactly one of --base-ref or --base-tree with workspace projection")
 		}
 		if !*workspaceOverlay && selectedBaseTree != "" {
@@ -395,7 +459,14 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 				target.BaseRef = selectedBaseTree
 			}
 		}
-		native, err := reviewtransaction.AssessTargetStatus(ctx, root, reviewtransaction.TargetStatusRequest{
+		selector := &reviewTransitionSelector{
+			Kind: target.Kind, Projection: selectedProjection, BaseRef: selectedBaseRef,
+			BaseTree: selectedBaseTree, WorkspaceOverlay: *workspaceOverlay, PrePRRepresentable: true,
+		}
+		if reviewtransaction.GateKind(*gate) == reviewtransaction.GatePrePR {
+			selector.PrePRRepresentable = reviewtransaction.ValidatePrePRBoundarySelector(ctx, root, selectedBaseRef) == nil
+		}
+		native, liveSnapshot, err := reviewtransaction.AssessTargetStatusWithSnapshot(ctx, root, reviewtransaction.TargetStatusRequest{
 			Target: target, LineageID: *lineage,
 		})
 		if err != nil {
@@ -405,12 +476,94 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 			return errors.New("--base-tree does not identify an exact Git tree object")
 		}
 		result := newReviewTargetStatusResult(native)
+		if native.Applicability == reviewtransaction.TargetApplicabilityCorrupted &&
+			native.Action == reviewtransaction.TargetStatusActionRepairAuthority {
+			repair, repairErr := reviewtransaction.AssessAuthorityRepairAtRepositoryRoot(ctx, root)
+			if repairErr != nil {
+				return fmt.Errorf("assess classified authority repair: %w", repairErr)
+			}
+			result.Repair = repair
+		}
+		if *actionEligibility {
+			result.Eligibility = newReviewActionEligibility(result)
+		}
+		if *nextTransition {
+			artifacts := []ReviewTransitionArtifact{}
+			evidenceAvailable := false
+			repositoryContext := ""
+			var captureContext *reviewCaptureContext
+			var validationRequest *reviewtransaction.TargetedValidationRequest
+			correctionForecasted := false
+			var artifactErr error
+			if native.Applicability == reviewtransaction.TargetApplicabilityCurrent && native.AuthorityVersion == reviewtransaction.AuthorityVersionCompact {
+				store, storeErr := reviewtransaction.CompactAuthoritativeStore(ctx, root, native.LineageID)
+				if storeErr != nil {
+					artifactErr = storeErr
+				} else {
+					record, loadErr := store.LoadContext(ctx)
+					if loadErr != nil {
+						artifactErr = loadErr
+					} else {
+						correctionForecasted = record.State.State == reviewtransaction.StateCorrectionRequired && record.State.ProposedCorrectionLines != nil
+						stagedScopeRecovery := result.Action == reviewtransaction.TargetStatusActionRecover &&
+							result.ActionDisposition == reviewtransaction.RecoveryScopeChanged &&
+							record.State.State == reviewtransaction.StateApproved &&
+							record.State.InitialSnapshot.Kind == reviewtransaction.TargetBaseDiff &&
+							target.Kind == reviewtransaction.TargetBaseWorkspaceOverlay &&
+							selector.Projection == reviewtransaction.ProjectionStaged && selector.WorkspaceOverlay
+						selector.RecoveryRepresentable = record.State.InitialSnapshot.Kind == target.Kind || stagedScopeRecovery
+						predecessorProjection := record.State.InitialSnapshot.Projection
+						if predecessorProjection == "" {
+							predecessorProjection = reviewtransaction.ProjectionWorkspace
+						}
+						if stagedScopeRecovery || selector.RecoveryRepresentable && result.ActionDisposition == reviewtransaction.RecoveryInvalidated && target.Kind == reviewtransaction.TargetBaseWorkspaceOverlay && selector.Projection == reviewtransaction.ProjectionStaged {
+							selector.RecoveryProjection = reviewtransaction.ProjectionStaged
+						} else if selector.RecoveryRepresentable && predecessorProjection != selector.Projection {
+							selector.RecoveryRepresentable = result.ActionDisposition == reviewtransaction.RecoveryEscalated
+							selector.RecoveryProjection = selector.Projection
+						}
+						if correctionForecasted {
+							request, requestErr := reviewtransaction.BuildTargetedValidationRequestFromSnapshot(ctx, root, record.State, record.Revision, liveSnapshot)
+							if requestErr == nil {
+								validationRequest = &request
+								result.ValidationRequest = validationRequest
+							}
+						}
+						if record.State.State == reviewtransaction.StateReviewing {
+							repositoryContext, artifactErr = reviewtransaction.PublishReviewRepositoryContext(ctx, root, reviewtransaction.ReviewRepositoryContextBinding{
+								LineageID: record.State.LineageID, TargetIdentity: record.State.InitialSnapshot.Identity, Revision: record.Revision,
+							})
+							if artifactErr == nil {
+								frozen, frozenErr := (reviewtransaction.SnapshotBuilder{Repo: root}).FrozenCandidateContext(ctx, record.State.InitialSnapshot)
+								if frozenErr != nil {
+									artifactErr = frozenErr
+								} else {
+									captureContext, artifactErr = newReviewCaptureContext(record.State, record.Revision, frozen)
+								}
+							}
+						}
+						if artifactErr == nil {
+							artifacts, artifactErr = discoverCapturedReviewerArtifacts(ctx, root, store.Dir, record.State, record.Revision)
+						}
+						if artifactErr == nil {
+							_, evidenceErr := readCapturedFinalEvidence(store.Dir, record.State, record.Revision)
+							evidenceAvailable = evidenceErr == nil
+						}
+					}
+				}
+			}
+			transition := newReviewNextTransition(result, native.SelectedLenses, artifacts, evidenceAvailable, artifactErr, reviewNextTransitionInput{Gate: reviewtransaction.GateKind(*gate), Successor: *recoverySuccessor, Reason: *recoveryReason, Actor: *recoveryActor, Authorization: *recoveryAuthorization, RepairActor: *repairActor, RepairReason: *repairReason, RepairAuthorization: *repairAuthorization, StartLineage: strings.TrimSpace(*lineage), RepositoryContext: repositoryContext, ValidationRequest: validationRequest, CorrectionForecasted: correctionForecasted, CaptureContext: captureContext, Selector: selector})
+			result.NextTransition = &transition
+		}
 		if err := result.Validate(); err != nil {
 			return fmt.Errorf("validate negotiated review status: %w", err)
 		}
 		return encodeReviewJSON(stdout, result)
 	}
-	if strings.TrimSpace(*lineage) != "" || strings.TrimSpace(*baseRef) != "" || strings.TrimSpace(*baseTree) != "" || *workspaceOverlay || *projection != string(reviewtransaction.ProjectionWorkspace) {
+	if *actionEligibility || *nextTransition {
+		return errors.New("--action-eligibility and --next-transition require --contract")
+	}
+	if strings.TrimSpace(*lineage) != "" || strings.TrimSpace(*baseRef) != "" || strings.TrimSpace(*baseTree) != "" || *workspaceOverlay || *projection != string(reviewtransaction.ProjectionWorkspace) || *gate != string(reviewtransaction.GatePreCommit) || *recoverySuccessor != "" || *recoveryReason != "" || *recoveryActor != "" || *recoveryAuthorization != "" || *repairActor != "" || *repairReason != "" || *repairAuthorization != "" {
 		return errors.New("review status target selectors require --contract")
 	}
 	report, err := reviewtransaction.InventoryAuthority(ctx, *cwd)
@@ -421,6 +574,9 @@ func runReviewStatus(ctx context.Context, args []string, stdout io.Writer) error
 }
 
 func RunReviewRecover(args []string, stdout io.Writer) error {
+	if err := validateReviewTransitionSelectorFlagCounts(args, "review.recover"); err != nil {
+		return err
+	}
 	flags := newReviewFlagSet("review recover", stdout, "Create an auditable successor authority without changing its predecessor.")
 	cwd := flags.String("cwd", ".", "repository path")
 	predecessor := flags.String("predecessor-lineage", "", "explicit predecessor lineage")
@@ -430,11 +586,12 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	reason := flags.String("reason", "", "recovery reason")
 	actor := flags.String("actor", "", "recovery actor")
 	projectionFlag := flags.String("projection", "", "successor projection: workspace or staged (default: predecessor projection)")
-	authorization := flags.String("maintainer-authorization", "", "exact six-line LF-only binding: gentle-ai.review-recovery-authorization/v1, predecessor_lineage, predecessor_revision, target_identity, actor, reason")
+	authorization := flags.String("maintainer-authorization", "", "exact LF-only gentle-ai.review-recovery-authorization/v1 binding: predecessor_lineage, predecessor_revision, target_identity, optional native successor_lineage, actor, reason")
 	policySource := flags.String("policy", "", "optional review policy file")
 	focus := flags.String("focus", "reliability", "dominant standard-risk focus; large pure documentation always uses readability")
 	baseRef := flags.String("base-ref", "", "optional base revision for immutable base-to-HEAD review")
 	committedOnly := flags.Bool("committed-only", false, "acknowledge that --base-ref excludes dirty tracked changes")
+	workspaceOverlay := flags.Bool("workspace-overlay", false, "recover an approved base-diff into the exact staged index over --base-ref")
 	releaseScope := flags.Bool("release-scope", false, "recover an approved current-changes review into the immutable HEAD first-parent release scope")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
@@ -464,8 +621,10 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	base := strings.TrimSpace(*baseRef)
 	baseDiff := predecessorRecord.State.InitialSnapshot.Kind == reviewtransaction.TargetBaseDiff
 	overlay := predecessorRecord.State.InitialSnapshot.Kind == reviewtransaction.TargetBaseWorkspaceOverlay
-	if *releaseScope && (base != "" || *committedOnly) {
-		return errors.New("--release-scope cannot be combined with --base-ref or --committed-only")
+	explicitOverlayBase := overlay && base != "" && !*committedOnly
+	stagedScopeOverlay := *workspaceOverlay
+	if *releaseScope && (base != "" || *committedOnly || stagedScopeOverlay) {
+		return errors.New("--release-scope cannot be combined with --base-ref, --committed-only, or --workspace-overlay")
 	}
 	if *releaseScope && reviewtransaction.RecoveryDisposition(*disposition) != reviewtransaction.RecoveryScopeChanged {
 		return errors.New("--release-scope requires --disposition scope_changed")
@@ -473,7 +632,11 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	if *releaseScope && predecessorRecord.State.InitialSnapshot.Kind != reviewtransaction.TargetCurrentChanges {
 		return errors.New("--release-scope requires a current-changes predecessor")
 	}
-	if !*releaseScope && (*committedOnly != (base != "") || baseDiff != *committedOnly) {
+	if stagedScopeOverlay && (!(baseDiff || overlay && predecessorRecord.State.State == reviewtransaction.StateInvalidated && predecessorRecord.State.InitialSnapshot.Projection == reviewtransaction.ProjectionStaged) || base == "" || *committedOnly || strings.TrimSpace(*projectionFlag) != string(reviewtransaction.ProjectionStaged)) {
+		return errors.New("--workspace-overlay recovery requires a base-diff predecessor, --base-ref, and --projection staged without --committed-only")
+	}
+	if !*releaseScope && !stagedScopeOverlay &&
+		(*committedOnly != (base != "") || baseDiff != *committedOnly) && !explicitOverlayBase {
 		return errors.New("base-diff recovery requires matching --base-ref and --committed-only")
 	}
 	projection := predecessorRecord.State.InitialSnapshot.Projection
@@ -493,19 +656,27 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	target := reviewtransaction.Target{Kind: reviewtransaction.TargetCurrentChanges, Projection: projection, IntendedUntracked: intended}
 	if *committedOnly {
 		target.Kind, target.BaseRef = reviewtransaction.TargetBaseDiff, base
+	} else if stagedScopeOverlay {
+		target.Kind, target.BaseRef = reviewtransaction.TargetBaseWorkspaceOverlay, base
 	} else if overlay {
-		target.Kind, target.BaseRef = reviewtransaction.TargetBaseWorkspaceOverlay, predecessorRecord.State.InitialSnapshot.BaseTree
+		target.Kind, target.BaseRef = reviewtransaction.TargetBaseWorkspaceOverlay, base
+		if target.BaseRef == "" {
+			target.BaseRef = predecessorRecord.State.InitialSnapshot.BaseTree
+		}
 	}
 	var snapshot reviewtransaction.Snapshot
 	if *releaseScope {
 		snapshot, err = reviewtransaction.BuildReleaseScopeSnapshot(context.Background(), root)
+	} else if stagedScopeOverlay {
+		snapshot, err = builder.BuildStagedWorkspaceOverlayRecovery(context.Background(), target)
 	} else {
 		snapshot, err = builder.Build(context.Background(), target)
 	}
 	if err != nil {
 		return err
 	}
-	if !*releaseScope && (baseDiff || overlay) && snapshot.BaseTree != predecessorRecord.State.InitialSnapshot.BaseTree {
+	if !*releaseScope && (baseDiff || overlay && base == "" || stagedScopeOverlay) &&
+		snapshot.BaseTree != predecessorRecord.State.InitialSnapshot.BaseTree {
 		return errors.New("recovery base-ref does not match predecessor base")
 	}
 	if !*releaseScope && (baseDiff || overlay) && snapshot.Identity == predecessorRecord.State.InitialSnapshot.Identity {
@@ -533,6 +704,8 @@ func RunReviewRecover(args []string, stdout io.Writer) error {
 	}
 	if *releaseScope {
 		*authorization = reviewtransaction.ReleaseScopeRecoveryAuthorization
+	} else if !stagedScopeOverlay && *authorization == reviewTransitionRecoveryAuthorization(ReviewTransitionBinding{LineageID: *predecessor, Revision: *expected, TargetIdentity: snapshot.Identity}, *successor, *actor, *reason) {
+		*authorization = reviewTransitionRecoveryAuthorization(ReviewTransitionBinding{LineageID: *predecessor, Revision: *expected, TargetIdentity: snapshot.Identity}, "", *actor, *reason)
 	}
 	reviewRecoverBeforePersist()
 	record, err := reviewtransaction.RecoverCompactAuthority(context.Background(), root, reviewtransaction.CompactRecoveryRequest{
@@ -576,6 +749,9 @@ func runReviewBindSDD(ctx context.Context, args []string, stdout io.Writer) erro
 	}
 	if strings.TrimSpace(*cwd) == "" || strings.TrimSpace(*change) == "" || strings.TrimSpace(*lineage) == "" || !hasExpected {
 		return errors.New("review bind-sdd requires --cwd, --change, --lineage, and --expected-binding-revision")
+	}
+	if *expected != "" && !validReviewCapabilitySHA256(*expected) {
+		return reviewPreflightError(errors.New("review bind-sdd expected-binding-revision must be empty or sha256"))
 	}
 	binding, err := sddstatus.BindApprovedReview(ctx, *cwd, *change, *lineage, *expected)
 	if err != nil {
@@ -694,6 +870,7 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	flags := newReviewFlagSet("review start", stdout, "Freeze live Git scope and derive the bounded review tier, lenses, and correction budget.")
 	cwd := flags.String("cwd", ".", "repository path")
 	contract := flags.String("contract", "", "optional negotiated review integration contract")
+	targetIdentity := flags.String("target", "", "exact frozen target identity for negotiated START")
 	lineage := flags.String("lineage", "", "optional explicit review lineage identifier")
 	policySource := flags.String("policy", "", "optional review policy file; the native bounded policy is used by default")
 	focus := flags.String("focus", "reliability", "dominant standard-risk focus: risk, resilience, readability, or reliability; large pure documentation always uses readability")
@@ -714,6 +891,9 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	negotiated, err := reviewIntegrationNegotiation(flags, *contract)
 	if err != nil {
 		return err
+	}
+	if err := validateReviewStartBinding(args, negotiated, *targetIdentity, *projection, *baseRef, *lineage, *committedOnly, *workspaceOverlay); err != nil {
+		return reviewPreflightError(err)
 	}
 	builder := reviewtransaction.SnapshotBuilder{Repo: *cwd}
 	root, err := builder.ResolveRepositoryRoot(ctx)
@@ -755,6 +935,9 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	if err != nil {
 		return fmt.Errorf("build facade review target: %w", err)
 	}
+	if negotiated && snapshot.Identity != *targetIdentity {
+		return reviewPreflightError(errors.New("review start target does not match the freshly built snapshot"))
+	}
 	assessment, err := (reviewtransaction.SnapshotBuilder{Repo: root}).AssessSnapshotRisk(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("classify facade review target: %w", err)
@@ -786,26 +969,62 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 	if err != nil {
 		return fmt.Errorf("create compact facade review: %w", err)
 	}
+	var requestedFrozenContext *reviewtransaction.FrozenCandidateContext
+	var requestedRepositoryContext *ReviewRepositoryContextReference
+	var requestedContextErr error
+	if negotiated && len(state.SelectedLenses) > 0 {
+		contextResult, contextErr := renderReviewStartFrozenCandidateContext(ctx, reviewtransaction.SnapshotBuilder{Repo: root}, state.InitialSnapshot)
+		if contextErr != nil {
+			requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: contextErr}
+		} else {
+			requestedFrozenContext = &contextResult
+		}
+	}
+	if negotiated && requestedContextErr == nil {
+		revision, revisionErr := reviewtransaction.CompactRevisionForState(state)
+		if revisionErr != nil {
+			requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: revisionErr}
+		} else {
+			binding := reviewtransaction.ReviewRepositoryContextBinding{
+				LineageID: state.LineageID, TargetIdentity: state.InitialSnapshot.Identity, Revision: revision,
+			}
+			handle, handleErr := reviewtransaction.DeriveReviewRepositoryContextHandle(ctx, root, binding)
+			if handleErr != nil {
+				requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: handleErr}
+			} else {
+				requestedRepositoryContext = &ReviewRepositoryContextReference{
+					Capability: reviewtransaction.ReviewRepositoryContextCapability, Handle: handle, Revision: revision,
+					TargetIdentity: state.InitialSnapshot.Identity,
+				}
+			}
+		}
+	}
+	if negotiated && requestedContextErr == nil {
+		preview := reviewFacadeStartResultFor(reviewtransaction.CompactStartCreated, len(state.SelectedLenses) > 0, state)
+		if _, previewErr := newReviewIntegrationStartResult(preview, assessment, state.InitialSnapshot.Kind, requestedFrozenContext, requestedRepositoryContext); previewErr != nil {
+			requestedContextErr = &reviewStartContextError{LineageID: state.LineageID, Cause: previewErr}
+		}
+	}
+	var beforeCreate func() error
+	if negotiated {
+		beforeCreate = func() error {
+			if requestedContextErr != nil {
+				return requestedContextErr
+			}
+			if err := (reviewtransaction.SnapshotBuilder{Repo: root}).ValidateLiveSnapshot(ctx, snapshot); err != nil {
+				return reviewPreflightError(err)
+			}
+			return nil
+		}
+	}
 	started, err := reviewtransaction.StartCompactAuthority(ctx, root, reviewtransaction.CompactStartRequest{
-		State: state, TracePath: strings.TrimSpace(*tracePath), ExplicitLineage: explicitLineage,
+		State: state, TracePath: strings.TrimSpace(*tracePath), ExplicitLineage: explicitLineage, BeforeCreate: beforeCreate,
 	})
 	if err != nil {
 		return fmt.Errorf("start compact facade review: %w", err)
 	}
 	authority := started.Record.State
-	legacyResult := ReviewFacadeStartResult{
-		Operation: "review/start", Action: string(started.Action), LensesRequired: started.LensesRequired,
-		LineageID: authority.LineageID, State: authority.State, RiskLevel: authority.RiskLevel,
-		SelectedLenses: append([]string{}, authority.SelectedLenses...), LensBindings: facadeLensBindings(authority.SelectedLenses),
-		Projection:   facadeProjection(authority.InitialSnapshot.Projection),
-		ChangedFiles: len(authority.InitialSnapshot.Paths), TargetIdentity: authority.InitialSnapshot.Identity,
-		ChangedLines: authority.OriginalChangedLines, CorrectionBudget: authority.CorrectionBudget,
-	}
-	if authority.InitialSnapshot.Kind == reviewtransaction.TargetBaseWorkspaceOverlay {
-		legacyResult.TargetMode = authority.InitialSnapshot.Kind
-		legacyResult.BaseTree = authority.InitialSnapshot.BaseTree
-		legacyResult.CandidateTree = authority.InitialSnapshot.CandidateTree
-	}
+	legacyResult := reviewFacadeStartResultFor(started.Action, started.LensesRequired, authority)
 	if !negotiated {
 		return encodeReviewJSON(stdout, legacyResult)
 	}
@@ -818,11 +1037,192 @@ func runReviewFacadeStart(ctx context.Context, args []string, stdout io.Writer) 
 			return fmt.Errorf("classify authoritative negotiated START target: %w", err)
 		}
 	}
-	negotiatedResult, err := newReviewIntegrationStartResult(legacyResult, assessment, authority.InitialSnapshot.Kind)
+	var frozenContext *reviewtransaction.FrozenCandidateContext
+	if len(authority.SelectedLenses) > 0 {
+		if authority.InitialSnapshot.Identity == state.InitialSnapshot.Identity && requestedFrozenContext != nil {
+			frozenContext = requestedFrozenContext
+		} else {
+			contextResult, contextErr := renderReviewStartFrozenCandidateContext(ctx, reviewtransaction.SnapshotBuilder{Repo: root}, authority.InitialSnapshot)
+			if contextErr != nil {
+				return &reviewStartContextError{
+					AuthoritySelected: true, LineageID: authority.LineageID, StoreRevision: started.Record.Revision, Cause: contextErr,
+				}
+			}
+			frozenContext = &contextResult
+		}
+	}
+	var repositoryContext *ReviewRepositoryContextReference
+	if authority.State == reviewtransaction.StateReviewing &&
+		(started.Action == reviewtransaction.CompactStartCreated || started.Action == reviewtransaction.CompactStartResumed) {
+		binding := reviewtransaction.ReviewRepositoryContextBinding{
+			LineageID: authority.LineageID, TargetIdentity: authority.InitialSnapshot.Identity, Revision: started.Record.Revision,
+		}
+		handle, contextErr := reviewtransaction.PublishReviewRepositoryContext(ctx, root, binding)
+		if contextErr != nil {
+			return &reviewStartContextError{
+				AuthoritySelected: true, LineageID: authority.LineageID, StoreRevision: started.Record.Revision, Cause: contextErr,
+			}
+		}
+		repositoryContext = &ReviewRepositoryContextReference{
+			Capability: reviewtransaction.ReviewRepositoryContextCapability, Handle: handle, Revision: started.Record.Revision,
+			TargetIdentity: authority.InitialSnapshot.Identity,
+		}
+	}
+	negotiatedResult, err := newReviewIntegrationStartResult(legacyResult, assessment, authority.InitialSnapshot.Kind, frozenContext, repositoryContext)
 	if err != nil {
-		return err
+		return &reviewStartContextError{
+			AuthoritySelected: true, LineageID: authority.LineageID, StoreRevision: started.Record.Revision, Cause: err,
+		}
 	}
 	return encodeReviewJSON(stdout, negotiatedResult)
+}
+
+func validateReviewStartBinding(args []string, negotiated bool, target, projection, baseRef, lineage string, committedOnly, workspaceOverlay bool) error {
+	counts := reviewStartBindingFlagCounts(args)
+	if !negotiated {
+		if counts["target"] != 0 {
+			return errors.New("review start --target requires --contract")
+		}
+		return nil
+	}
+	for _, name := range []string{"contract", "target", "projection", "lineage", "base-ref", "committed-only", "workspace-overlay"} {
+		if counts[name] > 1 {
+			return fmt.Errorf("review start repeats --%s", name)
+		}
+	}
+	if counts["contract"] != 1 || counts["target"] != 1 || counts["projection"] != 1 {
+		return errors.New("negotiated review start requires exactly one --contract, --target, and --projection")
+	}
+	if !validReviewCapabilitySHA256(target) {
+		return errors.New("negotiated review start requires an exact sha256 --target")
+	}
+	if projection != string(reviewtransaction.ProjectionWorkspace) && projection != string(reviewtransaction.ProjectionStaged) {
+		return errors.New("negotiated review start requires an exact supported --projection")
+	}
+	if counts["lineage"] == 1 && !validReviewIntegrationLineage(lineage) {
+		return errors.New("negotiated review start lineage is not canonical")
+	}
+	base := strings.TrimSpace(baseRef)
+	switch {
+	case workspaceOverlay:
+		if counts["workspace-overlay"] != 1 || counts["base-ref"] != 1 || base == "" || counts["committed-only"] != 0 {
+			return errors.New("negotiated workspace-overlay START requires exactly --base-ref and --workspace-overlay")
+		}
+	case base != "":
+		if counts["base-ref"] != 1 || counts["committed-only"] != 1 || !committedOnly || counts["workspace-overlay"] != 0 {
+			return errors.New("negotiated base-diff START requires exactly --base-ref and --committed-only")
+		}
+	default:
+		if counts["base-ref"] != 0 || counts["committed-only"] != 0 || counts["workspace-overlay"] != 0 {
+			return errors.New("negotiated current-changes START contains a partial base selector")
+		}
+	}
+	return nil
+}
+
+func reviewStartBindingFlagCounts(args []string) map[string]int {
+	counts := make(map[string]int)
+	shape := reviewIntegrationOperationFlagShape("review.start")
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "--" || argument == "" || argument == "-" || argument[0] != '-' {
+			break
+		}
+		nameValue := strings.TrimPrefix(strings.TrimPrefix(argument, "-"), "-")
+		name, hasValue := nameValue, false
+		if separator := strings.IndexByte(nameValue, '='); separator >= 0 {
+			name, hasValue = nameValue[:separator], true
+		}
+		kind, known := shape[name]
+		if !known {
+			continue
+		}
+		switch name {
+		case "contract", "target", "projection", "lineage", "base-ref", "committed-only", "workspace-overlay":
+			counts[name]++
+		}
+		if kind != reviewIntegrationBoolFlag && !hasValue {
+			index++
+		}
+	}
+	return counts
+}
+
+func validateReviewTransitionSelectorFlagCounts(args []string, operation string) error {
+	shape := reviewIntegrationOperationFlagShape(operation)
+	selectors := []string{"base-ref"}
+	if operation == "review.recover" {
+		shape = map[string]reviewIntegrationFlagKind{
+			"cwd":                           reviewIntegrationValueFlag,
+			"predecessor-lineage":           reviewIntegrationValueFlag,
+			"expected-predecessor-revision": reviewIntegrationValueFlag,
+			"successor-lineage":             reviewIntegrationValueFlag,
+			"disposition":                   reviewIntegrationValueFlag,
+			"reason":                        reviewIntegrationValueFlag,
+			"actor":                         reviewIntegrationValueFlag,
+			"projection":                    reviewIntegrationValueFlag,
+			"maintainer-authorization":      reviewIntegrationValueFlag,
+			"policy":                        reviewIntegrationValueFlag,
+			"focus":                         reviewIntegrationValueFlag,
+			"base-ref":                      reviewIntegrationValueFlag,
+			"committed-only":                reviewIntegrationBoolFlag,
+			"workspace-overlay":             reviewIntegrationBoolFlag,
+			"release-scope":                 reviewIntegrationBoolFlag,
+			"h":                             reviewIntegrationBoolFlag,
+			"help":                          reviewIntegrationBoolFlag,
+		}
+		selectors = []string{"base-ref", "committed-only", "projection", "workspace-overlay"}
+	}
+	counts := make(map[string]int, len(selectors))
+	selected := make(map[string]bool, len(selectors))
+	for _, name := range selectors {
+		selected[name] = true
+	}
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		if argument == "--" || argument == "" || argument == "-" || argument[0] != '-' {
+			break
+		}
+		nameValue := strings.TrimPrefix(strings.TrimPrefix(argument, "-"), "-")
+		name, hasValue := nameValue, false
+		if separator := strings.IndexByte(nameValue, '='); separator >= 0 {
+			name, hasValue = nameValue[:separator], true
+		}
+		kind, known := shape[name]
+		if !known {
+			continue
+		}
+		if selected[name] {
+			counts[name]++
+		}
+		if kind != reviewIntegrationBoolFlag && !hasValue {
+			index++
+		}
+	}
+	command := strings.TrimPrefix(operation, "review.")
+	for _, name := range selectors {
+		if counts[name] > 1 {
+			return fmt.Errorf("review %s repeats --%s", command, name)
+		}
+	}
+	return nil
+}
+
+func reviewFacadeStartResultFor(action reviewtransaction.CompactStartAction, lensesRequired bool, authority reviewtransaction.CompactState) ReviewFacadeStartResult {
+	result := ReviewFacadeStartResult{
+		Operation: "review/start", Action: string(action), LensesRequired: lensesRequired,
+		LineageID: authority.LineageID, State: authority.State, RiskLevel: authority.RiskLevel,
+		SelectedLenses: append([]string{}, authority.SelectedLenses...), LensBindings: facadeLensBindings(authority.SelectedLenses),
+		Projection:   facadeProjection(authority.InitialSnapshot.Projection),
+		ChangedFiles: len(authority.InitialSnapshot.Paths), TargetIdentity: authority.InitialSnapshot.Identity,
+		ChangedLines: authority.OriginalChangedLines, CorrectionBudget: authority.CorrectionBudget,
+	}
+	if authority.InitialSnapshot.Kind == reviewtransaction.TargetBaseWorkspaceOverlay {
+		result.TargetMode = authority.InitialSnapshot.Kind
+		result.BaseTree = authority.InitialSnapshot.BaseTree
+		result.CandidateTree = authority.InitialSnapshot.CandidateTree
+	}
+	return result
 }
 
 func RunReviewFacadeFinalize(args []string, stdout io.Writer) error {
@@ -847,6 +1247,10 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	flags := newReviewFlagSet("review finalize", stdout, "Canonicalize reviewer output and evidence, perform required native transitions, and materialize the terminal receipt.")
 	cwd := flags.String("cwd", ".", "repository path")
 	contract := flags.String("contract", "", "optional negotiated review integration contract")
+	actionEligibility := flags.Bool("action-eligibility", false, "include optional machine-readable review action eligibility in negotiated output")
+	nextTransition := flags.Bool("next-transition", false, "include the optional canonical native next transition in negotiated output")
+	capturedResults := flags.Bool("captured-results", false, "use every natively captured reviewer result in canonical selected-lens order")
+	capturedEvidence := flags.Bool("captured-evidence", false, "use the natively captured final verification evidence")
 	lineage := flags.String("lineage", "", "optional lineage override when discovery is ambiguous")
 	validationPath := flags.String("validation", "", "targeted correction validation JSON file or - for stdin")
 	refuterPath := flags.String("refuter", "", "optional refuter outcomes JSON file or - for stdin")
@@ -858,6 +1262,8 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	flags.Var(&resultPaths, "result", "reviewer result JSON file or - for stdin; repeat in selected-lens order")
 	var resultArtifacts repeatedString
 	flags.Var(&resultArtifacts, "result-artifact", "native reviewer artifact manifest JSON; repeat in selected-lens order")
+	var resultArtifactFiles repeatedString
+	flags.Var(&resultArtifactFiles, "result-artifact-file", "native reviewer artifact manifest regular file or - for stdin; repeat in selected-lens order")
 	if err := parseReviewFlags(flags, args); err != nil {
 		return err
 	}
@@ -871,17 +1277,27 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	if err != nil {
 		return err
 	}
-	if countFacadeStdin(resultPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
+	if (*actionEligibility || *nextTransition) && !negotiated {
+		return errors.New("--action-eligibility and --next-transition require --contract")
+	}
+	stdinPaths := append(append([]string{}, resultPaths...), resultArtifactFiles...)
+	if countFacadeStdin(stdinPaths, *validationPath, *refuterPath, *evidencePath) > 1 {
 		return reviewPreflightError(errors.New("review finalize accepts stdin for only one input"))
 	}
-	if len(resultPaths) != 0 && len(resultArtifacts) != 0 {
-		return reviewPreflightError(errors.New("review finalize cannot mix --result and --result-artifact"))
+	reviewerResultSources := 0
+	for _, supplied := range []bool{len(resultPaths) != 0, len(resultArtifacts) != 0, len(resultArtifactFiles) != 0, *capturedResults} {
+		if supplied {
+			reviewerResultSources++
+		}
+	}
+	if reviewerResultSources > 1 || (*capturedEvidence && strings.TrimSpace(*evidencePath) != "") {
+		return reviewPreflightError(errors.New("review finalize accepts exactly one reviewer-result source and one final-evidence source"))
 	}
 	root, err := (reviewtransaction.SnapshotBuilder{Repo: *cwd}).ResolveRepositoryRoot(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve review repository root: %w", err)
 	}
-	store, record, err := discoverCompactFacadeReview(ctx, root, *lineage, false)
+	store, record, err := discoverCompactFacadeFinalize(ctx, root, *lineage)
 	if err != nil {
 		if _, chain, _, legacyErr := discoverFacadeReview(ctx, root, *lineage, false); legacyErr == nil {
 			legacyLineage := chain.Records[len(chain.Records)-1].Transaction.LineageID
@@ -905,7 +1321,10 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 		}
 	}
 	terminalAtEntry := facadeTerminalState(state.State)
-	if state.State != reviewtransaction.StateReviewing && (len(resultArtifacts) != 0 || len(resultPaths) != 0) {
+	if terminalAtEntry && !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, resultArtifactFiles, *capturedResults, *capturedEvidence, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
+		return errors.New("terminal review finalize accepts no review inputs; exact replay requires only --lineage")
+	}
+	if state.State != reviewtransaction.StateReviewing && (len(resultArtifacts) != 0 || len(resultArtifactFiles) != 0 || len(resultPaths) != 0) {
 		pending, pendingErr := store.PendingFinalizeAttempt()
 		if pendingErr != nil {
 			return pendingErr
@@ -939,14 +1358,8 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 			if terminalPending == nil {
 				terminalComplete = true
 			}
-			if terminalPending != nil && !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
-				return errors.New("terminal review finalize accepts no review inputs; exact replay requires only --lineage")
-			}
 		}
 		if !terminalReceiptExists {
-			if !facadeFinalizeReplayInputsEmpty(resultPaths, resultArtifacts, *validationPath, *refuterPath, *evidencePath, *correctionLines, *failed, *tracePath) {
-				return errors.New("terminal review finalize accepts no review inputs; exact receipt replay requires only --lineage")
-			}
 			if *lineage != state.LineageID || strings.TrimSpace(*lineage) != *lineage {
 				return errors.New("receipt publication replay requires the exact explicit --lineage")
 			}
@@ -957,7 +1370,28 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 		return reviewPreflightError(err)
 	}
 	if len(resultArtifacts) != 0 {
-		reviewerResults, err = readFacadeReviewerArtifacts(resultArtifacts, store.Dir, state)
+		reviewerResults, err = readFacadeReviewerArtifacts(ctx, root, resultArtifacts, store.Dir, state, record.Revision)
+		if err != nil {
+			return reviewPreflightError(err)
+		}
+	}
+	if len(resultArtifactFiles) != 0 {
+		manifests := make([]string, len(resultArtifactFiles))
+		for index, path := range resultArtifactFiles {
+			payload, readErr := readFacadeArtifactManifest(ctx, path)
+			if readErr != nil {
+				return reviewPreflightError(fmt.Errorf("read reviewer artifact manifest %d: %w", index+1, readErr))
+			}
+			payload = bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))
+			manifests[index] = string(payload)
+		}
+		reviewerResults, err = readFacadeReviewerArtifacts(ctx, root, manifests, store.Dir, state, record.Revision)
+		if err != nil {
+			return reviewPreflightError(err)
+		}
+	}
+	if *capturedResults {
+		reviewerResults, err = readCapturedReviewerResults(ctx, root, store.Dir, state, record.Revision)
 		if err != nil {
 			return reviewPreflightError(err)
 		}
@@ -982,20 +1416,27 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 			return reviewPreflightError(fmt.Errorf("read final review evidence: %w", err))
 		}
 	}
+	if *capturedEvidence {
+		evidence, err = readCapturedFinalEvidence(store.Dir, state, record.Revision)
+		if err != nil {
+			return reviewPreflightError(err)
+		}
+	}
 	if terminalComplete {
 		if err := reviewFacadeSyncDirectory(filepath.Dir(store.FinalizeAttemptJournalPath())); err != nil {
 			return fmt.Errorf("sync completed finalize journal directory: %w", err)
 		}
-		return encodeCompactFacadeFinalize(stdout, negotiated, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>")
+		return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>", reviewFinalizeOutputContext{Context: ctx, Repo: root})
 	}
 	var attempt reviewtransaction.FinalizeAttempt
 	attemptLoaded := false
+	var pendingAtEntry *reviewtransaction.FinalizeAttempt
 	if !terminalAtEntry {
-		pending, pendingErr := store.PendingFinalizeAttempt()
-		if pendingErr != nil {
-			return pendingErr
+		pendingAtEntry, err = store.PendingFinalizeAttempt()
+		if err != nil {
+			return err
 		}
-		if index := facadeFinalizeTransitionIndex(pending, record.Revision); index >= 0 {
+		if index := facadeFinalizeTransitionIndex(pendingAtEntry, record.Revision); index >= 0 {
 			replayEvidence := evidence
 			if len(replayEvidence) == 0 && facadeNativeLowRiskCandidate(state) {
 				replayEvidence, err = prepareFacadeNativeLowRiskVerification(ctx, root, state)
@@ -1012,15 +1453,37 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 				if err := store.CompleteFinalizeAttempt(attempt.Request.RequestDigest); err != nil {
 					return err
 				}
-				return encodeCompactFacadeFinalize(stdout, negotiated, state, record.Revision, store, "continue the current review state")
+				return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "continue the current review state", reviewFinalizeOutputContext{Context: ctx, Repo: root})
 			}
 		}
 	}
-	plan, err := prepareFacadeFinalizePlan(ctx, root, state, reviewerResults, refuter, validation, evidence, *correctionLines, *failed)
+	if !terminalAtEntry && pendingAtEntry == nil {
+		if err := (reviewtransaction.SnapshotBuilder{Repo: root}).ValidateEvidence(ctx, state.CurrentSnapshot); err != nil {
+			// Keep negotiated Git failures classified as preflight/not_started.
+			return reviewPreflightError(fmt.Errorf("validate FINALIZE current snapshot: %v", err))
+		}
+	}
+	plan, err := prepareFacadeFinalizePlan(ctx, root, record.Revision, state, reviewerResults, refuter, validation, evidence, *correctionLines, *failed)
 	if err != nil {
 		return reviewPreflightError(err)
 	}
+	// A zero-transition next-transition request is a read-only routing projection;
+	// correction routing may intentionally describe a live target not frozen yet.
+	if !terminalAtEntry && pendingAtEntry == nil && (len(plan.Transitions) > 0 || !*nextTransition) {
+		if err := (reviewtransaction.SnapshotBuilder{Repo: root}).ValidateLiveSnapshot(ctx, plan.Candidate); err != nil {
+			return reviewPreflightError(fmt.Errorf("validate FINALIZE live target: %v", err))
+		}
+	}
+	if !terminalAtEntry && pendingAtEntry == nil && len(plan.Transitions) == 0 {
+		return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "continue the current review state", reviewFinalizeOutputContext{Context: ctx, Repo: root})
+	}
 	request := facadeFinalizeAttemptRequestForCandidate(record, plan.Candidate, reviewerResults, validation, refuter, plan.Evidence, *correctionLines, *failed)
+	if !terminalAtEntry && pendingAtEntry != nil && !attemptLoaded {
+		attempt, attemptLoaded, err = store.ReconcileFinalizeAttempt(ctx, request)
+		if err != nil {
+			return err
+		}
+	}
 	if terminalAtEntry {
 		if terminalPending != nil {
 			attempt = *terminalPending
@@ -1074,10 +1537,10 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	}
 
 	if state.State != reviewtransaction.StateApproved && state.State != reviewtransaction.StateEscalated {
-		return encodeCompactFacadeFinalize(stdout, negotiated, state, record.Revision, store, "continue the current review state")
+		return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "continue the current review state", reviewFinalizeOutputContext{Context: ctx, Repo: root})
 	}
 	if terminalAtEntry && terminalReceiptExists {
-		return encodeCompactFacadeFinalize(stdout, negotiated, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>")
+		return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>", reviewFinalizeOutputContext{Context: ctx, Repo: root})
 	}
 	receipt := terminalReceipt
 	if !terminalAtEntry {
@@ -1099,7 +1562,7 @@ func runReviewFacadeFinalize(ctx context.Context, args []string, stdout io.Write
 	if err := store.MarkFinalizeAttemptReceiptPublished(requestDigest); err != nil {
 		return err
 	}
-	return encodeCompactFacadeFinalize(stdout, negotiated, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>")
+	return encodeCompactFacadeFinalize(stdout, negotiated, *actionEligibility, *nextTransition, state, record.Revision, store, "validate delivery with gentle-ai review validate --gate <gate>", reviewFinalizeOutputContext{Context: ctx, Repo: root})
 }
 
 func facadeFinalizeTransitionIndex(attempt *reviewtransaction.FinalizeAttempt, revision string) int {
@@ -1158,7 +1621,7 @@ type facadeFinalizePlan struct {
 // prepareFacadeFinalizePlan performs every deterministic validation before the
 // attempt journal exists. Its states are the only states later admitted and
 // written through the write-ahead journal.
-func prepareFacadeFinalizePlan(ctx context.Context, repo string, state reviewtransaction.CompactState, results []facadeReviewerResult, refuter facadeRefuterResult, validation *facadeValidationResult, evidence []byte, correctionLines int, failed bool) (facadeFinalizePlan, error) {
+func prepareFacadeFinalizePlan(ctx context.Context, repo, revision string, state reviewtransaction.CompactState, results []facadeReviewerResult, refuter facadeRefuterResult, validation *facadeValidationResult, evidence []byte, correctionLines int, failed bool) (facadeFinalizePlan, error) {
 	entryState, entryProposed := state.State, state.ProposedCorrectionLines != nil
 	plan := facadeFinalizePlan{Transitions: []facadeFinalizeTransition{}, Candidate: state.CurrentSnapshot, Evidence: evidence}
 	appendState := func(operation string) {
@@ -1192,7 +1655,11 @@ func prepareFacadeFinalizePlan(ctx context.Context, repo string, state reviewtra
 		if err != nil {
 			return plan, err
 		}
-		native, err := validation.compact(reviewtransaction.FixDeltaHashForSnapshot(fix), state.FixFindingIDs)
+		request, err := reviewtransaction.BuildTargetedValidationRequestFromSnapshot(ctx, repo, state, revision, fix)
+		if err != nil {
+			return plan, err
+		}
+		native, err := validation.compact(reviewtransaction.FixDeltaHashForSnapshot(fix), state.FixFindingIDs, request)
 		if err != nil {
 			return plan, err
 		}
@@ -1243,7 +1710,7 @@ func prepareFacadeNativeLowRiskVerification(ctx context.Context, repo string, st
 	default:
 		return nil, fmt.Errorf("native low-risk verification does not support target kind %q", target.Kind)
 	}
-	live, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).Build(ctx, target)
+	live, err := (reviewtransaction.SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, target)
 	if err != nil {
 		return nil, fmt.Errorf("rebuild frozen low-risk projection: %w", err)
 	}
@@ -1261,8 +1728,8 @@ func facadeTerminalState(state reviewtransaction.State) bool {
 	return state == reviewtransaction.StateApproved || state == reviewtransaction.StateEscalated
 }
 
-func facadeFinalizeReplayInputsEmpty(results, artifacts []string, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
-	return len(results) == 0 && len(artifacts) == 0 && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
+func facadeFinalizeReplayInputsEmpty(results, artifacts, artifactFiles []string, capturedResults, capturedEvidence bool, validation, refuter, evidence string, correctionLines int, failed bool, trace string) bool {
+	return len(results) == 0 && len(artifacts) == 0 && len(artifactFiles) == 0 && !capturedResults && !capturedEvidence && strings.TrimSpace(validation) == "" && strings.TrimSpace(refuter) == "" &&
 		strings.TrimSpace(evidence) == "" && correctionLines == 0 && !failed && strings.TrimSpace(trace) == ""
 }
 
@@ -1314,6 +1781,9 @@ func RunReviewFacadeValidate(args []string, stdout io.Writer) error {
 }
 
 func runReviewFacadeValidate(ctx context.Context, args []string, stdout io.Writer) error {
+	if err := validateReviewTransitionSelectorFlagCounts(args, ReviewIntegrationOperationValidate); err != nil {
+		return err
+	}
 	flags := newReviewFlagSet("review validate", stdout, "Auto-discover authoritative review state and receipt, then validate them against live Git evidence.")
 	cwd := flags.String("cwd", ".", "repository path")
 	contract := flags.String("contract", "", "optional negotiated review integration contract")
@@ -1393,6 +1863,15 @@ func runReviewFacadeValidate(ctx context.Context, args []string, stdout io.Write
 		}
 	}
 	if !negotiated {
+		var targetResolution *reviewtransaction.GateTargetResolutionError
+		if errors.As(compactErr, &targetResolution) {
+			return emitFacadeGateEvaluationNegotiated(stdout, reviewtransaction.NativeGateEvaluation{
+				Result: reviewtransaction.GateInvalidated, Reason: targetResolution.Error(), Cause: compactErr,
+				Context: reviewtransaction.GateContext{
+					Gate: gateInput.Gate, Denial: &reviewtransaction.GateDenial{Stage: "target-resolution", Code: "target_resolution_failed"},
+				},
+			}, false)
+		}
 		var discovery *ReviewReceiptDiscoveryError
 		if errors.As(compactErr, &discovery) {
 			result := reviewtransaction.GateInvalidated
@@ -1460,6 +1939,11 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 	scopeChanged := []candidate{}
 	scopeWithoutContext := []string{}
 	assessmentUnknown := []string{}
+	type targetResolutionFailure struct {
+		lineage string
+		err     error
+	}
+	targetResolution := []targetResolutionFailure{}
 	terminalCount := 0
 	allLineages := []string{}
 	for _, store := range stores {
@@ -1486,6 +1970,11 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 		candidateInput.IntendedUntracked = append([]string(nil), record.State.CurrentSnapshot.IntendedUntracked...)
 		assessment, assessErr := reviewtransaction.AssessCompactGateTarget(ctx, repo, record.State, candidateInput)
 		if assessErr != nil {
+			var targetErr *reviewtransaction.GateTargetResolutionError
+			if errors.As(assessErr, &targetErr) {
+				targetResolution = append(targetResolution, targetResolutionFailure{lineage: record.State.LineageID, err: assessErr})
+				continue
+			}
 			assessmentUnknown = append(assessmentUnknown, record.State.LineageID)
 			continue
 		}
@@ -1526,23 +2015,32 @@ func discoverCompactFacadeGateReview(ctx context.Context, repo, lineage string, 
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewReceiptMissing}
 	}
 	scopeCandidateCount := len(scopeChanged) + len(scopeWithoutContext)
-	if scopeCandidateCount > 0 && scopeCandidateCount+len(assessmentUnknown) > 1 {
-		lineages := make([]string, 0, scopeCandidateCount+len(assessmentUnknown))
+	if scopeCandidateCount > 0 && scopeCandidateCount+len(assessmentUnknown)+len(targetResolution) > 1 {
+		lineages := make([]string, 0, scopeCandidateCount+len(assessmentUnknown)+len(targetResolution))
 		for index := range scopeChanged {
 			lineages = append(lineages, scopeChanged[index].record.State.LineageID)
 		}
 		lineages = append(lineages, scopeWithoutContext...)
 		lineages = append(lineages, assessmentUnknown...)
+		for _, failure := range targetResolution {
+			lineages = append(lineages, failure.lineage)
+		}
 		sort.Strings(lineages)
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewReceiptAmbiguous, Candidates: lineages}
 	}
-	if len(scopeChanged) == 1 && len(scopeWithoutContext) == 0 && len(assessmentUnknown) == 0 {
+	if len(scopeChanged) == 1 && len(scopeWithoutContext) == 0 && len(assessmentUnknown) == 0 && len(targetResolution) == 0 {
 		context := scopeChanged[0].context
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{
 			Kind: ReviewReceiptScopeChanged, Candidates: []string{scopeChanged[0].record.State.LineageID}, Context: &context,
 		}
 	}
 	if len(scopeWithoutContext) > 0 || len(assessmentUnknown) > 0 {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewAuthorityCorrupted}
+	}
+	if len(targetResolution) == terminalCount {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, targetResolution[0].err
+	}
+	if len(targetResolution) > 0 {
 		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, &ReviewReceiptDiscoveryError{Kind: ReviewAuthorityCorrupted}
 	}
 	sort.Strings(allLineages)
@@ -1700,15 +2198,16 @@ func facadeFocusLens(focus string) (string, bool) {
 	return lens, ok
 }
 
-func (result facadeReviewerResult) nativeLensResult() (reviewtransaction.LensResult, []facadeFinding) {
+func (result facadeReviewerResult) nativeLensResult() reviewtransaction.LensResult {
 	findings := make([]reviewtransaction.Finding, len(result.Findings))
 	for index, finding := range result.Findings {
 		findings[index] = reviewtransaction.Finding{
 			ID: finding.ID, Lens: finding.Lens, Location: finding.Location, Severity: finding.Severity,
 			Claim: finding.Claim, ProofRefs: append([]string(nil), finding.ProofRefs...),
+			EvidenceClass: finding.EvidenceClass, CausalDisposition: finding.CausalDisposition,
 		}
 	}
-	return reviewtransaction.LensResult{Lens: result.Lens, Findings: findings, Evidence: result.Evidence}, result.Findings
+	return reviewtransaction.LensResult{Lens: result.Lens, Findings: findings, Evidence: result.Evidence}
 }
 
 func (result facadeValidationResult) native(tx reviewtransaction.Transaction) (reviewtransaction.ScopedValidationResult, error) {
@@ -1729,7 +2228,7 @@ func (result facadeValidationResult) native(tx reviewtransaction.Transaction) (r
 	}, nil
 }
 
-func (result facadeValidationResult) compact(fixDeltaHash string, findingIDs []string) (reviewtransaction.ScopedValidationResult, error) {
+func (result facadeValidationResult) compact(fixDeltaHash string, findingIDs []string, request reviewtransaction.TargetedValidationRequest) (reviewtransaction.ScopedValidationResult, error) {
 	if len(result.OriginalCriteria.Evidence) == 0 || len(result.CorrectionRegression.Evidence) == 0 {
 		return reviewtransaction.ScopedValidationResult{}, errors.New("targeted validation requires original_criteria and correction_regression evidence")
 	}
@@ -1738,6 +2237,7 @@ func (result facadeValidationResult) compact(fixDeltaHash string, findingIDs []s
 	}
 	return reviewtransaction.ScopedValidationResult{
 		LedgerIDs: append([]string(nil), findingIDs...), FixCausedFindings: []reviewtransaction.Finding{}, FollowUps: result.FollowUps,
+		TargetedValidationRequestHash: request.RequestHash, CorrectionTargetIdentity: request.CorrectionTargetIdentity,
 		OriginalCriteria: reviewtransaction.ValidationCheck{
 			EvidenceHash: facadeValueHash("original-criteria", result.OriginalCriteria), FixDeltaHash: fixDeltaHash, Passed: result.OriginalCriteria.Passed,
 		},
@@ -1769,7 +2269,7 @@ func prepareCompactReviewerResults(state reviewtransaction.CompactState, results
 	lensResults := make([]reviewtransaction.LensResult, len(results))
 	classifications := make([]reviewtransaction.FindingEvidence, 0)
 	for index, reviewer := range results {
-		lensResult, rawFindings := reviewer.nativeLensResult()
+		lensResult := reviewer.nativeLensResult()
 		expectedLens := state.SelectedLenses[index]
 		if reviewer.Lens != "" {
 			providedLens, err := nativeFacadeReviewerLens(reviewer.Lens)
@@ -1788,27 +2288,41 @@ func prepareCompactReviewerResults(state reviewtransaction.CompactState, results
 		if err != nil {
 			return reviewtransaction.CompactReviewInput{}, fmt.Errorf("canonicalize reviewer result %d: %w", index+1, err)
 		}
-		lensResults[index] = canonical
+		causalityChanged := false
 		for findingIndex, finding := range canonical.Findings {
 			if !facadeSevere(finding.Severity) {
 				continue
 			}
-			raw := rawFindings[findingIndex]
-			switch raw.CausalDisposition {
+			switch finding.CausalDisposition {
 			case reviewtransaction.CausalIntroduced, reviewtransaction.CausalBehaviorActivated, reviewtransaction.CausalWorsened:
 				if len(repository) == 1 {
-					changed, err := (reviewtransaction.SnapshotBuilder{Repo: repository[0].repo}).CandidateLocationSupportsCausality(repository[0].ctx, state.InitialSnapshot, finding.Location, raw.CausalDisposition)
+					changed, err := (reviewtransaction.SnapshotBuilder{Repo: repository[0].repo}).CandidateLocationSupportsCausality(repository[0].ctx, state.InitialSnapshot, finding.Location, finding.CausalDisposition)
 					if err != nil {
 						return reviewtransaction.CompactReviewInput{}, fmt.Errorf("verify candidate causality for finding %q: %w", finding.ID, err)
 					}
 					if !changed {
-						raw.CausalDisposition = reviewtransaction.CausalUnknown
+						finding.CausalDisposition = reviewtransaction.CausalUnknown
+						canonical.Findings[findingIndex] = finding
+						causalityChanged = true
 					}
 				}
 			}
+		}
+		if causalityChanged {
+			canonical.ResultHash = ""
+			canonical, err = reviewtransaction.CanonicalCompactLensResult(canonical)
+			if err != nil {
+				return reviewtransaction.CompactReviewInput{}, fmt.Errorf("canonicalize reviewer result %d after causal admission: %w", index+1, err)
+			}
+		}
+		lensResults[index] = canonical
+		for _, finding := range canonical.Findings {
+			if !facadeSevere(finding.Severity) {
+				continue
+			}
 			classifications = append(classifications, reviewtransaction.FindingEvidence{
-				FindingID: finding.ID, Class: raw.EvidenceClass, Causality: raw.CausalDisposition,
-				Proof: strings.Join(raw.ProofRefs, "; "),
+				FindingID: finding.ID, Class: finding.EvidenceClass, Causality: finding.CausalDisposition,
+				Proof: strings.Join(finding.ProofRefs, "; "),
 			})
 		}
 	}
@@ -1830,6 +2344,59 @@ func nativeFacadeReviewerLens(lens string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported reviewer lens %q", lens)
 	}
+}
+
+func discoverCompactFacadeFinalize(ctx context.Context, repo, lineage string) (reviewtransaction.CompactStore, reviewtransaction.CompactRecord, error) {
+	if strings.TrimSpace(lineage) != "" {
+		return discoverCompactFacadeReview(ctx, repo, lineage, false)
+	}
+	stores, err := reviewtransaction.CompactAuthorityLeaves(ctx, repo)
+	if err != nil {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, err
+	}
+	type candidate struct {
+		store  reviewtransaction.CompactStore
+		record reviewtransaction.CompactRecord
+	}
+	candidates := []candidate{}
+	for _, store := range stores {
+		if record, loadErr := store.Load(); loadErr == nil {
+			candidates = append(candidates, candidate{store: store, record: record})
+		}
+	}
+	if len(candidates) > 1 {
+		active := candidates[:0]
+		for _, candidate := range candidates {
+			if !facadeTerminalState(candidate.record.State.State) {
+				active = append(active, candidate)
+			}
+		}
+		if len(active) > 0 {
+			candidates = active
+		}
+	}
+	if len(candidates) > 1 && facadeTerminalState(candidates[0].record.State.State) {
+		return discoverCompactFacadeReview(ctx, repo, "", false)
+	}
+	if len(candidates) > 1 {
+		exact := candidates[:0]
+		for _, candidate := range candidates {
+			if (reviewtransaction.SnapshotBuilder{Repo: repo}).ValidateLiveSnapshot(ctx, candidate.record.State.CurrentSnapshot) == nil {
+				exact = append(exact, candidate)
+			}
+		}
+		if len(exact) == 0 {
+			return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, reviewPreflightError(errors.New("no compact FINALIZE authority matches the live target"))
+		}
+		candidates = exact
+	}
+	if len(candidates) == 0 {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, errors.New("no discoverable compact facade review lineage found")
+	}
+	if len(candidates) != 1 {
+		return reviewtransaction.CompactStore{}, reviewtransaction.CompactRecord{}, errors.New("multiple compact facade review lineages found; specify --lineage")
+	}
+	return candidates[0].store, candidates[0].record, nil
 }
 
 func discoverCompactFacadeReview(ctx context.Context, repo, lineage string, terminal bool) (reviewtransaction.CompactStore, reviewtransaction.CompactRecord, error) {
@@ -2008,7 +2575,61 @@ func facadeArtifactPaths(store reviewtransaction.Store) facadeArtifacts {
 	}
 }
 
-func encodeCompactFacadeFinalize(stdout io.Writer, negotiated bool, state reviewtransaction.CompactState, revision string, store reviewtransaction.CompactStore, action string) error {
+type reviewFinalizeOutputContext struct {
+	Context context.Context
+	Repo    string
+}
+
+func encodeCompactFacadeFinalize(stdout io.Writer, negotiated, actionEligibility, nextTransition bool, state reviewtransaction.CompactState, revision string, store reviewtransaction.CompactStore, action string, contexts ...reviewFinalizeOutputContext) error {
+	var validationRequest *reviewtransaction.TargetedValidationRequest
+	var captureContext *reviewCaptureContext
+	repositoryContext := ""
+	var transitionErr error
+	if negotiated && len(contexts) > 0 && contexts[0].Context != nil && strings.TrimSpace(contexts[0].Repo) != "" {
+		outputContext := contexts[0]
+		if state.State == reviewtransaction.StateCorrectionRequired && state.ProposedCorrectionLines != nil {
+			request, err := reviewtransaction.BuildTargetedValidationRequest(outputContext.Context, outputContext.Repo, state, revision)
+			if err == nil {
+				validationRequest = &request
+			}
+		}
+		if state.State == reviewtransaction.StateReviewing {
+			repositoryContext, transitionErr = reviewtransaction.PublishReviewRepositoryContext(outputContext.Context, outputContext.Repo, reviewtransaction.ReviewRepositoryContextBinding{
+				LineageID: state.LineageID, TargetIdentity: state.InitialSnapshot.Identity, Revision: revision,
+			})
+			if transitionErr == nil {
+				frozen, err := (reviewtransaction.SnapshotBuilder{Repo: outputContext.Repo}).FrozenCandidateContext(outputContext.Context, state.InitialSnapshot)
+				if err != nil {
+					transitionErr = err
+				} else {
+					captureContext, transitionErr = newReviewCaptureContext(state, revision, frozen)
+				}
+			}
+		}
+	}
+	var eligibility *ReviewActionEligibility
+	if actionEligibility {
+		eligibility = reviewStopEligibility(reviewActionForbiddenFinalizeStatus, []string{"target_scoped_status"})
+	}
+	var transition *ReviewNextTransition
+	if nextTransition {
+		artifacts := []ReviewTransitionArtifact{}
+		var artifactErr error
+		if state.State == reviewtransaction.StateReviewing {
+			if len(contexts) == 0 || contexts[0].Context == nil || strings.TrimSpace(contexts[0].Repo) == "" {
+				artifactErr = errors.New("reviewer artifact context is unavailable")
+			} else {
+				artifacts, artifactErr = discoverCapturedReviewerArtifacts(contexts[0].Context, contexts[0].Repo, store.Dir, state, revision)
+			}
+		}
+		if transitionErr != nil {
+			artifactErr = transitionErr
+		}
+		value := reviewFinalizeNextTransition(state, revision, artifacts, artifactErr, reviewFinalizeTransitionContext{
+			RepositoryContext: repositoryContext, ValidationRequest: validationRequest, CaptureContext: captureContext,
+		})
+		transition = &value
+	}
 	result := ReviewFacadeFinalizeResult{
 		Operation: "review/finalize", LineageID: state.LineageID, State: state.State, Action: action, StoreRevision: revision,
 	}
@@ -2017,7 +2638,8 @@ func encodeCompactFacadeFinalize(stdout io.Writer, negotiated bool, state review
 	}
 	public := ReviewIntegrationFinalizeResult{
 		Operation: result.Operation, LineageID: result.LineageID, State: result.State,
-		Action: result.Action, StoreRevision: result.StoreRevision,
+		Action: result.Action, StoreRevision: result.StoreRevision, Eligibility: eligibility, NextTransition: transition,
+		ValidationRequest: validationRequest,
 	}
 	return encodeReviewIntegrationOperation(stdout, negotiated, ReviewIntegrationOperationFinalize, result, public)
 }
@@ -2129,6 +2751,42 @@ func readFacadeBytes(path string) ([]byte, error) {
 		return io.ReadAll(os.Stdin)
 	}
 	return os.ReadFile(path)
+}
+
+var errFacadeArtifactManifestInputNotRegular = errors.New("artifact manifest input must be a regular file")
+
+func readFacadeArtifactManifest(ctx context.Context, path string) ([]byte, error) {
+	file, restore, err := openFacadeArtifactManifestInput(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	interrupted := make(chan struct{})
+	stopInterrupt := context.AfterFunc(ctx, func() {
+		cancelFacadeArtifactManifestInput(file)
+		_ = file.SetReadDeadline(time.Now())
+		_ = file.Close()
+		close(interrupted)
+	})
+	payload, readErr := io.ReadAll(io.LimitReader(file, reviewResultArtifactLimit+1))
+	if stopInterrupt() {
+		_ = file.Close()
+	} else {
+		<-interrupted
+	}
+	restoreErr := restore()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if restoreErr != nil {
+		return nil, fmt.Errorf("restore facade input mode: %w", restoreErr)
+	}
+	if len(payload) > reviewResultArtifactLimit {
+		return nil, errors.New("artifact exceeds the native result size limit")
+	}
+	return payload, nil
 }
 
 func countFacadeStdin(resultPaths []string, paths ...string) int {

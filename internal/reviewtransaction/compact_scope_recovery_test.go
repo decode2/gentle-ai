@@ -3,6 +3,7 @@ package reviewtransaction
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -109,6 +110,177 @@ func TestCorrectionRequiredScopeRecoveryRejectsInvalidRequests(t *testing.T) {
 			t.Fatalf("byte-only recovery error = %v", err)
 		}
 	})
+}
+
+func TestApprovedStagedScopeRecoveryRejectsInvalidRequestsWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name          string
+		prepareIndex  func(*testing.T, string)
+		baseRef       func(string) string
+		afterSnapshot func(*testing.T, string, CompactStore)
+		mutateRequest func(*CompactRecoveryRequest)
+		want          string
+	}{
+		{name: "no expansion", prepareIndex: func(t *testing.T, repo string) {
+			writeSnapshotFile(t, repo, "docs/extra.md", "# Extra\n")
+		}, want: "retain the predecessor projection"},
+		{name: "removed genesis path", prepareIndex: func(t *testing.T, repo string) {
+			writeSnapshotFile(t, repo, "docs/extra.md", "# Extra\n")
+			gitSnapshot(t, repo, "add", "docs/extra.md")
+			gitSnapshot(t, repo, "rm", "--cached", "docs/candidate.md")
+		}, want: "retain the predecessor projection"},
+		{name: "wrong base", prepareIndex: stageStagedScopeExtra, baseRef: func(string) string { return "HEAD" }, want: "retain the predecessor projection"},
+		{name: "index drift", prepareIndex: stageStagedScopeExtra, afterSnapshot: func(t *testing.T, repo string, _ CompactStore) {
+			writeSnapshotFile(t, repo, "docs/race.md", "# Race\n")
+			gitSnapshot(t, repo, "add", "docs/race.md")
+		}, want: "live target no longer matches"},
+		{name: "missing receipt", prepareIndex: stageStagedScopeExtra, afterSnapshot: func(t *testing.T, _ string, store CompactStore) {
+			if err := os.Remove(store.ReceiptPath()); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "canonical published predecessor receipt"},
+		{name: "noncanonical receipt", prepareIndex: stageStagedScopeExtra, afterSnapshot: func(t *testing.T, _ string, store CompactStore) {
+			payload, err := os.ReadFile(store.ReceiptPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(store.ReceiptPath(), append(payload, '\n'), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "canonical published predecessor receipt"},
+		{name: "incomplete authorization", prepareIndex: stageStagedScopeExtra, mutateRequest: func(request *CompactRecoveryRequest) {
+			request.MaintainerAuthorization = "authorized"
+		}, want: "successor-bound maintainer authorization"},
+		{name: "stale predecessor revision", prepareIndex: stageStagedScopeExtra, mutateRequest: func(request *CompactRecoveryRequest) {
+			request.ExpectedPredecessorRevision = hash("stale")
+		}, want: "expected predecessor revision"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo, base, predecessor, store, record := approvedBaseDiffScopeRecoveryFixture(t, "approved-staged-"+strings.ReplaceAll(tt.name, " ", "-"))
+			tt.prepareIndex(t, repo)
+			selectedBase := base
+			if tt.baseRef != nil {
+				selectedBase = tt.baseRef(base)
+			}
+			snapshot, err := (SnapshotBuilder{Repo: repo}).BuildStagedWorkspaceOverlayRecovery(context.Background(), Target{
+				Kind: TargetBaseWorkspaceOverlay, Projection: ProjectionStaged,
+				BaseRef: selectedBase, IntendedUntracked: []string{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			successor := newCompactStateForStagedScopeRecovery(t, repo, predecessor, snapshot, "successor-"+strings.ReplaceAll(tt.name, " ", "-"))
+			request := CompactRecoveryRequest{
+				PredecessorLineageID: predecessor.LineageID, ExpectedPredecessorRevision: record.Revision,
+				Successor: successor, Disposition: RecoveryScopeChanged, Reason: "expand staged scope", Actor: "maintainer",
+			}
+			request.MaintainerAuthorization = compactApprovedStagedScopeRecoveryAuthorizationBinding(
+				request.PredecessorLineageID, request.ExpectedPredecessorRevision, snapshot.Identity,
+				successor.LineageID, request.Actor, request.Reason,
+			)
+			if tt.afterSnapshot != nil {
+				tt.afterSnapshot(t, repo, store)
+			}
+			if tt.mutateRequest != nil {
+				tt.mutateRequest(&request)
+			}
+			stateBefore, _ := os.ReadFile(store.StatePath())
+			receiptBefore, receiptBeforeErr := os.ReadFile(store.ReceiptPath())
+			storesBefore, _ := DiscoverCompactStores(context.Background(), repo)
+			if _, err := RecoverCompactAuthority(context.Background(), repo, request); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("recovery error = %v, want %q", err, tt.want)
+			}
+			stateAfter, _ := os.ReadFile(store.StatePath())
+			receiptAfter, receiptAfterErr := os.ReadFile(store.ReceiptPath())
+			storesAfter, _ := DiscoverCompactStores(context.Background(), repo)
+			if !bytes.Equal(stateBefore, stateAfter) || !bytes.Equal(receiptBefore, receiptAfter) ||
+				(receiptBeforeErr == nil) != (receiptAfterErr == nil) || len(storesBefore) != len(storesAfter) {
+				t.Fatal("rejected staged scope recovery mutated authority")
+			}
+		})
+	}
+}
+
+func TestStartCompactAuthorityRejectsStagedWorkspaceOverlayRoot(t *testing.T) {
+	repo, base, predecessor, _, _ := approvedBaseDiffScopeRecoveryFixture(t, "staged-start-predecessor")
+	stageStagedScopeExtra(t, repo)
+	snapshot, err := (SnapshotBuilder{Repo: repo}).BuildStagedWorkspaceOverlayRecovery(context.Background(), Target{
+		Kind: TargetBaseWorkspaceOverlay, Projection: ProjectionStaged, BaseRef: base, IntendedUntracked: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newCompactStateForStagedScopeRecovery(t, repo, predecessor, snapshot, "staged-start-root")
+	if _, err := StartCompactAuthority(context.Background(), repo, CompactStartRequest{State: state}); err == nil {
+		t.Fatal("direct compact START persisted a staged workspace-overlay root")
+	}
+	store, _ := CompactAuthoritativeStore(context.Background(), repo, state.LineageID)
+	if _, err := os.Stat(store.StatePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected staged root state = %v", err)
+	}
+}
+
+func TestCompactTransportRejectsStagedRecoveryFork(t *testing.T) {
+	repo, base, predecessor, _, predecessorRecord := approvedBaseDiffScopeRecoveryFixture(t, "staged-import-predecessor")
+	stageStagedScopeExtra(t, repo)
+	snapshot, _ := (SnapshotBuilder{Repo: repo}).BuildStagedWorkspaceOverlayRecovery(context.Background(), Target{
+		Kind: TargetBaseWorkspaceOverlay, Projection: ProjectionStaged, BaseRef: base, IntendedUntracked: []string{},
+	})
+	successor := newCompactStateForStagedScopeRecovery(t, repo, predecessor, snapshot, "staged-import-successor")
+	request := CompactRecoveryRequest{
+		PredecessorLineageID: predecessor.LineageID, ExpectedPredecessorRevision: predecessorRecord.Revision,
+		Successor: successor, Disposition: RecoveryScopeChanged, Reason: "expand staged scope", Actor: "maintainer",
+	}
+	request.MaintainerAuthorization = compactApprovedStagedScopeRecoveryAuthorizationBinding(
+		request.PredecessorLineageID, request.ExpectedPredecessorRevision, snapshot.Identity,
+		successor.LineageID, request.Actor, request.Reason,
+	)
+	recovered, err := RecoverCompactAuthority(context.Background(), repo, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitSnapshot(t, repo, "commit", "-m", "deliver staged successor")
+	fork := recovered.State
+	fork.LineageID = "staged-import-fork"
+	provenance := *fork.Recovery
+	fork.Recovery = &provenance
+	fork.Recovery.MaintainerAuthorization = compactApprovedStagedScopeRecoveryAuthorizationBinding(
+		predecessor.LineageID, predecessorRecord.Revision, snapshot.Identity,
+		fork.LineageID, fork.Recovery.Actor, fork.Recovery.Reason,
+	)
+	record, _, err := makeCompactRecord(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := CompactTransport{Schema: CompactTransportSchema, Record: record}
+	transport.BundleDigest = compactTransportDigest(transport)
+	if _, err := ImportCompactTransport(context.Background(), repo, transport); err == nil {
+		t.Fatal("transport import created a second staged recovery child")
+	}
+	forkStore, _ := CompactAuthoritativeStore(context.Background(), repo, fork.LineageID)
+	if _, err := os.Stat(forkStore.StatePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected staged fork state = %v", err)
+	}
+}
+
+func TestBuildLiveFinalVerificationSnapshotAcceptsRecoveredStagedOverlay(t *testing.T) {
+	repo, base, _, _, _ := approvedBaseDiffScopeRecoveryFixture(t, "approved-staged-final-verification")
+	stageStagedScopeExtra(t, repo)
+	expected, err := (SnapshotBuilder{Repo: repo}).BuildStagedWorkspaceOverlayRecovery(context.Background(), Target{
+		Kind: TargetBaseWorkspaceOverlay, Projection: ProjectionStaged,
+		BaseRef: base, IntendedUntracked: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := buildLiveFinalVerificationSnapshot(context.Background(), repo, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshotsEqual(live, expected) {
+		t.Fatalf("live final-verification snapshot = %#v, want %#v", live, expected)
+	}
 }
 
 func TestCompactAuthorityGraphLoadsHistoricalFreeFormAuthorizationWithoutRewrite(t *testing.T) {
@@ -368,6 +540,59 @@ func recoveryAuthorizationFixture(request CompactRecoveryRequest) string {
 	return "gentle-ai.review-recovery-authorization/v1\npredecessor_lineage=" + request.PredecessorLineageID +
 		"\npredecessor_revision=" + request.ExpectedPredecessorRevision + "\ntarget_identity=" + request.Successor.InitialSnapshot.Identity +
 		"\nactor=" + strings.TrimSpace(request.Actor) + "\nreason=" + strings.TrimSpace(request.Reason)
+}
+
+func approvedBaseDiffScopeRecoveryFixture(t *testing.T, lineage string) (string, string, CompactState, CompactStore, CompactRecord) {
+	t.Helper()
+	repo := initSnapshotRepo(t)
+	base := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+	writeSnapshotFile(t, repo, "docs/candidate.md", "# Candidate\n")
+	gitSnapshot(t, repo, "add", "docs/candidate.md")
+	gitSnapshot(t, repo, "commit", "-m", "add candidate")
+	state := newCompactStartStateForTarget(t, repo, lineage, Target{Kind: TargetBaseDiff, BaseRef: base, IntendedUntracked: []string{}})
+	store := storeCompactStartAuthority(t, repo, state)
+	record, _ := store.Load()
+	if err := state.CompleteReview(CompactReviewInput{LensResults: []LensResult{}, Classifications: []FindingEvidence{}, RefuterOutcomes: []EvidenceResult{}}); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := store.Replace(record.Revision, "review/complete-review", state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.CompleteVerification([]byte("verified\n"), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Replace(revision, "review/complete-verification", state); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCompactReceiptAtomic(store.ReceiptPath(), stateReceipt(t, state)); err != nil {
+		t.Fatal(err)
+	}
+	record, _ = store.Load()
+	return repo, base, state, store, record
+}
+
+func stageStagedScopeExtra(t *testing.T, repo string) {
+	t.Helper()
+	writeSnapshotFile(t, repo, "docs/extra.md", "# Extra\n")
+	gitSnapshot(t, repo, "add", "docs/extra.md")
+}
+
+func newCompactStateForStagedScopeRecovery(t *testing.T, repo string, predecessor CompactState, snapshot Snapshot, lineage string) CompactState {
+	t.Helper()
+	assessment, err := (SnapshotBuilder{Repo: repo}).AssessSnapshotRisk(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewCompactState(Start{
+		LineageID: lineage, Mode: ModeOrdinaryBounded, Generation: predecessor.Generation + 1,
+		Snapshot: snapshot, PolicyHash: predecessor.PolicyHash, RiskLevel: assessment.Level,
+		SelectedLenses: []string{}, OriginalChangedLines: &assessment.ChangedLines,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func correctionScopeRecoveryFixture(t *testing.T, lineage string) (string, CompactState, CompactStore, CompactRecord) {

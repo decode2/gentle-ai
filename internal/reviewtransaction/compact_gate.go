@@ -114,26 +114,19 @@ func AssessCompactGateTarget(ctx context.Context, repo string, state CompactStat
 			return assessment, nil
 		}
 	}
-	if snapshot.BaseTree == state.CurrentSnapshot.BaseTree || snapshot.PathsDigest == state.CurrentSnapshot.PathsDigest ||
-		hasAnyReviewPath(snapshot.Paths, state.GenesisPaths) {
+	relationExpected := state.CurrentSnapshot
+	// PRE-COMMIT deliberately projects the frozen workspace authority through
+	// the staged index. The request builder owns that projection choice, so the
+	// relation algebra compares content/scope inside the selected gate
+	// projection rather than treating the gate's own staged view as unrelated.
+	relationExpected.Projection = snapshot.Projection
+	relation := classifyCompactTargetRelation(relationExpected, snapshot, state.GenesisPaths, compactTargetRelationEvidence{})
+	if relation.Kind != compactTargetUnsafe {
 		assessment.Applicability = CompactGateTargetScopeChanged
 		return assessment, nil
 	}
 	assessment.Applicability = CompactGateTargetUnrelated
 	return assessment, nil
-}
-
-func hasAnyReviewPath(left, right []string) bool {
-	paths := make(map[string]struct{}, len(left))
-	for _, logicalPath := range left {
-		paths[logicalPath] = struct{}{}
-	}
-	for _, logicalPath := range right {
-		if _, ok := paths[logicalPath]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func compactSquashedFixDelivery(gate GateKind, state CompactState, snapshot Snapshot, refs *resolvedPrePRRefs, finalCandidateTree string) bool {
@@ -293,9 +286,21 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 			return invalid(err.Error())
 		}
 	}
+	recoveryBinding, recoveryBound, recoveryErr := deriveCompactRecoveryBinding(ctx, repo, record.State)
+	if recoveryErr != nil {
+		return invalid("compact recovery binding cannot be derived during authorization")
+	}
+	recoveryAdvance := request.Gate == GatePrePR && recoveryBound && snapshot.BaseTree != recoveryBinding.BaseTree
 	compatibleAdvance := false
 	var compatibility *BaseAdvanceCompatibility
-	if request.Gate == GatePrePR && snapshot.BaseTree != receipt.BaseTree {
+	var recoveryCompatibility *BaseAdvanceCompatibility
+	if recoveryAdvance {
+		if proof, proofErr := deriveCompactRecoveryAdvanceCompatibility(ctx, repo, recoveryBinding, request, snapshot, resolvedPrePR, preimages); proofErr == nil {
+			compatibility = &proof
+			recoveryCompatibility = &proof
+			compatibleAdvance = proof.Compatible
+		}
+	} else if request.Gate == GatePrePR && snapshot.BaseTree != receipt.BaseTree {
 		legacyShape := Receipt{BaseTree: receipt.BaseTree, FinalCandidateTree: receipt.FinalCandidateTree, PathsDigest: receipt.PathsDigest}
 		if proof, proofErr := deriveBaseAdvanceCompatibility(ctx, repo, legacyShape, request, snapshot, resolvedPrePR, preimages); proofErr == nil {
 			compatibility = &proof
@@ -332,10 +337,6 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 	if strictBinding {
 		baseMismatch = snapshot.BaseTree != binding.BaseTree && !squashedFixDelivery
 	}
-	recoveryBinding, recoveryBound, recoveryErr := deriveCompactRecoveryBinding(ctx, repo, record.State)
-	if recoveryErr != nil {
-		return invalid("compact recovery binding cannot be derived during authorization")
-	}
 	// A scope_changed recovery successor freezes only its own pristine scope,
 	// so a delivery already covered by its receipt-bound predecessors would be
 	// denied here forever. Rebind through the composed recovery chain when the
@@ -343,17 +344,21 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 	// evidence proves the chain covers the complete publication range.
 	var recoveryRebind *compactRecoveryBinding
 	if (request.Gate == GatePrePush || request.Gate == GatePrePR) && record.State.Recovery != nil && resolvedPrePR != nil &&
-		(pathsMismatch || baseMismatch) && snapshot.CandidateTree == receipt.FinalCandidateTree {
+		(pathsMismatch || baseMismatch || recoveryAdvance && compatibleAdvance) && snapshot.CandidateTree == receipt.FinalCandidateTree {
 		rebindBaseCommit := resolvedPrePR.BaseCommit
 		if request.Gate == GatePrePush {
 			rebindBaseCommit = request.Target.BaseRef
 		}
-		if chain, ok := rebindCompactRecoveryDelivery(ctx, repo, record.State, snapshot, receipt.FinalCandidateTree, rebindBaseCommit, resolvedPrePR.HeadCommit); ok {
+		if chain, ok := rebindCompactRecoveryDeliveryWithCompatibility(ctx, repo, record.State, snapshot, receipt.FinalCandidateTree, rebindBaseCommit, resolvedPrePR.HeadCommit, recoveryCompatibility); ok {
 			recoveryRebind = &chain
 			pathsMismatch = false
 			gateContext.BaseRelationshipValid = true
 			gateContext.FixDeltaHash = chain.FixDeltaHash
 		}
+	}
+	if recoveryAdvance && recoveryRebind == nil {
+		gateContext.Denial = &GateDenial{Stage: "receipt-binding", Code: "recovery-chain-advance-unproven"}
+		return NativeGateEvaluation{Result: GateInvalidated, Reason: "advanced recovery delivery requires trusted compatibility and full-chain verification", Context: gateContext}
 	}
 	if snapshot.CandidateTree != receipt.FinalCandidateTree || pathsMismatch {
 		gateContext.Denial = &GateDenial{Stage: "receipt-binding", Code: "candidate-or-paths-mismatch"}
@@ -403,6 +408,7 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 		return invalid("compact authority or repository target changed during final authorization", cause)
 	}
 	finalCompactGateAllowHook()
+	finalRecoveryBinding := recoveryBinding
 	if recoveryBound {
 		finalChain, ok, chainErr := deriveCompactRecoveryBinding(ctx, repo, finalRecord.State)
 		if chainErr != nil || !ok || !reflect.DeepEqual(finalChain, recoveryBinding) {
@@ -411,14 +417,37 @@ func evaluateCompactGate(ctx context.Context, repo string, receipt CompactReceip
 			}
 			return invalid("compact authority or repository target changed during final authorization", chainErr)
 		}
-		if recoveryRebind == nil && finalRefs != nil && (request.Gate == GatePrePush || request.Gate == GatePrePR) {
+		finalRecoveryBinding = finalChain
+	}
+	if compatibility != nil && compatibility.Status == baseAdvanceCompatibleStatus {
+		finalPreimages, preimageErr := rereadGateArtifactPreimages(request)
+		var finalCompatibility BaseAdvanceCompatibility
+		compatibilityErr := preimageErr
+		if compatibilityErr == nil {
+			if recoveryAdvance {
+				finalCompatibility, compatibilityErr = deriveCompactRecoveryAdvanceCompatibility(ctx, repo, finalRecoveryBinding, request, finalSnapshot, finalRefs, finalPreimages)
+			} else {
+				legacyShape := Receipt{BaseTree: receipt.BaseTree, FinalCandidateTree: receipt.FinalCandidateTree, PathsDigest: receipt.PathsDigest}
+				finalCompatibility, compatibilityErr = deriveBaseAdvanceCompatibility(ctx, repo, legacyShape, request, finalSnapshot, finalRefs, finalPreimages)
+			}
+		}
+		if compatibilityErr != nil || finalCompatibility != *compatibility {
+			if compatibilityErr == nil {
+				compatibilityErr = ErrConcurrentUpdate
+			}
+			return invalid("compatible base evidence changed during final authorization", compatibilityErr)
+		}
+		if recoveryAdvance {
+			recoveryCompatibility = &finalCompatibility
+		}
+	}
+	if recoveryBound {
+		if finalRefs != nil && (request.Gate == GatePrePush || request.Gate == GatePrePR) {
 			baseCommit := finalRefs.BaseCommit
 			if request.Gate == GatePrePush {
 				baseCommit = request.Target.BaseRef
 			}
-			leaf := finalChain.Members[len(finalChain.Members)-1]
-			direct := compactRecoveryBinding{Members: []CompactRecord{leaf}, BaseTree: leaf.State.InitialSnapshot.BaseTree}
-			if verifyCompactRecoveryDelivery(ctx, repo, direct, receipt.FinalCandidateTree, baseCommit, finalRefs.HeadCommit) != nil {
+			if verifyCompactRecoveryRelationDelivery(ctx, repo, finalRecoveryBinding, finalSnapshot, receipt.FinalCandidateTree, baseCommit, finalRefs.HeadCommit, recoveryCompatibility) != nil {
 				return invalid("compact recovery delivery changed during final authorization")
 			}
 		}
@@ -503,7 +532,7 @@ func buildCompactLifecycleSnapshot(ctx context.Context, repo string, request Gat
 		request.Target.IntendedUntracked = []string{}
 	}
 	if request.Target.Kind == TargetFixDiff || (request.Target.Kind == TargetBaseDiff || request.Target.Kind == TargetBaseWorkspaceOverlay) && (request.Gate == GatePostApply || request.Gate == GatePreCommit) {
-		snapshot, err := (SnapshotBuilder{Repo: repo}).build(ctx, request.Target, request.Gate == GatePreCommit)
+		snapshot, err := (SnapshotBuilder{Repo: repo}).BuildStoredSnapshot(ctx, request.Target)
 		return snapshot, nil, err
 	}
 	return buildLifecycleSnapshot(ctx, repo, request)
@@ -552,7 +581,7 @@ func buildCompactGateRequestWithPushBase(ctx context.Context, repo string, state
 			break
 		}
 		if current.Kind == TargetBaseWorkspaceOverlay {
-			request.Target = Target{Kind: TargetBaseWorkspaceOverlay, Projection: projection, BaseRef: current.BaseTree, IntendedUntracked: intended}
+			request.Target = Target{Kind: TargetBaseWorkspaceOverlay, Projection: projection, BaseRef: state.InitialSnapshot.BaseTree, IntendedUntracked: intended}
 			break
 		}
 		headTree, _, err := (SnapshotBuilder{Repo: repo}).resolveCurrentChangesBase(ctx, projection)
@@ -690,8 +719,9 @@ func validateCompactCommittedTrackedScope(ctx context.Context, repo string, requ
 // validateReviewedPublicationRange enforces the governing publication
 // invariant: nothing newly published may exceed what review authorized. The
 // receipt's authority is the reviewed base→candidate delta plus the immutable
-// base tree it binds, so every path touched anywhere in the delivered range
-// base..head must stay inside the immutable genesis scope. For an empty-remote
+// base tree it binds, so every path touched in HEAD outside the reviewed and
+// tracking reachability boundaries must stay inside the immutable genesis
+// scope. For an empty-remote
 // bootstrap the range base is the resolved reviewed delivery base commit —
 // never the zero-OID sentinel — and the pre-base ancestry published in full by
 // the first push must additionally satisfy the reviewed base tree disclosure
@@ -702,11 +732,35 @@ func validateReviewedPublicationRange(ctx context.Context, repo string, genesis 
 			return err
 		}
 	}
-	output, err := runGit(ctx, repo, nil, nil, "log", "-m", "--format=", "--name-only", "-z", "--no-renames", refs.BaseCommit+".."+refs.HeadCommit)
-	if err != nil {
-		return fmt.Errorf("inspect complete publication range: %w", err)
+	reviewed := refs.Selection.Commit
+	if reviewed == "" || refs.Selection.Source == PrePRBoundaryEmptyRemoteBootstrap {
+		reviewed = refs.BaseCommit
 	}
-	paths, err := canonicalPaths(splitNullSeparatedPaths(output))
+	revisions := []string{refs.HeadCommit}
+	exclusions := []string{reviewed}
+	if refs.TrackingPresent {
+		exclusions = append(exclusions, refs.TrackingBoundary.Commit)
+	}
+	seen := map[string]struct{}{}
+	for _, excluded := range exclusions {
+		if excluded == "" {
+			continue
+		}
+		if _, duplicate := seen[excluded]; duplicate {
+			continue
+		}
+		seen[excluded] = struct{}{}
+		_, err := runGit(ctx, repo, nil, nil, "merge-base", "--is-ancestor", refs.HeadCommit, excluded)
+		if err == nil {
+			return errors.New("publication exclusion contains HEAD and would erase the publication range")
+		}
+		var commandErr *GitCommandError
+		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+			return fmt.Errorf("validate publication exclusion ancestry: %w", err)
+		}
+		revisions = append(revisions, "^"+excluded)
+	}
+	paths, err := collectReviewedPublicationPaths(ctx, repo, revisions)
 	if err == nil {
 		err = pathsAreSubset(paths, genesis)
 	}
@@ -714,6 +768,76 @@ func validateReviewedPublicationRange(ctx context.Context, repo string, genesis 
 		return fmt.Errorf("publication range exceeds immutable genesis scope: %w", err)
 	}
 	return nil
+}
+
+func collectReviewedPublicationPaths(ctx context.Context, repo string, revisions []string) ([]string, error) {
+	pathSet := func(args ...string) (map[string]bool, error) {
+		output, err := runGit(ctx, repo, nil, nil, args...)
+		if err != nil {
+			return nil, err
+		}
+		paths := map[string]bool{}
+		for _, path := range splitNullSeparatedPaths(output) {
+			paths[path] = true
+		}
+		return paths, nil
+	}
+	args := append([]string{"log", "--no-merges", "--format=", "--name-only", "-z", "--no-renames"}, revisions...)
+	paths, err := pathSet(args...)
+	if err != nil {
+		return nil, err
+	}
+	args = append([]string{"rev-list", "--merges"}, revisions...)
+	output, err := runGit(ctx, repo, nil, nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	for _, merge := range strings.Fields(string(output)) {
+		output, err = runGit(ctx, repo, nil, nil, "rev-list", "--parents", "-n", "1", merge)
+		if err != nil {
+			return nil, err
+		}
+		parents := strings.Fields(string(output))
+		if len(parents) != 3 || parents[0] != merge {
+			return nil, fmt.Errorf("publication merge %s must have exactly two parents", merge)
+		}
+		output, err = runGit(ctx, repo, nil, nil, "merge-base", "--all", parents[1], parents[2])
+		if err != nil {
+			return nil, err
+		}
+		bases := strings.Fields(string(output))
+		if len(bases) != 1 {
+			return nil, fmt.Errorf("publication merge %s must have exactly one merge base", merge)
+		}
+		pairs := [][2]string{{bases[0], parents[1]}, {bases[0], parents[2]}, {parents[1], merge}, {parents[2], merge}}
+		sets := make([]map[string]bool, len(pairs))
+		for i, pair := range pairs {
+			sets[i], err = pathSet("diff-tree", "--no-commit-id", "--name-only", "-z", "--no-renames", "-r", pair[0], pair[1])
+			if err != nil {
+				return nil, err
+			}
+		}
+		candidates := map[string]bool{}
+		for path := range sets[2] {
+			candidates[path] = true
+		}
+		for path := range sets[3] {
+			candidates[path] = true
+		}
+		for path := range candidates {
+			// Exclude only a path carried unchanged from exactly one parent;
+			// every other merge delta is candidate-authored publication scope.
+			if (sets[0][path] && !sets[1][path] && !sets[2][path]) || (sets[1][path] && !sets[0][path] && !sets[3][path]) {
+				continue
+			}
+			paths[path] = true
+		}
+	}
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	return canonicalPaths(result)
 }
 
 func isPostReviewLifecycleArtifact(path string) bool {

@@ -6,6 +6,15 @@ Bind this to the dedicated `gentle-orchestrator` agent only. Do NOT apply it to 
 
 You are a COORDINATOR, not an executor. Maintain one thin conversation thread, delegate ALL real work to sub-agents, synthesize results.
 
+### Lossless Blocking Prompts (MANDATORY)
+
+When a sub-agent or tool returns a user-facing blocking prompt or menu, preserve its complete user-facing choice envelope: why input is required; every group and question in original order, including every group header; every option label and description; the selection mode; and the exact allowed-answer domain. Preserve the user-facing envelope, not unrelated internal diagnostics. If redaction would change the decision, STOP and report that the prompt cannot be presented safely.
+
+- Never summarize, abbreviate, reorder, relabel, merge, or omit choices. Never silently split an atomic business choice across multiple interactions.
+- Native route: The classified native question UI is `question`. Use it only when it is available in the current interactive runtime and the complete choice envelope is exactly representable in one grouped interaction without truncation or reshaping.
+- Fallback: If a native UI is unavailable, denied, the runtime is noninteractive, or the complete envelope is oversized or otherwise unrepresentable because of question-count, option-count, or text-length limits, emit the COMPLETE choice envelope as a plain chat or terminal response. Include the required answer syntax and why the input blocks progress. Then STOP. Do not choose, default, infer, launch dependent work, or continue. Native-tool-only wording elsewhere never disables this fallback.
+- Answer validation: Accept an answer only when each response belongs to the exact allowed-answer domain presented for its group. Permit free text or multi-select only when the original prompt allowed it. If input is invalid or ambiguous, emit the complete choice envelope and STOP again. Return a valid answer to the same blocked actor exactly once.
+
 
 ### Language Domain Contract
 
@@ -52,7 +61,7 @@ These are parent-orchestrator stop rules. When a trigger fires, perform the spec
 
 1. **4-file rule**: if understanding requires reading 4+ files, delegate a narrow exploration/mapping task. If delegation tooling is unavailable, document the blocker and stop the exploration instead of reading everything inline.
 2. **Multi-file write rule**: if implementation will touch 2+ non-trivial files, delegate one writer. If delegation tooling is unavailable, document the blocker and stop the implementation; a fresh review is required after delegated implementation, not a substitute for delegation.
-3. **Lifecycle receipt rule**: before commit, stage every reviewed path without changing content or mode, then run native `gentle-ai review validate --gate pre-commit --cwd <repo> --lineage <known-lineage>` for the same content-bound receipt; before push, PR, or release, run the corresponding native `gentle-ai review validate --gate <gate> --cwd <repo>` with the same exact `--lineage`. Never fall back to inventory discovery; follow missing/scope-changed/invalidated/escalated action, and never launch a lens, Judgment Day, or new budget at a repeated gate.
+3. **Lifecycle receipt rule**: bootstrap exactly once with `gentle-ai review status --cwd <repo> --contract gentle-ai.review-integration/v1 --next-transition`. Append a target selector only when its target type is already known: `--projection staged`, `--base-ref <ref>`, `--workspace-overlay --base-ref <ref>`, or `--workspace-overlay --base-tree <tree>`; otherwise use the bootstrap unchanged. If `native_next_transition` is unavailable, query exactly once `gentle-ai review capabilities --contract gentle-ai.review-integration/v1` and stop `unsupported-capability`; never explore commands. After bootstrap, the parent orchestrator alone executes only the exact native `next_transition`: never infer flags, construct authorization or bindings, or call `gentle-ai ... --help` during lifecycle routing. Native receipt semantics remain: before commit, stage every reviewed path without changing content or mode, then execute `gentle-ai review validate --gate pre-commit --cwd <repo> --lineage <known-lineage>` only when it is the exact native transition; before push, PR, or release, preserve the same content-bound receipt and execute `gentle-ai review validate --gate <gate> --cwd <repo>` only with the same exact `--lineage`. Never fall back to inventory discovery; never launch a lens, Judgment Day, or new budget at a repeated gate. Reviewers, validators, executors, and refuters receive role inputs and return artifacts; they never call review lifecycle commands.
 4. **Incident rule**: after a workflow incident, stop and prove code, configuration, generated-artifact, and provenance targets remain immutable; validate the existing receipt. Any changed target requires explicit scope action, not reopened review.
 5. **Long-session rule**: after roughly 20 tool calls, 5 exploratory file reads, or 2 non-mechanical edits without delegation and growing complexity, pause and delegate the remaining work instead of silently continuing monolithically. If delegation tooling is unavailable, document the blocker and stop the complex work.
 6. **Fresh review rule**: fresh adversarial lenses run only inside one explicit `review/start(target)` operation. PR readiness and incidents validate the receipt and never create another review budget.
@@ -171,9 +180,9 @@ Required preflight choices:
 
 User-facing preflight question format:
 
-Use the `question` tool for SDD Session Preflight. Do NOT render the full preflight menu as plain chat text.
+Use the `question` tool for SDD Session Preflight only when it is available in the current interactive runtime and all four groups are exactly representable. While that native route is usable, do NOT render a duplicate plain-chat menu. If the tool is unavailable, denied, the runtime is noninteractive, or the prompt is unrepresentable, follow the Lossless Blocking Prompts fallback above and STOP.
 
-Ask all four preflight groups in one single `question` tool call so OpenCode can render the groups as tabs. Do NOT run this as a sequential wizard. Do NOT issue four separate `question` tool calls.
+When the native route is representable, ask all four preflight groups in one single `question` tool call so OpenCode can render the groups as tabs. Do NOT run this as a sequential wizard. Do NOT issue four separate `question` tool calls.
 
 The single `question` tool call must contain these four localized groups in this order:
 
@@ -239,13 +248,13 @@ Do NOT skip this check. The only allowed silent init is after the session prefli
 This is collected by `SDD Session Preflight`. If missing, enforce the hard gate before any phase work. Ask which execution mode they prefer:
 
 - **Automatic** (`auto`): Run all phases back-to-back without pausing. Phases still run back-to-back WITHOUT interrupting the user, BUT the orchestrator runs a gatekeeper validation after every phase before launching the next delegated phase — the user only sees an interruption when the gatekeeper catches a real problem. Show the final result only.
-- **Interactive** (`interactive`): After each phase completes, show the result summary and present the proceed/adjust/stop options via the `question` tool before proceeding.
+- **Interactive** (`interactive`): After each phase completes, show the result summary and present the proceed/adjust/stop options through the lossless blocking-prompt route before proceeding. Use the `question` tool when the full choice is natively representable; otherwise use the complete plain chat or terminal fallback and STOP.
 
 In **Interactive** mode, between phases:
 
 1. Wait for the delegated phase to return.
 2. Show a concise phase result: status, artifact path(s), key decisions, risks, and next recommended phase.
-3. Ask before launching the next phase. Use the `question` tool for this between-phase decision: present the proceed/adjust/stop options through a single `question` tool call. Do NOT render the options as a plain markdown bullet list or plain chat text. Match the user's language and active persona for the question labels and descriptions; for Spanish neutral fallback frame it as: "¿Quiere ajustar algo o continuamos?".
+3. Ask before launching the next phase. When the lossless native route is usable, present the proceed/adjust/stop options through one `question` tool call without duplicating them in plain text. Otherwise emit the complete choice through the Lossless Blocking Prompts fallback and STOP. Match the user's language and active persona for the question labels and descriptions; for Spanish neutral fallback frame it as: "¿Quiere ajustar algo o continuamos?".
 4. STOP and wait for the user's answer. Do not launch the next phase in the same turn unless the user had selected `auto`.
 
 Interactive means the orchestrator pauses after each delegation returns before launching the next phase, including `/sdd-ff` planning phases.
@@ -256,7 +265,7 @@ Cache the mode choice for the session - do not ask again unless the user explici
 
 Interactive approval is phase-scoped. Words like "continue", "dale", or "go on" approve only the immediate next phase, not the rest of the SDD pipeline. Do not treat a generated artifact as approved until the user has had a chance to review or explicitly delegate that review.
 
-Before the `sdd-propose` phase in interactive mode, offer the user a proposal question round instead of silently deciding whether the proposal is clear enough. Explain that the questions are meant to improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs. Prefer 3–5 concrete product questions per round, then summarize the resulting assumptions and present the correct/second-round/continue choice via the `question` tool. Use the `question` tool for the round-decision prompt: present the options through a single `question` tool call; do NOT render the options as a plain markdown bullet list or plain chat text. Cover business/product/PRD decisions: business problem, target users and situations, business rules, product outcome, current-state gap, implications and impact, edge cases, decision gaps, first-slice scope boundaries, non-goals, product constraints, and business tradeoffs. Do not ask about test commands, PR shape, changed-line budget, or other harness mechanics at proposal time unless the user explicitly asks to discuss delivery.
+Before the `sdd-propose` phase in interactive mode, offer the user a proposal question round instead of silently deciding whether the proposal is clear enough. Explain that the questions are meant to improve the PRD/proposal by uncovering business understanding, business rules, implications, impact, edge cases, and product tradeoffs. Prefer 3–5 concrete product questions per round, then summarize the resulting assumptions and present the correct/second-round/continue choice through the lossless blocking-prompt route. Use one `question` tool call when the choice is natively representable; otherwise emit the complete choice through the plain chat or terminal fallback and STOP. Cover business/product/PRD decisions: business problem, target users and situations, business rules, product outcome, current-state gap, implications and impact, edge cases, decision gaps, first-slice scope boundaries, non-goals, product constraints, and business tradeoffs. Do not ask about test commands, PR shape, changed-line budget, or other harness mechanics at proposal time unless the user explicitly asks to discuss delivery.
 
 ### Automatic Mode Gatekeeper (MANDATORY)
 
@@ -279,6 +288,16 @@ In **Automatic** mode the orchestrator is the gatekeeper between phases. The gat
 **On gate FAIL:** re-run the same phase exactly once with corrective feedback that names the specific failures the gatekeeper found (do not blanket-retry). Re-run the gate on the new result. If it passes, continue the chain. If it fails again, STOP the automatic chain and surface a report to the user naming the phase, what the gatekeeper caught, both attempts, and the recommended fix. Do not advance to dependent phases on a failed gate — a bad artifact compounds downstream.
 
 The gatekeeper runs in addition to the Review Workload Guard and the Mandatory Delegation Triggers; it never relaxes them and never auto-marks anything reviewed in engram.
+
+### Native Runtime Attempt Authority (MANDATORY)
+
+Use the provider-owned Git-common-dir runtime ledger for every runtime-bearing `sdd-apply`, `sdd-verify`, or remediation continuation. It is the single attempt/budget authority for both OpenSpec and Engram; never persist caller-authored counters in OpenSpec files, Engram topics, prompts, or Pi state.
+
+1. Before any actor or harness launch, read `gentle-ai sdd-attempt status --cwd <repo> --change <change>`. Treat its exact `revision`, `active_attempt`, `decision_required`, and `next_action` as authoritative.
+2. If `active_attempt` is populated, do not launch again. Finish that charged ordinal with `gentle-ai sdd-attempt finish --cwd <repo> --change <change> --expected-revision <revision> ...`, recording passed, failed, or interrupted outcome plus evidence revision, diagnosis, harness disposition, cleanup evidence, and process evidence.
+3. If `decision_required` is true, stop execution and report the native diagnosis/budget state. Only an explicit maintainer scope decision may call `gentle-ai sdd-attempt reset --cwd <repo> --change <change> --expected-revision <revision> ...`; a renamed work unit or new process never resets cumulative budgets.
+4. When `next_action` is `begin`, consume the ordinal before launch with `gentle-ai sdd-attempt begin --cwd <repo> --change <change> --expected-revision <revision> ...`. After `next_action: complete`, never rerun the same objective; a genuinely distinct objective requires an explicit reset.
+5. A passing bound remediation MUST add `--expected-binding-revision`, `--successor-lineage`, and `--remediates-evidence-revision` to `gentle-ai sdd-attempt finish`. The native command charges the attempt, persists evidence, and selects the already-approved compact recovery successor in one HEAD CAS; do not publish those steps separately.
 
 ### Artifact Store Mode
 
@@ -305,7 +324,7 @@ Cache the delivery strategy for the session. Pass it as `delivery_strategy` to `
 
 ### Chain Strategy
 
-When `delivery_strategy` results in chained PRs (either by user choice via `ask-on-risk` or automatically via `auto-chain`), ask the user which chain strategy to use. Use the `question` tool for this choice: present the two strategy options through a single `question` tool call; do NOT render the options as a plain markdown bullet list or plain chat text.
+When `delivery_strategy` results in chained PRs (either by user choice via `ask-on-risk` or automatically via `auto-chain`), ask the user which chain strategy to use. Present the two strategy options through one `question` tool call when the lossless native route is usable; otherwise emit the complete choice through the plain chat or terminal fallback and STOP.
 
 - **`stacked-to-main`**: Each PR merges to main in order. Fast iteration, fix on the go. Best for speed-first teams and independent slices.
 - **`feature-branch-chain`**: The feature/tracker branch accumulates final integration; PR #1 targets the tracker branch, later child PRs target the immediate previous PR branch so review diffs stay focused. Only the tracker merges to main. Best for rollback control and coordinated releases.
@@ -331,10 +350,10 @@ Each phase returns: `status`, `executive_summary`, `artifacts`, `next_recommende
 
 After `sdd-tasks` completes and before launching `sdd-apply`, inspect the task result summary for `Review Workload Forecast`.
 
-If it says `Chained PRs recommended: Yes`, `400-line budget risk: High`, estimated changed lines exceed 400, or `Decision needed before apply: Yes`, apply the cached `delivery_strategy`. Whenever a directive below tells the orchestrator to ask the user a decision (split vs. exception, or which chain strategy), present that decision via the `question` tool: each is its own single `question` tool call with its options; do NOT render the options as a plain markdown bullet list or plain chat text.
+If it says `Chained PRs recommended: Yes`, `400-line budget risk: High`, estimated changed lines exceed 400, or `Decision needed before apply: Yes`, apply the cached `delivery_strategy`. Whenever a directive below tells the orchestrator to ask the user a decision (split vs. exception, or which chain strategy), use one `question` tool call only when the complete decision is natively representable; otherwise emit the complete choice through the plain chat or terminal fallback and STOP.
 
-- **`ask-on-risk`**: STOP and ask, via the `question` tool, whether to split into chained/stacked PRs or proceed with `size:exception`. If the user chooses chained PRs and `chain_strategy` is not yet cached, also ask which chain strategy to use (stacked-to-main or feature-branch-chain) via the `question` tool.
-- **`auto-chain`**: Do not ask about splitting. If `chain_strategy` is not yet cached, ask which chain strategy to use via the `question` tool. Then pass to `sdd-apply`: implement only the next autonomous slice using work-unit commits, with clear start, finish, verification, and rollback boundary.
+- **`ask-on-risk`**: STOP and ask whether to split into chained/stacked PRs or proceed with `size:exception`, using the lossless blocking-prompt route. If the user chooses chained PRs and `chain_strategy` is not yet cached, ask which chain strategy to use (stacked-to-main or feature-branch-chain) through the same route.
+- **`auto-chain`**: Do not ask about splitting. If `chain_strategy` is not yet cached, ask which chain strategy to use through the lossless blocking-prompt route. Then pass to `sdd-apply`: implement only the next autonomous slice using work-unit commits, with clear start, finish, verification, and rollback boundary.
 - **`single-pr`**: STOP and require/record maintainer-approved `size:exception` before `sdd-apply`.
 - **`exception-ok`**: Continue, but pass to `sdd-apply` that this run uses maintainer-approved `size:exception`.
 

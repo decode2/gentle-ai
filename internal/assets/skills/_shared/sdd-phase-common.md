@@ -38,6 +38,8 @@ Do NOT use search previews as source material.
 
 Every phase that produces an artifact MUST persist it. Skipping this BREAKS the pipeline — downstream phases will not find your output.
 
+For `verify-report`, first build exact candidate bytes and run `gentle-ai sdd-verify-validate` with authoritative requirement/scenario counts before any OpenSpec or Engram write. If the validator is unavailable or denies admission, make zero writes and leave the prior report untouched; otherwise persist only the same admitted bytes, including a valid `fail`.
+
 ### Engram mode
 
 ```

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,26 +12,31 @@ import (
 	"github.com/gentleman-programming/gentle-ai/internal/sddstatus"
 )
 
-func TestRunSDDStatusPrintsMarkdownForBlockedStatus(t *testing.T) {
+func TestRunSDDStatusAndContinueOmitExpectedPlanningBlockers(t *testing.T) {
 	root := t.TempDir()
 	writeSDDStatusFile(t, filepath.Join(root, "openspec", "changes", "thin", "tasks.md"), "- [ ] 1.1 Work\n")
 
-	var stdout bytes.Buffer
-	err := RunSDDStatus([]string{"thin", "--cwd", root}, &stdout)
-	if err != nil {
-		t.Fatalf("RunSDDStatus() error = %v", err)
-	}
-
-	out := stdout.String()
-	for _, want := range []string{
-		"## SDD Status: thin",
-		"### Blocked Reasons",
-		"proposal.md is missing or partial.",
-		"```json",
+	for name, run := range map[string]func([]string, io.Writer) error{
+		"sdd-status":   RunSDDStatus,
+		"sdd-continue": RunSDDContinue,
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("RunSDDStatus() output missing %q:\n%s", want, out)
-		}
+		t.Run(name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			if err := run([]string{"thin", "--cwd", root, "--json"}, &stdout); err != nil {
+				t.Fatalf("command error = %v", err)
+			}
+
+			var status sddstatus.Status
+			if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+				t.Fatalf("JSON decode error = %v\n%s", err, stdout.String())
+			}
+			if status.NextRecommended != "propose" {
+				t.Fatalf("NextRecommended = %q, want propose", status.NextRecommended)
+			}
+			if len(status.BlockedReasons) != 0 {
+				t.Fatalf("BlockedReasons = %v, want []", status.BlockedReasons)
+			}
+		})
 	}
 }
 

@@ -21,9 +21,9 @@ func TestNegotiatedReviewStartMatchesVersionedFixture(t *testing.T) {
 	writeReviewStartCandidate(t, repo, "scripts/deploy.sh", "echo deploy\n", 0o644)
 
 	var output bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", "review-start-fixture",
-	}, &output); err != nil {
+	}), &output); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeNegotiatedReviewStart(t, output.Bytes())
@@ -42,14 +42,20 @@ func TestNegotiatedReviewStartMatchesVersionedFixture(t *testing.T) {
 		result.LineageID != "review-start-fixture" || result.State != reviewtransaction.StateReviewing ||
 		result.RiskLevel != reviewtransaction.RiskHigh || !reflect.DeepEqual(result.SelectedLenses, wantLenses) ||
 		result.Projection != reviewtransaction.ProjectionWorkspace || result.ChangedFiles != 1 ||
-		result.ChangedLines != 1 || result.CorrectionBudget != 1 || !reflect.DeepEqual(result.RiskReasons, wantReasons) {
+		result.ChangedLines != 1 || result.CorrectionBudget != 1 || !reflect.DeepEqual(result.RiskReasons, wantReasons) ||
+		result.RepositoryContext == nil || result.RepositoryContext.Capability != reviewtransaction.ReviewRepositoryContextCapability {
 		t.Fatalf("negotiated START = %#v\n%s", result, output.String())
 	}
-	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "start.fixture.json"))
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "contracts", "review-integration", "v1", "fixtures", "start-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(output.Bytes(), fixture) {
+	var fixtureResult ReviewIntegrationStartResult
+	if err := json.Unmarshal(fixture, &fixtureResult); err != nil {
+		t.Fatal(err)
+	}
+	normalized := bytes.ReplaceAll(output.Bytes(), []byte(result.RepositoryContext.Handle), []byte(fixtureResult.RepositoryContext.Handle))
+	if !bytes.Equal(normalized, fixture) {
 		t.Fatalf("START fixture mismatch:\ngot=%s\nwant=%s", output.String(), fixture)
 	}
 }
@@ -166,6 +172,7 @@ func TestNegotiatedReviewStartRoutesLargePureDocumentationToReadability(t *testi
 			if tt.focus != "" {
 				args = append(args, "--focus", tt.focus)
 			}
+			args = boundNegotiatedStartArgs(t, args)
 			var output bytes.Buffer
 			if err := RunReview(args, &output); err != nil {
 				t.Fatal(err)
@@ -229,7 +236,7 @@ func TestNegotiatedReviewStartAndStatusExposeWorkspaceOverlay(t *testing.T) {
 
 	var startOutput bytes.Buffer
 	args := []string{"--contract", ReviewIntegrationContractV1, "--cwd", repo, "--base-ref", base, "--workspace-overlay", "--lineage", "review-overlay"}
-	if err := RunReviewFacadeStart(args, &startOutput); err != nil {
+	if err := RunReviewFacadeStart(boundNegotiatedStartArgs(t, args), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	start := decodeNegotiatedReviewStart(t, startOutput.Bytes())
@@ -274,9 +281,9 @@ func TestNegotiatedOverlayStatusUsesResolvedStartBaseAfterSymbolicRefAdvances(t 
 
 	lineage := "review-overlay-resolved-base"
 	var startOutput bytes.Buffer
-	if err := RunReviewFacadeStart([]string{
+	if err := RunReviewFacadeStart(boundNegotiatedStartArgs(t, []string{
 		"--contract", ReviewIntegrationContractV1, "--cwd", repo, "--base-ref", "review-base", "--workspace-overlay", "--lineage", lineage,
-	}, &startOutput); err != nil {
+	}), &startOutput); err != nil {
 		t.Fatal(err)
 	}
 	start := decodeNegotiatedReviewStart(t, startOutput.Bytes())
@@ -309,6 +316,67 @@ func TestNegotiatedOverlayStatusUsesResolvedStartBaseAfterSymbolicRefAdvances(t 
 }
 
 func TestReviewRecoverRetainsWorkspaceOverlayBaseAndScope(t *testing.T) {
+	repo, predecessor := approvedWorkspaceOverlayRecoveryPredecessor(t, "overlay-recovery-predecessor")
+	lineage := predecessor.State.LineageID
+	args := []string{"--cwd", repo, "--predecessor-lineage", lineage, "--expected-predecessor-revision", predecessor.Revision,
+		"--successor-lineage", "overlay-recovery-successor", "--disposition", "scope_changed", "--reason", "scope changed", "--actor", "maintainer"}
+	if err := RunReviewRecover(args, io.Discard); err == nil || !strings.Contains(err.Error(), "scope has not changed") {
+		t.Fatalf("unchanged overlay recovery error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new scope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunReviewRecover(args, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	successorStore, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, "overlay-recovery-successor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := successorStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := successor.State.InitialSnapshot
+	if snapshot.Kind != reviewtransaction.TargetBaseWorkspaceOverlay || snapshot.BaseTree != predecessor.State.InitialSnapshot.BaseTree || snapshot.Identity == predecessor.State.InitialSnapshot.Identity ||
+		!reflect.DeepEqual(snapshot.Paths, []string{"committed.txt", "new.txt", "tracked.txt"}) {
+		t.Fatalf("recovered overlay snapshot = %#v", snapshot)
+	}
+}
+
+func TestReviewRecoverAdoptsExplicitWorkspaceOverlayBase(t *testing.T) {
+	repo, predecessor := approvedWorkspaceOverlayRecoveryPredecessor(t, "overlay-explicit-base-predecessor")
+	declaredBase := strings.TrimSpace(runReviewCLIGit(t, repo, "rev-parse", "HEAD"))
+	declaredBaseTree := strings.TrimSpace(runReviewCLIGit(t, repo, "rev-parse", declaredBase+"^{tree}"))
+	args := []string{"--cwd", repo, "--predecessor-lineage", predecessor.State.LineageID, "--expected-predecessor-revision", predecessor.Revision,
+		"--successor-lineage", "overlay-explicit-base-successor", "--disposition", "scope_changed", "--reason", "base advanced", "--actor", "maintainer", "--base-ref", declaredBase}
+
+	if err := RunReviewRecover(args, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	successorStore, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, "overlay-explicit-base-successor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor, err := successorStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := successor.State.InitialSnapshot
+	if snapshot.Kind != reviewtransaction.TargetBaseWorkspaceOverlay || snapshot.BaseTree != declaredBaseTree || snapshot.BaseTree == predecessor.State.InitialSnapshot.BaseTree || snapshot.Identity == predecessor.State.InitialSnapshot.Identity {
+		t.Fatalf("recovered overlay snapshot = %#v", snapshot)
+	}
+	assessment, err := reviewtransaction.AssessCompactGateTarget(context.Background(), repo, successor.State, reviewtransaction.NativeGateRequestInput{Gate: reviewtransaction.GatePostApply})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assessment.Applicability != reviewtransaction.CompactGateTargetExact || assessment.Actual.BaseTree != declaredBaseTree {
+		t.Fatalf("recovered overlay gate assessment = %#v", assessment)
+	}
+}
+
+func approvedWorkspaceOverlayRecoveryPredecessor(t *testing.T, lineage string) (string, reviewtransaction.CompactRecord) {
+	t.Helper()
 	repo := initReviewCLIRepo(t)
 	base := strings.TrimSpace(runReviewCLIGit(t, repo, "rev-parse", "HEAD"))
 	if err := os.WriteFile(filepath.Join(repo, "committed.txt"), []byte("committed\n"), 0o644); err != nil {
@@ -319,7 +387,6 @@ func TestReviewRecoverRetainsWorkspaceOverlayBaseAndScope(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("overlay\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	lineage := "overlay-recovery-predecessor"
 	if err := RunReviewFacadeStart([]string{"--cwd", repo, "--base-ref", base, "--workspace-overlay", "--lineage", lineage}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -353,30 +420,7 @@ func TestReviewRecoverRetainsWorkspaceOverlayBaseAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--cwd", repo, "--predecessor-lineage", lineage, "--expected-predecessor-revision", predecessor.Revision,
-		"--successor-lineage", "overlay-recovery-successor", "--disposition", "scope_changed", "--reason", "scope changed", "--actor", "maintainer"}
-	if err := RunReviewRecover(args, io.Discard); err == nil || !strings.Contains(err.Error(), "scope has not changed") {
-		t.Fatalf("unchanged overlay recovery error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new scope\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := RunReviewRecover(args, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	successorStore, err := reviewtransaction.CompactAuthoritativeStore(context.Background(), repo, "overlay-recovery-successor")
-	if err != nil {
-		t.Fatal(err)
-	}
-	successor, err := successorStore.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := successor.State.InitialSnapshot
-	if snapshot.Kind != reviewtransaction.TargetBaseWorkspaceOverlay || snapshot.BaseTree != predecessor.State.InitialSnapshot.BaseTree || snapshot.Identity == predecessor.State.InitialSnapshot.Identity ||
-		!reflect.DeepEqual(snapshot.Paths, []string{"committed.txt", "new.txt", "tracked.txt"}) {
-		t.Fatalf("recovered overlay snapshot = %#v", snapshot)
-	}
+	return repo, predecessor
 }
 
 func TestReviewRecoverSelectsAuthorizedStagedProjection(t *testing.T) {
@@ -652,9 +696,9 @@ func TestNegotiatedReviewStartPreservesLegacyPayloadAndAuthorityIdentity(t *test
 	}
 
 	var negotiatedOutput bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", negotiatedRepo, "--lineage", lineage,
-	}, &negotiatedOutput); err != nil {
+	}), &negotiatedOutput); err != nil {
 		t.Fatal(err)
 	}
 	negotiated := decodeNegotiatedReviewStart(t, negotiatedOutput.Bytes())
@@ -729,7 +773,7 @@ func TestExplicitReviewStartRetriesAcrossSharedCommonDirWithoutReconstruction(t 
 	start := func(root string) ([]byte, ReviewIntegrationStartResult) {
 		t.Helper()
 		var output bytes.Buffer
-		if err := RunReview([]string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", root, "--lineage", lineage}, &output); err != nil {
+		if err := RunReview(boundNegotiatedStartArgs(t, []string{"start", "--contract", ReviewIntegrationContractV1, "--cwd", root, "--lineage", lineage}), &output); err != nil {
 			t.Fatalf("START in %s: %v\n%s", root, err, output.String())
 		}
 		return append([]byte(nil), output.Bytes()...), decodeNegotiatedReviewStart(t, output.Bytes())
@@ -774,7 +818,7 @@ func TestExplicitReviewStartRetriesAcrossSharedCommonDirWithoutReconstruction(t 
 
 func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 	root := filepath.Join("..", "..", "contracts", "review-integration", "v1")
-	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "start.schema.json"))
+	schemaPayload, err := os.ReadFile(filepath.Join(root, "schemas", "start-v2.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +830,20 @@ func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 		schema["$id"] != ReviewIntegrationStartSchemaID || schema["additionalProperties"] != false {
 		t.Fatalf("START schema header = %#v", schema)
 	}
-	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "start.fixture.json"))
+	properties := schema["properties"].(map[string]any)
+	if properties["candidate_diff"] == nil || properties["changed_path_manifest"] == nil || schema["allOf"] == nil {
+		t.Fatalf("START schema does not declare conditional frozen context: %#v", schema)
+	}
+	dependencies := schema["dependentRequired"].(map[string]any)
+	if !reflect.DeepEqual(dependencies["candidate_diff"], []any{"changed_path_manifest"}) ||
+		!reflect.DeepEqual(dependencies["changed_path_manifest"], []any{"candidate_diff"}) {
+		t.Fatalf("START schema does not require frozen context fields as a pair: %#v", dependencies)
+	}
+	candidateDiffSchema := properties["candidate_diff"].(map[string]any)
+	if candidateDiffSchema["$ref"] != "#/$defs/frozen_candidate_diff" {
+		t.Fatalf("START candidate_diff schema = %#v", candidateDiffSchema)
+	}
+	fixture, err := os.ReadFile(filepath.Join(root, "fixtures", "start-v2.fixture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,9 +884,9 @@ func TestNegotiatedReviewStartSchemaAndFixtureAreStrict(t *testing.T) {
 func runNegotiatedReviewStart(t *testing.T, repo, lineage string) ReviewIntegrationStartResult {
 	t.Helper()
 	var output bytes.Buffer
-	if err := RunReview([]string{
+	if err := RunReview(boundNegotiatedStartArgs(t, []string{
 		"start", "--contract", ReviewIntegrationContractV1, "--cwd", repo, "--lineage", lineage,
-	}, &output); err != nil {
+	}), &output); err != nil {
 		t.Fatal(err)
 	}
 	result := decodeNegotiatedReviewStart(t, output.Bytes())
@@ -837,6 +894,58 @@ func runNegotiatedReviewStart(t *testing.T, repo, lineage string) ReviewIntegrat
 		t.Fatal(err)
 	}
 	return result
+}
+
+func boundNegotiatedStartArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	bound := append([]string(nil), args...)
+	cwd, projection, baseRef := ".", reviewtransaction.ProjectionWorkspace, ""
+	overlay, projectionProvided := false, false
+	for index := 0; index < len(bound); index++ {
+		name, value := bound[index], ""
+		if strings.Contains(name, "=") {
+			name, value, _ = strings.Cut(name, "=")
+		} else if index+1 < len(bound) && !strings.HasPrefix(bound[index+1], "--") {
+			value = bound[index+1]
+		}
+		switch name {
+		case "--cwd":
+			cwd = value
+		case "--projection":
+			projection, projectionProvided = reviewtransaction.Projection(value), true
+		case "--base-ref":
+			baseRef = value
+		case "--workspace-overlay":
+			overlay = true
+		}
+	}
+	intended := []string{}
+	if projection != reviewtransaction.ProjectionStaged {
+		var err error
+		intended, err = (reviewtransaction.SnapshotBuilder{Repo: cwd}).DiscoverIntendedUntracked(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := reviewtransaction.Target{Kind: reviewtransaction.TargetCurrentChanges, Projection: projection, IntendedUntracked: intended}
+	if baseRef != "" {
+		target.Kind, target.BaseRef = reviewtransaction.TargetBaseDiff, baseRef
+	}
+	if overlay {
+		target.Kind = reviewtransaction.TargetBaseWorkspaceOverlay
+	}
+	snapshot, err := (reviewtransaction.SnapshotBuilder{Repo: cwd}).Build(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound = append(bound, "--target", snapshot.Identity)
+	if !projectionProvided {
+		bound = append(bound, "--projection", string(projection))
+	}
+	if baseRef != "" && !overlay {
+		bound = append(bound, "--committed-only")
+	}
+	return bound
 }
 
 func decodeNegotiatedReviewStart(t *testing.T, payload []byte) ReviewIntegrationStartResult {

@@ -584,11 +584,11 @@ func TestInjectOpenCodeUsesOpenCodeSpecificOrchestratorPrompt(t *testing.T) {
 			for _, wanted := range []string{
 				"Gentle AI",
 				"Read the configured models from `opencode.json`",
-				"present the proceed/adjust/stop options via the `question` tool",
-				"Use the `question` tool for this between-phase decision",
-				"present the proceed/adjust/stop options through a single `question` tool call",
-				"present that decision via the `question` tool",
-				"Use the `question` tool for this choice: present the two strategy options",
+				"Use the `question` tool for SDD Session Preflight only when it is available in the current interactive runtime and all four groups are exactly representable",
+				"present the proceed/adjust/stop options through the lossless blocking-prompt route",
+				"present the correct/second-round/continue choice through the lossless blocking-prompt route",
+				"Present the two strategy options through one `question` tool call when the lossless native route is usable",
+				"otherwise emit the complete choice through the plain chat or terminal fallback and STOP",
 			} {
 				if !strings.Contains(text, wanted) {
 					t.Fatalf("opencode.json missing OpenCode orchestrator prompt content %q", wanted)
@@ -2343,12 +2343,16 @@ func TestInjectOpenCodeSubagentPromptsStayExecutorScoped(t *testing.T) {
 			t.Fatalf("%s has unexpected type: %T", phase, raw)
 		}
 
-		// After the shared-prompt-files refactor, the prompt field is a {file:...}
-		// reference. The executor-scoped content lives in the prompt file on disk.
 		prompt, _ := agentDef["prompt"].(string)
-		expectedRef := "{file:" + filepath.ToSlash(filepath.Join(promptDir, phase+".md")) + "}"
+		expectedRef, err := SharedPromptFileRef(settingsPath, home, phase)
+		if err != nil {
+			t.Fatalf("SharedPromptFileRef() error = %v", err)
+		}
 		if prompt != expectedRef {
 			t.Fatalf("%s prompt = %q, want {file:...} reference %q", phase, prompt, expectedRef)
+		}
+		if strings.Contains(prompt, filepath.ToSlash(home)) {
+			t.Fatalf("%s prompt = %q, contains home path", phase, prompt)
 		}
 
 		// Also verify the prompt file contains the executor-scoped content
@@ -2369,6 +2373,27 @@ func TestInjectOpenCodeSubagentPromptsStayExecutorScoped(t *testing.T) {
 		if !hasGate && !hasDoNotDelegate {
 			t.Fatalf("%s prompt file missing expected skill content", phase)
 		}
+	}
+}
+
+func TestInjectKilocodeSubagentPromptUsesSharedRelativePath(t *testing.T) {
+	home := t.TempDir()
+	adapter := kilocodeAdapter()
+
+	if _, err := Inject(home, adapter, "multi"); err != nil {
+		t.Fatalf("Inject(multi) error = %v", err)
+	}
+
+	prompt := agentPrompt(t, readOpenCodeAgents(t, adapter.SettingsPath(home)), "sdd-apply")
+	want, err := SharedPromptFileRef(adapter.SettingsPath(home), home, "sdd-apply")
+	if err != nil {
+		t.Fatalf("SharedPromptFileRef() error = %v", err)
+	}
+	if prompt != want {
+		t.Fatalf("sdd-apply prompt = %q, want %q", prompt, want)
+	}
+	if strings.Contains(prompt, filepath.ToSlash(home)) {
+		t.Fatalf("sdd-apply prompt = %q, contains home path", prompt)
 	}
 }
 

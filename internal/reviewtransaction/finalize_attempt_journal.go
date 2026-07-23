@@ -99,24 +99,43 @@ func (store CompactStore) PendingFinalizeAttempt() (*FinalizeAttempt, error) {
 // PendingFinalizeAttemptReadOnly never acquires or rewrites LOCK, so status
 // remains observational even while a writer owns the compact authority.
 func (store CompactStore) PendingFinalizeAttemptReadOnly() (*FinalizeAttempt, error) {
+	_, journal, exists, err := store.loadFinalizeAttemptJournalReadOnly(context.Background())
+	if err != nil || !exists {
+		return nil, err
+	}
+	return latestPendingFinalizeAttempt(journal), nil
+}
+
+func (store CompactStore) loadFinalizeAttemptJournalReadOnly(ctx context.Context) ([]byte, finalizeAttemptJournal, bool, error) {
+	maintenance, err := store.acquireReadMaintenance(ctx)
+	if err != nil {
+		return nil, finalizeAttemptJournal{}, false, err
+	}
+	if maintenance != nil {
+		defer maintenance.Release()
+	}
 	payload, err := os.ReadFile(store.FinalizeAttemptJournalPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, finalizeAttemptJournal{}, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, finalizeAttemptJournal{}, false, err
 	}
 	journal, err := parseFinalizeAttemptJournal(payload, store.lineageID)
 	if err != nil {
-		return nil, err
+		return payload, finalizeAttemptJournal{}, true, err
 	}
+	return payload, journal, true, nil
+}
+
+func latestPendingFinalizeAttempt(journal finalizeAttemptJournal) *FinalizeAttempt {
 	for index := len(journal.Attempts) - 1; index >= 0; index-- {
 		if !journal.Attempts[index].Completed {
 			attempt := journal.Attempts[index]
-			return &attempt, nil
+			return &attempt
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // BeginFinalizeAttempt durably records the request before its first native
@@ -179,14 +198,6 @@ func sameFinalizeAttemptPayload(left, right FinalizeAttemptRequest) bool {
 		left.ReviewerResultsDigest == right.ReviewerResultsDigest && left.CorrectionForecastDigest == right.CorrectionForecastDigest &&
 		left.ValidationDigest == right.ValidationDigest && left.RefuterDigest == right.RefuterDigest &&
 		left.EvidenceDigest == right.EvidenceDigest && left.FailedDigest == right.FailedDigest
-}
-
-func (store CompactStore) loadCompactRecordLocked() (CompactRecord, error) {
-	payload, err := os.ReadFile(store.StatePath())
-	if err != nil {
-		return CompactRecord{}, err
-	}
-	return parseCompactRecord(payload, store.lineageID)
 }
 
 func finalizeAttemptMayResume(attempt FinalizeAttempt, request FinalizeAttemptRequest, current CompactRecord) bool {
