@@ -108,18 +108,15 @@ func (j *Journal) WriteWithMode(path string, data []byte, mode os.FileMode) (Own
 	if previous := j.before[path]; previous.data != nil {
 		effective = previous.mode
 	}
-	if _, err := writeFileAtomic(path, data, effective); err != nil {
-		// Even if writeFileAtomic returned an error, the destination file on disk
-		// may have been replaced or modified (e.g. os.Rename succeeded before
-		// parent directory sync failed). Record the resulting disk state so Restore
-		// can roll back the change.
-		if current, readErr := os.ReadFile(path); readErr == nil {
-			beforeData := j.before[path].data
-			if beforeData == nil || !bytes.Equal(current, *beforeData) {
-				after := append([]byte(nil), current...)
-				j.before[path].after = &after
-				j.before[path].changed = true
-			}
+	result, err := writeFileAtomic(path, data, effective)
+	if err != nil {
+		// Only the writer can prove that its atomic rename completed. Binding the
+		// journal to the requested bytes preserves CAS protection if another actor
+		// edits the destination after replacement.
+		if result.Replaced {
+			after := append([]byte(nil), data...)
+			j.before[path].after = &after
+			j.before[path].changed = true
 		}
 		return OwnedFile{}, fmt.Errorf("write %q: %w", path, err)
 	}

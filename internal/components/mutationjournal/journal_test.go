@@ -368,7 +368,7 @@ func TestRestoreRecoversFromWriteErrorAfterAtomicReplacement(t *testing.T) {
 
 	dir := t.TempDir()
 	target := filepath.Join(dir, "atomic_fail.txt")
-	if err := os.WriteFile(target, []byte("before-content"), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte("before-content"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -383,8 +383,10 @@ func TestRestoreRecoversFromWriteErrorAfterAtomicReplacement(t *testing.T) {
 	writeFileAtomic = func(path string, data []byte, perm os.FileMode) (filemerge.WriteResult, error) {
 		calls++
 		if calls == 1 {
-			_ = os.WriteFile(path, data, perm)
-			return filemerge.WriteResult{}, errors.New("sync parent directory: injected error")
+			if err := os.WriteFile(path, data, perm); err != nil {
+				return filemerge.WriteResult{}, err
+			}
+			return filemerge.WriteResult{Changed: true, Replaced: true}, errors.New("sync parent directory: injected error")
 		}
 		return origWriteFileAtomic(path, data, perm)
 	}
@@ -408,5 +410,134 @@ func TestRestoreRecoversFromWriteErrorAfterAtomicReplacement(t *testing.T) {
 	restored, readErr := os.ReadFile(target)
 	if readErr != nil || string(restored) != "before-content" {
 		t.Fatalf("file on disk after Restore = %q, want before-content", string(restored))
+	}
+	if runtime.GOOS != "windows" {
+		info, statErr := os.Stat(target)
+		if statErr != nil {
+			t.Fatalf("Stat after Restore: %v", statErr)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("file mode after Restore = %o, want 0600", got)
+		}
+	}
+}
+
+func TestRestoreRemovesNewFileAfterWriteErrorAfterAtomicReplacement(t *testing.T) {
+	originalWriter := writeFileAtomic
+	t.Cleanup(func() { writeFileAtomic = originalWriter })
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "new-file.txt")
+	j := New(dir)
+
+	writeFileAtomic = func(path string, data []byte, mode os.FileMode) (filemerge.WriteResult, error) {
+		if err := os.WriteFile(path, data, mode); err != nil {
+			return filemerge.WriteResult{}, err
+		}
+		return filemerge.WriteResult{Changed: true, Created: true, Replaced: true},
+			errors.New("sync parent directory: injected error")
+	}
+
+	if _, err := j.WriteWithMode(target, []byte("created"), 0o640); err == nil {
+		t.Fatal("WriteWithMode expected injected failure")
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "created" {
+		t.Fatalf("file after WriteWithMode = %q, err = %v, want created", got, err)
+	}
+	if err := j.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("Stat after Restore error = %v, want IsNotExist", err)
+	}
+}
+
+func TestRestorePreservesConcurrentEditAfterWriteErrorAfterAtomicReplacement(t *testing.T) {
+	originalWriter := writeFileAtomic
+	t.Cleanup(func() { writeFileAtomic = originalWriter })
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(target, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	j := New(dir)
+	writeFileAtomic = func(path string, data []byte, mode os.FileMode) (filemerge.WriteResult, error) {
+		if err := os.WriteFile(path, data, mode); err != nil {
+			return filemerge.WriteResult{}, err
+		}
+		return filemerge.WriteResult{Changed: true, Replaced: true},
+			errors.New("sync parent directory: injected error")
+	}
+
+	if _, err := j.Write(target, []byte("candidate")); err == nil {
+		t.Fatal("Write expected injected failure")
+	}
+	if err := os.WriteFile(target, []byte("concurrent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := j.Restore()
+	if err == nil || !strings.Contains(err.Error(), "mutation journal conflict") {
+		t.Fatalf("Restore error = %v, want mutation journal conflict", err)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "concurrent" {
+		t.Fatalf("Restore overwrote concurrent edit: got %q, want %q", got, "concurrent")
+	}
+}
+
+func TestWriteErrorBeforeReplacementPreservesConcurrentEdit(t *testing.T) {
+	originalWriter := writeFileAtomic
+	t.Cleanup(func() { writeFileAtomic = originalWriter })
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(target, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	j := New(dir)
+	if err := j.Capture(target); err != nil {
+		t.Fatal(err)
+	}
+
+	startConcurrentWrite := make(chan struct{})
+	concurrentWriteDone := make(chan error, 1)
+	go func() {
+		<-startConcurrentWrite
+		concurrentWriteDone <- os.WriteFile(target, []byte("concurrent"), 0o644)
+	}()
+
+	calls := 0
+	writeFileAtomic = func(path string, data []byte, mode os.FileMode) (filemerge.WriteResult, error) {
+		calls++
+		if calls > 1 {
+			return originalWriter(path, data, mode)
+		}
+		close(startConcurrentWrite)
+		if err := <-concurrentWriteDone; err != nil {
+			t.Fatalf("concurrent write: %v", err)
+		}
+		return filemerge.WriteResult{}, errors.New("create temp file: injected pre-replacement failure")
+	}
+
+	if _, err := j.Write(target, []byte("candidate")); err == nil {
+		t.Fatal("Write expected injected failure")
+	}
+	if err := j.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "concurrent" {
+		t.Fatalf("Restore overwrote unrelated concurrent edit: got %q, want %q", got, "concurrent")
 	}
 }

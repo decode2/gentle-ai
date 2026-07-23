@@ -37,6 +37,9 @@ const maxAtomicFileSize = 16 << 20
 type WriteResult struct {
 	Changed bool
 	Created bool
+	// Replaced proves that the destination rename completed. It can be true
+	// together with an error when only the following parent-directory sync failed.
+	Replaced bool
 }
 
 func WriteFileAtomic(path string, content []byte, perm fs.FileMode) (WriteResult, error) {
@@ -96,18 +99,19 @@ func WriteFileAtomic(path string, content []byte, perm fs.FileMode) (WriteResult
 	if err := os.Rename(tmpPath, path); err != nil {
 		return WriteResult{}, fmt.Errorf("replace %q atomically: %w", path, err)
 	}
+	result := WriteResult{Changed: true, Created: created, Replaced: true}
 
 	// Sync the parent directory to flush the new directory entry to disk.
 	// On Windows, NTFS returns ErrPermission when syncing a directory fd — tolerate
 	// that specific error only. Any other error (e.g. disk full) is still fatal.
 	if err := syncDirFn(dir); err != nil {
 		if !(runtimeGOOS() == "windows" && errors.Is(err, os.ErrPermission)) {
-			return WriteResult{}, fmt.Errorf("sync parent directory for %q: %w", path, err)
+			return result, fmt.Errorf("sync parent directory for %q: %w", path, err)
 		}
 	}
 
 	cleanup = false
-	return WriteResult{Changed: true, Created: created}, nil
+	return result, nil
 }
 
 func readComparableFile(path string) ([]byte, error) {

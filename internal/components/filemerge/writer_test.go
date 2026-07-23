@@ -63,8 +63,8 @@ func TestWriteFileAtomicCreatesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("WriteFileAtomic() first write error = %v", err)
 	}
 
-	if !first.Changed || !first.Created {
-		t.Fatalf("WriteFileAtomic() first write result = %+v", first)
+	if !first.Changed || !first.Created || !first.Replaced {
+		t.Fatalf("WriteFileAtomic() first write result = %+v, want changed, created, and replaced", first)
 	}
 
 	second, err := WriteFileAtomic(path, content, 0o644)
@@ -72,8 +72,8 @@ func TestWriteFileAtomicCreatesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("WriteFileAtomic() second write error = %v", err)
 	}
 
-	if second.Changed || second.Created {
-		t.Fatalf("WriteFileAtomic() second write result = %+v", second)
+	if second.Changed || second.Created || second.Replaced {
+		t.Fatalf("WriteFileAtomic() second write result = %+v, want zero result", second)
 	}
 
 	got, err := os.ReadFile(path)
@@ -185,8 +185,8 @@ func TestWriteFileAtomicIgnoresPermissionErrorFromSyncDirOnWindows(t *testing.T)
 	if err != nil {
 		t.Fatalf("WriteFileAtomic() error = %v, want nil on windows permission-denied dir sync", err)
 	}
-	if !result.Changed || !result.Created {
-		t.Fatalf("WriteFileAtomic() result = %+v, want Changed=true Created=true", result)
+	if !result.Changed || !result.Created || !result.Replaced {
+		t.Fatalf("WriteFileAtomic() result = %+v, want Changed=true Created=true Replaced=true", result)
 	}
 	got, readErr := os.ReadFile(path)
 	if readErr != nil {
@@ -214,12 +214,22 @@ func TestWriteFileAtomicPropagatesSyncDirErrorOnUnix(t *testing.T) {
 	runtimeGOOS = func() string { return "linux" }
 	syncDirFn = func(string) error { return os.ErrPermission }
 
-	_, err := WriteFileAtomic(path, content, 0o644)
+	result, err := WriteFileAtomic(path, content, 0o644)
 	if err == nil {
 		t.Fatal("WriteFileAtomic() error = nil, want sync parent directory failure on unix")
 	}
 	if !strings.Contains(err.Error(), "sync parent directory") {
 		t.Fatalf("WriteFileAtomic() error = %v, want sync parent directory context", err)
+	}
+	if !result.Changed || !result.Created || !result.Replaced {
+		t.Fatalf("WriteFileAtomic() result = %+v, want proof that replacement completed", result)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("file content = %q, want %q", got, content)
 	}
 }
 
@@ -242,11 +252,21 @@ func TestWriteFileAtomicPropagatesUnexpectedSyncDirErrorOnWindows(t *testing.T) 
 	runtimeGOOS = func() string { return "windows" }
 	syncDirFn = func(string) error { return boom }
 
-	_, err := WriteFileAtomic(path, content, 0o644)
+	result, err := WriteFileAtomic(path, content, 0o644)
 	if err == nil {
 		t.Fatal("WriteFileAtomic() error = nil, want unexpected sync dir error on windows")
 	}
 	if !errors.Is(err, boom) {
 		t.Fatalf("WriteFileAtomic() error = %v, want wrapped boom", err)
+	}
+	if !result.Changed || !result.Created || !result.Replaced {
+		t.Fatalf("WriteFileAtomic() result = %+v, want proof that replacement completed", result)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatalf("file content = %q, want %q", got, content)
 	}
 }
