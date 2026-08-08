@@ -186,6 +186,7 @@ func TestReviewStartStaysRefusedWhileKillSwitchDisabled(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "candidate.go"), []byte("package candidate\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	runReviewCLIGit(t, repo, "add", "candidate.go")
 	disableReviewForClone(t, repo)
 
 	var output bytes.Buffer

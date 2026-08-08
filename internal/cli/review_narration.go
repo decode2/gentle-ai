@@ -252,6 +252,18 @@ func reviewNarrateStopReason(reason string, runtimeAgent model.AgentID) {
 	_, _ = fmt.Fprintln(reviewNarrationOutput, bindNarrationRuntimeIdentity(statement, runtimeAgent))
 }
 
+// reviewNarrateForecast keeps the v2 machine envelope on stdout while showing
+// its descriptive, non-routing head to a human on stderr.
+func reviewNarrateForecast(forecast ReviewForecast) {
+	_, _ = fmt.Fprintf(reviewNarrationOutput, "Forecast horizon: %s\n", forecast.Horizon)
+	for _, step := range forecast.Steps {
+		_, _ = fmt.Fprintf(reviewNarrationOutput, "step %d: %s; reason_code=%s; description=%s\n", step.Step, step.Kind, step.ReasonCode, step.Description)
+	}
+	if forecast.Horizon == ForecastHorizonPartial {
+		_, _ = fmt.Fprintln(reviewNarrationOutput, "Re-query STATUS after completing this partial head.")
+	}
+}
+
 // bindNarrationRuntimeIdentity fills the runtime-identity slot in a registered
 // statement with the identity the caller declared on this very invocation. The
 // registry is a package-level map with no caller context, so the statements

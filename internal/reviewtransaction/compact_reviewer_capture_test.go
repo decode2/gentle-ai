@@ -583,6 +583,48 @@ func TestCompactStoreCaptureAdmittedReviewerResultRejectsCallerDerivedContext(
 	}
 }
 
+func TestCompactStoreCaptureRefusesInvalidLocationsWithoutConsumingTheSlot(t *testing.T) {
+	for _, tt := range []struct {
+		location string
+		reason   FindingLocationErrorReason
+	}{
+		{"internal/a.go:1-2,4", FindingLocationLineNotInteger},
+		{"internal/a.go:3-2", FindingLocationErrorReason("range_must_be_ascending")},
+		{"internal/a.go:0-1", FindingLocationLineNotPositive},
+		{"internal/a.go:" + strings.Repeat("9", 64), FindingLocationErrorReason("line_overflows_integer")},
+		{"internal/a.go:9223372036854775808", FindingLocationErrorReason("line_overflows_integer")},
+		{"internal/a.go:18446744073709551615", FindingLocationErrorReason("line_overflows_integer")},
+		{"internal/a.go", FindingLocationExpectedPathAndLine},
+	} {
+		t.Run(tt.location, func(t *testing.T) {
+			fixture := newCompactReviewerCaptureFixture(t, "capture-invalid-location")
+			before, err := fixture.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.request.Result.Findings = []Finding{{
+				ID: "R3-001", Lens: "reliability", Location: tt.location, Severity: "WARNING",
+				Claim: "invalid location", ProofRefs: []string{"internal/a.go:1"},
+			}}
+			if _, err = fixture.store.CaptureAdmittedReviewerResult(t.Context(), fixture.request); err == nil {
+				t.Fatal("CaptureAdmittedReviewerResult() succeeded")
+			} else {
+				var locationErr *FindingLocationError
+				if !errors.As(err, &locationErr) || locationErr.Reason != tt.reason {
+					t.Fatalf("CaptureAdmittedReviewerResult() error = %v; want %q", err, tt.reason)
+				}
+			}
+			after, err := fixture.store.Load()
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatalf("refused capture changed authority: before=%#v after=%#v err=%v", before, after, err)
+			}
+			if _, err := os.Lstat(fixture.path); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("refused capture consumed reviewer slot: %v", err)
+			}
+		})
+	}
+}
+
 func TestCompactStoreCaptureAdmittedReviewerResultSerializesConcurrentReplayAndConflict(
 	t *testing.T,
 ) {

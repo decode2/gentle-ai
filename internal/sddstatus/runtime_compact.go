@@ -96,6 +96,10 @@ type CompactSettleRequest struct {
 	RemediatesEvidenceRevision string
 }
 
+type CompactHandoffRequest struct {
+	HandoffAttemptRequest
+}
+
 // runtimeReadinessInput is everything the one readiness predicate reads. It
 // carries the whole AttemptTokens map rather than a pre-resolved token so the
 // predicate stays the only code that inspects the readiness triple; a caller
@@ -304,6 +308,18 @@ func (store RuntimeStore) Settle(ctx context.Context, request CompactSettleReque
 	return store.compactSettleResult()
 }
 
+func (store RuntimeStore) HandoffCompact(ctx context.Context, request CompactHandoffRequest) (CompactAttemptResult, error) {
+	_, err := store.Handoff(ctx, request.HandoffAttemptRequest)
+	if err == nil {
+		return CompactAttemptResult{State: CompactStateProceed}, nil
+	}
+	var publication *RuntimePublicationError
+	if errors.As(err, &publication) && publication.Committed {
+		return CompactAttemptResult{State: CompactStateProceed}, nil
+	}
+	return store.compactMutationFailure(err, false, BeginAttemptRequest{}), nil
+}
+
 // unmanagedRemediationSettleable reports whether a settle carrying
 // --remediates-evidence-revision failedEvidence can structurally succeed
 // against this ledger state: the immutable attempt chain must still hold that
@@ -452,6 +468,10 @@ func (store RuntimeStore) compactMutationFailure(err error, settle bool, begin B
 	// authority_failure and lose the exact --cwd the refusal names.
 	case errors.Is(err, ErrRuntimeWorktreeMismatch):
 		reason = CompactBlockWorktreeMismatch
+	case errors.Is(err, ErrRuntimeHandoffSource):
+		reason = CompactBlockWorktreeMismatch
+	case errors.Is(err, ErrRuntimeHandoffDestination), errors.Is(err, ErrRuntimeHandoffAlreadyPerformed):
+		reason = CompactBlockInvalidContinuation
 	}
 	return CompactAttemptResult{State: CompactStateBlocked, Reason: reason, Exit: detail, Detail: detail}
 }

@@ -1130,41 +1130,24 @@ func TestRunSyncRollbackRestoresClaudeEngramMigrationSource(t *testing.T) {
 	}
 }
 
-func TestSyncSkillBackupRollsBackGlobalWritersAndOpenClawWorkspace(t *testing.T) {
-	home := temporaryUserHome(t)
-	workspace := filepath.Join(home, "workspace")
-	if err := os.MkdirAll(workspace, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(workspace)
+func TestSyncSkillBackupRollsBackOpenClawWorkspaceSkills(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	currentProject := t.TempDir()
+	writeOpenClawConfigWithWorkspace(t, home, workspace)
+	t.Chdir(currentProject)
 	selection := model.Selection{
-		Agents:     []model.AgentID{model.AgentClaudeCode, model.AgentOpenClaw},
-		Components: []model.ComponentID{model.ComponentSkills, model.ComponentSDD},
+		Agents:     []model.AgentID{model.AgentOpenClaw},
+		Components: []model.ComponentID{model.ComponentSkills},
 		Skills:     []model.SkillID{model.SkillGoTesting},
-		SDDMode:    model.SDDModeSingle,
 	}
 
-	claudeSkills := filepath.Join(home, ".claude", "skills")
 	openClawGlobalSkills := filepath.Join(home, ".openclaw", "skills")
 	openClawWorkspaceSkills := filepath.Join(workspace, ".openclaw", "skills")
-	existing := []string{
-		filepath.Join(claudeSkills, "go-testing", "references", "examples.md"),
-		filepath.Join(claudeSkills, "sdd-apply", "strict-tdd.md"),
-		filepath.Join(claudeSkills, "judgment-day", "SKILL.md"),
-		filepath.Join(claudeSkills, "_shared", "SKILL.md"),
-		filepath.Join(openClawGlobalSkills, "go-testing", "SKILL.md"),
-		filepath.Join(openClawWorkspaceSkills, "judgment-day", "SKILL.md"),
-	}
-	for _, path := range existing {
-		writeStale(t, path)
-	}
-	created := []string{
-		filepath.Join(claudeSkills, "judgment-day", "references", "prompts-and-formats.md"),
-		filepath.Join(claudeSkills, "_shared", "review-ledger-contract.md"),
-		filepath.Join(openClawGlobalSkills, "go-testing", "references", "examples.md"),
-		filepath.Join(openClawWorkspaceSkills, "sdd-apply", "strict-tdd.md"),
-		filepath.Join(openClawWorkspaceSkills, "_shared", "SKILL.md"),
-	}
+	workspaceSkill := filepath.Join(openClawWorkspaceSkills, "go-testing", "SKILL.md")
+	workspaceReference := filepath.Join(openClawWorkspaceSkills, "go-testing", "references", "examples.md")
+	writeStale(t, workspaceSkill)
+	writeStale(t, workspaceReference)
 
 	runtime, err := newSyncRuntime(home, selection)
 	if err != nil {
@@ -1176,16 +1159,44 @@ func TestSyncSkillBackupRollsBackGlobalWritersAndOpenClawWorkspace(t *testing.T)
 	if result.Err == nil {
 		t.Fatal("injected later failure did not trigger sync rollback")
 	}
-	for _, path := range existing {
+	for _, path := range []string{workspaceSkill, workspaceReference} {
 		content, readErr := os.ReadFile(path)
 		if readErr != nil || string(content) != "stale" {
 			t.Errorf("sync rollback did not restore %q: content=%q error=%v", path, content, readErr)
 		}
 	}
-	for _, path := range created {
+	for _, path := range []string{
+		filepath.Join(openClawGlobalSkills, "go-testing", "SKILL.md"),
+		filepath.Join(openClawGlobalSkills, "go-testing", "references", "examples.md"),
+	} {
 		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-			t.Errorf("sync rollback left newly created skill file %q: %v", path, statErr)
+			t.Errorf("OpenClaw sync must not write global skill path %q: %v", path, statErr)
 		}
+	}
+}
+
+func TestSyncBackupTargetsOpenClawSkillsUseConfiguredWorkspace(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	selection := model.Selection{
+		Agents:     []model.AgentID{model.AgentOpenClaw},
+		Components: []model.ComponentID{model.ComponentSkills},
+		Skills:     []model.SkillID{model.SkillGoTesting},
+	}
+
+	targets, err := syncBackupTargets(home, workspace, selection, resolveAdapters(selection.Agents))
+	if err != nil {
+		t.Fatalf("syncBackupTargets() error = %v", err)
+	}
+
+	workspaceReference := filepath.Join(workspace, ".openclaw", "skills", "go-testing", "references", "examples.md")
+	if !containsPath(targets, workspaceReference) {
+		t.Errorf("sync backup targets missing OpenClaw workspace skill path %q\ntargets = %v", workspaceReference, targets)
+	}
+
+	homeReference := filepath.Join(home, ".openclaw", "skills", "go-testing", "references", "examples.md")
+	if containsPath(targets, homeReference) {
+		t.Errorf("sync backup targets must not include OpenClaw home-root skill path %q\ntargets = %v", homeReference, targets)
 	}
 }
 
@@ -1870,7 +1881,7 @@ func TestRunSyncReportsLegacySelectionMigrationPersistenceFailure(t *testing.T) 
 	t.Cleanup(func() { refreshPiCodeGraphIfConfigured = previousRefresh })
 
 	result, err := RunSyncWithSelection(home, model.Selection{Agents: []model.AgentID{model.AgentOpenCode}, Persona: model.PersonaNeutral})
-	if err == nil || !strings.Contains(err.Error(), "persist migrated community tool selection") {
+	if err == nil || !strings.Contains(err.Error(), "persist managed asset provenance") {
 		t.Fatalf("RunSyncWithSelection() error = %v, want migration persistence failure", err)
 	}
 	if !result.Selection.HasCommunityTool(model.CommunityToolCodeGraph) {
@@ -4377,6 +4388,11 @@ func TestRunSyncPreservesCompletePersistedState(t *testing.T) {
 		LastUpdateCheck: &lastUpdate,
 		PendingSync:     true,
 	}
+	writer, err := managedAssetDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.ManagedAssetDigest = writer
 	if err := state.Write(home, before); err != nil {
 		t.Fatalf("state.Write: %v", err)
 	}

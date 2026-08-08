@@ -34,8 +34,11 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 			want[journey.ID] = true
 		}
 	}
-	if got := len(seen); got != 65 {
-		t.Errorf("core journey count = %d, want 65", got)
+	// 78 since j65-sdd-evidence-only-retry-after-audited-reset (#2621).
+	// Bump this deliberately when a journey is added, and name it here: the
+	// count exists so a journey cannot appear or vanish unnoticed.
+	if got := len(seen); got != 78 {
+		t.Errorf("core journey count = %d, want 78", got)
 	}
 	for id, found := range want {
 		if !found {

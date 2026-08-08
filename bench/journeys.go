@@ -30,8 +30,9 @@ type statusEnvelope struct {
 		Paths                []string `json:"paths"`
 	} `json:"projection"`
 	NextTransition struct {
-		Kind    string `json:"kind"`
-		Collect struct {
+		Kind       string `json:"kind"`
+		ReasonCode string `json:"reason_code"`
+		Collect    struct {
 			Inputs []struct {
 				Name             string `json:"name"`
 				CaptureOperation string `json:"capture_operation"`
@@ -106,7 +107,11 @@ func readStatus(r *journeyRun) (statusEnvelope, error) {
 }
 
 func readStatusFor(r *journeyRun, selectors ...string) (statusEnvelope, error) {
-	args := append([]string{"review", "status", "--cwd", r.sandbox.Repo, "--contract", reviewContract, "--next-transition"}, selectors...)
+	return readStatusForContract(r, reviewContract, selectors...)
+}
+
+func readStatusForContract(r *journeyRun, contract string, selectors ...string) (statusEnvelope, error) {
+	args := append([]string{"review", "status", "--cwd", r.sandbox.Repo, "--contract", contract, "--next-transition"}, selectors...)
 	observation := r.run(args, false)
 	var envelope statusEnvelope
 	if err := json.Unmarshal([]byte(strings.TrimSpace(observation.Stdout)), &envelope); err != nil {
@@ -124,8 +129,9 @@ func synthesizeReviewerResult(subjectHash string, paths []string) ([]byte, error
 	if subjectHash == "" {
 		return nil, errors.New("collect envelope carried no subject hash")
 	}
-	if len(paths) == 0 {
-		paths = []string{"."}
+	paths = append([]string{}, paths...)
+	for left, right := 0, len(paths)-1; left < right; left, right = left+1, right-1 {
+		paths[left], paths[right] = paths[right], paths[left]
 	}
 	return json.Marshal(map[string]any{
 		"subject_hash": subjectHash,
@@ -229,7 +235,7 @@ func rejectedThenRecapture(r *journeyRun) error {
 		return errors.New("expected a reviewer-result collect transition")
 	}
 	bad, err := synthesizeReviewerResult(
-		"sha256:0000000000000000000000000000000000000000000000000000000000000000", envelope.paths())
+		envelope.NextTransition.Collect.Inputs[0].ArtifactSubject.SubjectHash, nil)
 	if err != nil {
 		return err
 	}
@@ -517,9 +523,16 @@ func Journeys() []Journey {
 	journeys = append(journeys, sddJourneys()...)
 	journeys = append(journeys, sddChainJourneys()...)
 	journeys = append(journeys, sddEvidenceRetryJourneys()...)
+	journeys = append(journeys, captureEvidenceDescriptorJourneys()...)
+	journeys = append(journeys, scopeChangedFixtureJourneys()...)
 	journeys = append(journeys, waveOneJourneys()...)
 	journeys = append(journeys, waveThreeJourneys()...)
-	return append(journeys, waveFiveJourneys()...)
+	journeys = append(journeys, waveFiveJourneys()...)
+	journeys = append(journeys, advisoryJourneys()...)
+	journeys = append(journeys, zeroDeltaJourneys()...)
+	journeys = append(journeys, localGateBaseAdvanceJourneys()...)
+	journeys = append(journeys, intendedUntrackedJourneys()...)
+	return append(journeys, handoffJourneys()...)
 }
 
 func coreJourneys() []Journey {
@@ -687,7 +700,7 @@ func coreJourneys() []Journey {
 		{
 			ID:     "j12-rejected-capture-then-recapture",
 			Title:  "Failure path: a reviewer result the product rejects, then a recapture",
-			Source: "community failure path: binding mismatch",
+			Source: "#2614: incomplete inspection coverage refuses, then an unordered complete manifest recaptures",
 			Steps: []Step{
 				{Name: "fixture: repo", Fixture: baseRepo},
 				{Name: "fixture: stage ordinary code", Fixture: stageOrdinaryCode},

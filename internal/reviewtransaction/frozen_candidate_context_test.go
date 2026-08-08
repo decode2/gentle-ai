@@ -3,6 +3,7 @@ package reviewtransaction
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,7 +229,10 @@ func TestFrozenCandidateReviewerDiffIgnoresMutableAttributeSources(t *testing.T)
 	if err != nil {
 		t.Fatalf("FrozenCandidateContext() error = %v", err)
 	}
-	baseline := frozenCandidateGitDiff(t, repo, frozen, "attribute-target.txt")
+	baseline, err := (SnapshotBuilder{Repo: repo}).InspectCandidate(context.Background(), snapshot, "patch", 0, "")
+	if err != nil {
+		t.Fatalf("InspectCandidate() error = %v", err)
+	}
 	if !bytes.Contains(baseline, []byte("+candidate")) || bytes.Contains(baseline, []byte("GIT binary patch")) {
 		t.Fatalf("baseline reviewer diff is not canonical text:\n%s", baseline)
 	}
@@ -256,7 +260,10 @@ func TestFrozenCandidateReviewerDiffIgnoresMutableAttributeSources(t *testing.T)
 	t.Setenv("GIT_CONFIG_KEY_0", "core.attributesFile")
 	t.Setenv("GIT_CONFIG_VALUE_0", attributes)
 
-	replayed := frozenCandidateGitDiff(t, repo, frozen, "attribute-target.txt")
+	replayed, err := (SnapshotBuilder{Repo: repo}).InspectCandidate(context.Background(), snapshot, "patch", 0, "")
+	if err != nil {
+		t.Fatalf("InspectCandidate() under hostile configuration: %v", err)
+	}
 	if !bytes.Equal(replayed, baseline) {
 		t.Fatalf("reviewer tree diff changed under mutable Git attributes\nfirst=%s\nreplayed=%s", baseline, replayed)
 	}
@@ -380,6 +387,97 @@ func TestFrozenCandidateContextRejectsSnapshotMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestPreparedCandidateInspectorReusesOneSetupForFourReads(t *testing.T) {
+	requireSnapshotGit(t)
+	repo, snapshot := preparedCandidateSnapshot(t)
+	original := gitCommandContext
+	children := 0
+	gitCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		children++
+		return original(ctx, name, args...)
+	}
+	t.Cleanup(func() { gitCommandContext = original })
+	inspector, err := (SnapshotBuilder{Repo: repo}).PrepareCandidateInspector(t.Context(), snapshot)
+	if err != nil {
+		t.Fatalf("PrepareCandidateInspector() error = %v", err)
+	}
+	if got := inspector.FrozenCandidateContext(); !reflect.DeepEqual(manifestPaths(got.ChangedPathManifest), snapshot.Paths) {
+		t.Fatalf("prepared manifest paths = %v, want %v", manifestPaths(got.ChangedPathManifest), snapshot.Paths)
+	}
+	for _, read := range []struct {
+		operation string
+		pathIndex int
+	}{
+		{"name-status", -1}, {"numstat", -1}, {"patch", 0}, {"patch", 1},
+	} {
+		if _, err := inspector.Inspect(t.Context(), read.operation, read.pathIndex, ""); err != nil {
+			t.Fatalf("Inspect(%q, %d) error = %v", read.operation, read.pathIndex, err)
+		}
+	}
+	if children != 11 {
+		t.Fatalf("Git children for prepare plus four reads = %d, want 11", children)
+	}
+	builder := SnapshotBuilder{Repo: repo}
+	for _, inspection := range []struct {
+		operation string
+		pathIndex int
+		side      string
+	}{
+		{"name-status", -1, ""}, {"numstat", -1, ""}, {"stat", 0, ""},
+		{"patch", 0, ""}, {"object", 0, "base"}, {"object", 0, "candidate"},
+	} {
+		got, err := inspector.Inspect(t.Context(), inspection.operation, inspection.pathIndex, inspection.side)
+		if err != nil {
+			t.Fatalf("prepared Inspect(%q, %d, %q): %v", inspection.operation, inspection.pathIndex, inspection.side, err)
+		}
+		want, err := builder.InspectCandidate(t.Context(), snapshot, inspection.operation, inspection.pathIndex, inspection.side)
+		if err != nil {
+			t.Fatalf("one-shot InspectCandidate(%q, %d, %q): %v", inspection.operation, inspection.pathIndex, inspection.side, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("prepared Inspect(%q, %d, %q) differs from one-shot", inspection.operation, inspection.pathIndex, inspection.side)
+		}
+	}
+	if _, err := inspector.Inspect(t.Context(), "patch", -1, ""); err == nil {
+		t.Fatal("Inspect() error = nil, want missing canonical path index refusal")
+	}
+	if err := inspector.Close(); err != nil {
+		t.Fatalf("Close() after inspection error = %v", err)
+	}
+	calls := 0
+	failing := &PreparedCandidateInspector{cleanup: func() error {
+		calls++
+		return errors.New("cleanup failed")
+	}}
+	if err := failing.Close(); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("Close() error = %v, want cleanup failure", err)
+	}
+	if err := failing.Close(); err != nil {
+		t.Fatalf("second Close() = %v, want idempotent cleanup", err)
+	}
+	if calls != 1 {
+		t.Fatalf("cleanup calls = %d, want 1", calls)
+	}
+}
+
+func preparedCandidateSnapshot(t *testing.T) (string, Snapshot) {
+	repo := initSnapshotRepo(t)
+	writeSnapshotFile(t, repo, "one.txt", "base\n")
+	writeSnapshotFile(t, repo, "two.txt", "base\n")
+	gitSnapshot(t, repo, "add", "--", "one.txt", "two.txt")
+	gitSnapshot(t, repo, "commit", "-m", "base")
+	writeSnapshotFile(t, repo, "one.txt", "candidate one.txt\n")
+	writeSnapshotFile(t, repo, "two.txt", "candidate two.txt\n")
+	gitSnapshot(t, repo, "add", "--", "one.txt", "two.txt")
+	gitSnapshot(t, repo, "commit", "-m", "candidate")
+	candidate := strings.TrimSpace(gitSnapshot(t, repo, "rev-parse", "HEAD"))
+	snapshot, err := (SnapshotBuilder{Repo: repo}).Build(t.Context(), Target{Kind: TargetExactRevision, Revision: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, snapshot
+}
+
 func gitSnapshotInput(t *testing.T, repo string, input []byte, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
@@ -414,7 +512,7 @@ func frozenCandidateGitDiff(t *testing.T, repo string, frozen FrozenCandidateCon
 	if err != nil {
 		t.Fatalf("create isolated reviewer Git environment: %v", err)
 	}
-	t.Cleanup(cleanup)
+	t.Cleanup(func() { _ = cleanup() })
 	args := []string{
 		"--no-pager", "diff-tree", "-p", "--binary", "--full-index", "--no-color", "--no-renames",
 		"--no-ext-diff", "--no-textconv", "--diff-algorithm=myers", "--no-indent-heuristic", "--unified=3",

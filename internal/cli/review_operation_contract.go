@@ -88,8 +88,8 @@ var reviewIntegrationOperationRegistry = []reviewIntegrationOperationMetadata{
 	{Command: "recover", Operation: "review.recover", Label: "Review RECOVER"},
 	{Command: "repair", Operation: "review.repair", Label: "Review REPAIR", Negotiated: true, ValueFlags: []string{"cwd", "class", "lineage", "expected-revision", "cause", "disposition", "repository-binding", "actor", "reason", "maintainer-authorization"}, BoolFlags: []string{"preflight"}, MutatesAuthority: true, JoinOnTimeout: true, ReadOnlyFlag: "preflight"},
 	{Command: "retry-final-verification", Operation: ReviewIntegrationOperationRetryFinalVerification, Label: "Review RETRY-FINAL-VERIFICATION", Negotiated: true, ValueFlags: []string{"cwd", "predecessor-lineage", "expected-predecessor-revision", "successor-lineage", "incident", "actor", "reason", "maintainer-authorization"}, MutatesAuthority: true, JoinOnTimeout: true},
-	{Command: "start", Operation: "review.start", Label: "Review START", Negotiated: true, ValueFlags: []string{"cwd", "agent", "target", "lineage", "policy", "focus", "base-ref", "projection", "trace", "consent", "locale"}, BoolFlags: []string{"committed-only", "workspace-overlay"}, MutatesAuthority: true},
-	{Command: "status", Operation: "review.status", Label: "Review STATUS", Negotiated: true, ValueFlags: []string{"cwd", "agent", "lineage", "projection", "base-ref", "base-tree", "gate", "recovery-successor-lineage", "recovery-reason", "recovery-actor", "recovery-authorization", "repair-actor", "repair-reason", "repair-authorization"}, BoolFlags: []string{"workspace-overlay", "action-eligibility", "next-transition"}},
+	{Command: "start", Operation: "review.start", Label: "Review START", Negotiated: true, ValueFlags: []string{"cwd", "agent", "target", "lineage", "policy", "focus", "base-ref", "projection", "trace", "consent", "locale", "untracked-scope", "intended-untracked", "expected-untracked-inventory"}, BoolFlags: []string{"committed-only", "workspace-overlay"}, MutatesAuthority: true},
+	{Command: "status", Operation: "review.status", Label: "Review STATUS", Negotiated: true, ValueFlags: []string{"cwd", "agent", "lineage", "projection", "base-ref", "base-tree", "gate", "recovery-successor-lineage", "recovery-reason", "recovery-actor", "recovery-authorization", "repair-actor", "repair-reason", "repair-authorization", "untracked-scope", "intended-untracked", "expected-untracked-inventory"}, BoolFlags: []string{"committed-only", "workspace-overlay", "action-eligibility", "next-transition"}},
 	{Command: "validate", Operation: ReviewIntegrationOperationValidate, Label: "Review VALIDATE", Negotiated: true, ValueFlags: []string{"cwd", "lineage", "gate", "base-ref", "pre-pr-ci-attestation", "policy", "release-configuration", "release-generated", "release-provenance", "release-publication-boundary", "release-evidence-freshness"}},
 }
 
@@ -276,6 +276,25 @@ var reviewPreflightDirectRouteUncompletableReason = reviewPreflightReason{
 	Code:       "direct_start_uncompletable",
 	Message:    "The direct (non-negotiated) review start route cannot host a completable review: no reviewer lens can capture a result against the lineage it would create. Rerun with the negotiated contract form.",
 	NextAction: "review.start",
+}
+
+// reviewPreflightEmptyCandidateReason classifies a START -- negotiated or
+// direct -- whose frozen candidate has zero changed paths: a TargetCurrentChanges
+// candidate on a clean, fully-committed worktree (base_tree == candidate_tree
+// == HEAD), or a TargetBaseDiff candidate whose named base nets no manifest
+// entries (a mode-only or truly-empty diff). Left unguarded, either shape
+// would freeze, pass risk assessment, and mint an approved receipt that
+// inspected nothing -- issue #2586 (a stale zero-delta receipt discovered
+// as "governing" a later, genuinely unreviewed candidate that happens to
+// share its final tree). `base_ref` is already in the published
+// required_inputs enum, and `next_action: correct_request` is honest because
+// the caller genuinely must supply it: the system never auto-derives a base
+// ref (e.g. HEAD~1) on the caller's behalf.
+var reviewPreflightEmptyCandidateReason = reviewPreflightReason{
+	Code:           "empty_candidate_scope",
+	Message:        "The review candidate has no pending changes to freeze; name the base to compare against before retrying.",
+	RequiredInputs: []string{"base_ref"},
+	NextAction:     "correct_request",
 }
 
 // reviewPreflightMissingInputsReason names the contract-level inputs a caller
