@@ -86,6 +86,8 @@ type sddRuntimeStatus struct {
 	Attempts []struct {
 		Ordinal                    int    `json:"ordinal"`
 		Outcome                    string `json:"outcome"`
+		BeginCandidateTree         string `json:"begin_candidate_tree"`
+		FinishCandidateTree        string `json:"finish_candidate_tree"`
 		EvidenceRevision           string `json:"evidence_revision"`
 		RemediatesEvidenceRevision string `json:"remediates_evidence_revision"`
 	} `json:"attempts"`
@@ -100,8 +102,10 @@ type sddRuntimeStatus struct {
 }
 
 type sddCompactAttemptResult struct {
-	State string `json:"state"`
-	Token string `json:"token"`
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+	Token  string `json:"token"`
+	Detail string `json:"detail"`
 }
 
 // sddStatusV1 is the subset of `sdd-status --json` the kill-switch journeys read.
