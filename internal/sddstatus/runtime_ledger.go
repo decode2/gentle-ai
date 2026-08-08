@@ -2673,6 +2673,8 @@ func runtimeChainFailedAttempt(attempts []RuntimeAttempt) (RuntimeAttempt, bool)
 // be disabled with no binding, the chain must still hold the failed evidence
 // being repaired, and the corrected evidence must be fresh and distinct. No
 // approval is fabricated -- one that a human already gave is honored.
+// The waiver is single-use: runtimeChainFailedAttempt stops at the first later
+// AttemptPassed, so the failed evidence cannot authorize another settlement.
 func runtimeEvidenceOnlyRetryAuthorized(reset *RuntimeReset, failed RuntimeAttempt, candidateTree string) bool {
 	if reset == nil || reset.Actor == "" || reset.Reason == "" || candidateTree == "" {
 		return false

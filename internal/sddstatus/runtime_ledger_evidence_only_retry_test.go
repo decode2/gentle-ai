@@ -91,6 +91,31 @@ func TestRuntimeEvidenceOnlyRetrySettlesOnAuditedResetAuthority(t *testing.T) {
 	}
 }
 
+func TestRuntimeEvidenceOnlyRetryRejectsMismatchedResetAuthority(t *testing.T) {
+	failed := RuntimeAttempt{ObjectiveID: "failed-objective", ObjectiveGeneration: 7}
+	tests := []struct {
+		name               string
+		candidateTree      string
+		previousObjective  string
+		previousGeneration int
+	}{
+		{name: "different reset candidate tree", candidateTree: "other-tree", previousObjective: failed.ObjectiveID, previousGeneration: failed.ObjectiveGeneration},
+		{name: "different previous objective", candidateTree: "candidate-tree", previousObjective: "other-objective", previousGeneration: failed.ObjectiveGeneration},
+		{name: "different previous generation", candidateTree: "candidate-tree", previousObjective: failed.ObjectiveID, previousGeneration: failed.ObjectiveGeneration + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reset := &RuntimeReset{
+				Actor: "maintainer", Reason: "authorize one evidence-only retry",
+				ResetCandidateTree: tt.candidateTree, PreviousObjectiveID: tt.previousObjective, PreviousGeneration: tt.previousGeneration,
+			}
+			if runtimeEvidenceOnlyRetryAuthorized(reset, failed, "candidate-tree") {
+				t.Fatal("mismatched reset authorized an evidence-only retry")
+			}
+		})
+	}
+}
+
 // The waiver is scoped to the audited reset that authorized it. A failure with
 // attempts still available needs no reset, so an unchanged-candidate pass there
 // is the laundering the original demand exists to refuse, and it must stay
