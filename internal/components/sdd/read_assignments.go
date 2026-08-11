@@ -9,14 +9,19 @@ import (
 )
 
 // configurableAgentSet is the set of valid agent names that may appear in
-// opencode.json. It includes SDD, Judgment Day, review, and coordinator agents.
+// opencode.json. Direct roles are included as a separate managed family; they
+// are intentionally not added to opencode.ConfigurableAgentPhases().
 var configurableAgentSet = buildConfigurableAgentSet()
 
 func buildConfigurableAgentSet() map[string]bool {
 	phases := opencode.ConfigurableAgentPhases()
-	set := make(map[string]bool, len(phases)+1)
+	directRoles := opencode.DirectRoles()
+	set := make(map[string]bool, len(phases)+len(directRoles)+1)
 	for _, p := range phases {
 		set[p] = true
+	}
+	for _, role := range directRoles {
+		set[role] = true
 	}
 	set["gentle-orchestrator"] = true
 	// Backward-compatible read alias for configs that have not been synced yet.
@@ -34,8 +39,9 @@ func ReadCurrentProfiles(settingsPath string) ([]model.Profile, error) {
 // ReadCurrentModelAssignments reads the agent definitions from opencode.json
 // at settingsPath and extracts the "model" field for each configurable agent.
 //
-// Only agents whose names match a configurable agent phase (SDD phases, JD agents
-// via opencode.ConfigurableAgentPhases()) or "gentle-orchestrator" are included.
+// Only agents whose names match a configurable agent phase (SDD phases, JD and
+// review agents via opencode.ConfigurableAgentPhases()), a managed direct role,
+// or "gentle-orchestrator" are included.
 // Agents without a "model" field, or with a malformed model value, are silently
 // skipped.
 //

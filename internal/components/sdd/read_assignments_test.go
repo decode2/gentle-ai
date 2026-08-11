@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 )
 
 func TestReadCurrentModelAssignments(t *testing.T) {
@@ -17,6 +18,8 @@ func TestReadCurrentModelAssignments(t *testing.T) {
     "gentle-orchestrator": { "model": "anthropic:claude-sonnet-4-20250514" },
     "sdd-apply": { "model": "openai:gpt-4o" },
     "sdd-verify": { "model": "anthropic:claude-haiku-3-20240307" },
+    "gentle-reviewer": { "model": "openai:gpt-5", "variant": "high" },
+    "gentle-worker": { "model": "openrouter/qwen/qwen3.6-plus:free" },
     "some-other-agent": { "model": "anthropic:claude-sonnet-4-20250514" }
   }
 }`
@@ -37,6 +40,11 @@ func TestReadCurrentModelAssignments(t *testing.T) {
 		{"gentle-orchestrator", "anthropic", "claude-sonnet-4-20250514"},
 		{"sdd-apply", "openai", "gpt-4o"},
 		{"sdd-verify", "anthropic", "claude-haiku-3-20240307"},
+		{opencode.GentleReviewerAgent, "openai", "gpt-5"},
+		{opencode.GentleWorkerAgent, "openrouter", "qwen/qwen3.6-plus:free"},
+	}
+	if got[opencode.GentleReviewerAgent].Effort != "high" {
+		t.Fatalf("managed reviewer effort = %q, want high", got[opencode.GentleReviewerAgent].Effort)
 	}
 
 	for _, tt := range tests {

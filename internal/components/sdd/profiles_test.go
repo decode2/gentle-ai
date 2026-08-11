@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -84,6 +85,8 @@ func TestValidateProfileName_Invalid(t *testing.T) {
 		{"", "empty"},
 		{"default", "reserved word"},
 		{"sdd-orchestrator", "reserved word"},
+		{"gentle-reviewer", "reserved direct role"},
+		{"gentle-worker", "reserved direct role"},
 		{"my profile", "contains space"},
 		{"has spaces", "contains spaces"},
 		{"has_underscores", "slug convention: lowercase + hyphens only"},
@@ -120,6 +123,8 @@ func TestProfileAgentKeys_Named(t *testing.T) {
 		"jd-judge-a-cheap",
 		"jd-judge-b-cheap",
 		"jd-fix-agent-cheap",
+		"gentle-reviewer-cheap",
+		"gentle-worker-cheap",
 	}
 
 	if len(keys) != len(want) {
@@ -171,8 +176,8 @@ func TestProfileAgentKeys_Default(t *testing.T) {
 }
 
 func TestProfileAgentKeys_Count(t *testing.T) {
-	if n := len(ProfileAgentKeys("cheap")); n != 14 {
-		t.Errorf("ProfileAgentKeys(\"cheap\") = %d keys, want 14", n)
+	if n := len(ProfileAgentKeys("cheap")); n != 16 {
+		t.Errorf("ProfileAgentKeys(\"cheap\") = %d keys, want 16", n)
 	}
 	if n := len(ProfileAgentKeys("")); n != 11 {
 		t.Errorf("ProfileAgentKeys(\"\") = %d keys, want 11", n)
@@ -384,6 +389,39 @@ func TestDetectProfiles_ReadsProfileScopedJDAssignments(t *testing.T) {
 	}
 }
 
+func TestDetectProfiles_ReadsProfileScopedDirectRoleAssignments(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "opencode.json")
+	content := `{
+  "agent": {
+    "sdd-orchestrator-cheap": { "mode": "primary", "model": "anthropic/claude-haiku-3-5" },
+    "gentle-reviewer-cheap": { "mode": "subagent", "model": "openai/gpt-5", "variant": "high" },
+    "gentle-worker-cheap": { "mode": "subagent", "model": "openrouter/qwen/qwen3.6-plus:free" }
+  }
+}`
+	if err := os.WriteFile(settingsPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	profiles, err := DetectProfiles(settingsPath)
+	if err != nil {
+		t.Fatalf("DetectProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("DetectProfiles() returned %d profiles, want 1", len(profiles))
+	}
+
+	want := map[string]model.ModelAssignment{
+		opencode.GentleReviewerAgent: {ProviderID: "openai", ModelID: "gpt-5", Effort: "high"},
+		opencode.GentleWorkerAgent:   {ProviderID: "openrouter", ModelID: "qwen/qwen3.6-plus:free"},
+	}
+	for role, expected := range want {
+		if got := profiles[0].PhaseAssignments[role]; !reflect.DeepEqual(got, expected) {
+			t.Errorf("PhaseAssignments[%q] = %+v, want %+v", role, got, expected)
+		}
+	}
+}
+
 // ─── GenerateProfileOverlay ───────────────────────────────────────────────
 
 func makeHaikuProfile() model.Profile {
@@ -429,9 +467,9 @@ func TestGenerateProfileOverlay_Structure(t *testing.T) {
 		t.Fatal("overlay 'agent' is not an object")
 	}
 
-	// Must have 11 agents
-	if len(agentMap) != 11 {
-		t.Errorf("agent map has %d entries, want 11", len(agentMap))
+	// Must have the 11 SDD agents plus the two managed direct roles.
+	if len(agentMap) != 13 {
+		t.Errorf("agent map has %d entries, want 13", len(agentMap))
 	}
 
 	// Orchestrator checks
@@ -477,6 +515,78 @@ func TestGenerateProfileOverlay_Structure(t *testing.T) {
 		if !strings.HasPrefix(prompt, "{file:") {
 			t.Errorf("sub-agent %q prompt = %q, want {file:...} reference", key, prompt)
 		}
+	}
+
+	for _, role := range opencode.DirectRoles() {
+		key := role + "-cheap"
+		agent, ok := agentMap[key].(map[string]any)
+		if !ok {
+			t.Fatalf("missing managed direct role %q", key)
+		}
+		if agent["mode"] != "subagent" || agent["hidden"] != true {
+			t.Fatalf("direct role %q mode/hidden = %#v/%#v", key, agent["mode"], agent["hidden"])
+		}
+		if _, ok := agent["tools"]; ok {
+			t.Fatalf("direct role %q uses duplicated tools permissions", key)
+		}
+	}
+}
+
+func TestGenerateProfileOverlay_DirectRolesUseCanonicalDefinitionsAndAssignments(t *testing.T) {
+	home := t.TempDir()
+	profile := makeHaikuProfile()
+	profile.PhaseAssignments[opencode.GentleReviewerAgent] = model.ModelAssignment{
+		ProviderID: "openai",
+		ModelID:    "gpt-5",
+		Effort:     "high",
+	}
+
+	overlay, err := GenerateProfileOverlay(profile, home, openCodeSettingsPathForTest(home), map[string]model.ModelAssignment{
+		opencode.GentleWorkerAgent: {ProviderID: "openrouter", ModelID: "qwen/qwen3.6-plus:free"},
+	}, "")
+	if err != nil {
+		t.Fatalf("GenerateProfileOverlay() error = %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(overlay, &root); err != nil {
+		t.Fatalf("overlay is not valid JSON: %v", err)
+	}
+	agentMap := root["agent"].(map[string]any)
+	for _, role := range opencode.DirectRoles() {
+		definition, ok := opencode.DirectRoleDefinitionFor(role)
+		if !ok {
+			t.Fatalf("missing canonical definition for %q", role)
+		}
+		key := role + "-cheap"
+		agent := agentMap[key].(map[string]any)
+		if agent["description"] != definition.Description || agent["prompt"] != definition.Prompt {
+			t.Fatalf("%s does not use its canonical definition", key)
+		}
+		if !reflect.DeepEqual(agent["permission"], definition.Permission) {
+			t.Fatalf("%s permission drifted from canonical definition: %#v", key, agent["permission"])
+		}
+		if !strings.Contains(agent["prompt"].(string), "non-SDD") {
+			t.Fatalf("%s prompt lost direct-role boundary", key)
+		}
+		if role == opencode.GentleReviewerAgent {
+			bash := definition.Permission["bash"].(map[string]any)
+			if bash["git branch --show-current*"] != "allow" || bash["git branch --list*"] != "allow" || bash["git branch*"] != nil {
+				t.Fatalf("reviewer branch permissions are not narrowly read-only: %#v", bash)
+			}
+		}
+	}
+
+	reviewer := agentMap[opencode.GentleReviewerAgent+"-cheap"].(map[string]any)
+	if reviewer["model"] != "openai/gpt-5" || reviewer["variant"] != "high" {
+		t.Fatalf("reviewer assignment = %#v/%#v, want openai/gpt-5/high", reviewer["model"], reviewer["variant"])
+	}
+	worker := agentMap[opencode.GentleWorkerAgent+"-cheap"].(map[string]any)
+	if worker["model"] != "openrouter/qwen/qwen3.6-plus:free" {
+		t.Fatalf("worker model = %v, want openrouter/qwen/qwen3.6-plus:free", worker["model"])
+	}
+	if worker["variant"] != "" {
+		t.Fatalf("worker variant = %v, want empty string", worker["variant"])
 	}
 }
 
@@ -539,8 +649,8 @@ func TestGenerateProfileOverlay_JDAssignmentsGenerateSuffixedAgents(t *testing.T
 	}
 	agentMap := root["agent"].(map[string]any)
 
-	if len(agentMap) != 14 {
-		t.Fatalf("agent map has %d entries, want 14; keys: %v", len(agentMap), keysOf(agentMap))
+	if len(agentMap) != 16 {
+		t.Fatalf("agent map has %d entries, want 16; keys: %v", len(agentMap), keysOf(agentMap))
 	}
 
 	checks := map[string]string{
@@ -697,6 +807,20 @@ func TestDefaultOverlayTaskPermissions_ExplicitAllowlist(t *testing.T) {
 
 			expected := expectedTaskPermissions("")
 			assertExactTaskPermissions(t, taskMap, expected)
+
+			for _, role := range opencode.DirectRoles() {
+				definition, ok := opencode.DirectRoleDefinitionFor(role)
+				if !ok {
+					t.Fatalf("missing canonical definition for %q", role)
+				}
+				agent, ok := agentMap[role].(map[string]any)
+				if !ok {
+					t.Fatalf("default overlay missing %q", role)
+				}
+				if agent["description"] != definition.Description || agent["prompt"] != definition.Prompt {
+					t.Fatalf("default overlay role %q drifted from canonical definition", role)
+				}
+			}
 		})
 	}
 }
@@ -762,6 +886,11 @@ func TestGenerateProfileOverlay_TaskPermissionsBlockCrossProfileDelegation(t *te
 	for _, phase := range profilePhaseOrder {
 		if got := taskMap[phase+"-premium"]; got != nil {
 			t.Errorf("unexpected cross-profile permission for %q: %v", phase+"-premium", got)
+		}
+	}
+	for _, role := range opencode.DirectRoles() {
+		if got := taskMap[role+"-premium"]; got != nil {
+			t.Errorf("unexpected cross-profile permission for %q: %v", role+"-premium", got)
 		}
 	}
 	if got := taskMap["sdd-*"]; got != nil {
@@ -835,9 +964,16 @@ func TestGenerateProfileOverlay_OrchestratorPromptSuffixed(t *testing.T) {
 	for _, wanted := range []string{
 		"Gentle AI",
 		"| orchestrator | anthropic/claude-haiku-3-5 |",
+		"`gentle-reviewer-cheap`",
+		"`gentle-worker-cheap`",
 	} {
 		if !strings.Contains(prompt, wanted) {
 			t.Fatalf("profile orchestrator prompt missing %q", wanted)
+		}
+	}
+	for _, role := range opencode.DirectRoles() {
+		if strings.Contains(prompt, "`"+role+"`") {
+			t.Fatalf("profile orchestrator prompt routes to unsuffixed direct role %q", role)
 		}
 	}
 }
@@ -878,7 +1014,7 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "opencode.json")
 
-	// Build JSON with default (11 keys) + cheap (14 keys) = 25 total
+	// Build JSON with default (13 keys) + cheap (16 keys) = 29 total.
 	agents := make(map[string]any)
 
 	// Default agents (no suffix)
@@ -886,6 +1022,9 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 		"sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks",
 		"sdd-apply", "sdd-verify", "sdd-archive", "sdd-onboard"} {
 		agents[key] = map[string]any{"mode": "primary"}
+	}
+	for _, role := range opencode.DirectRoles() {
+		agents[role] = map[string]any{"mode": "subagent"}
 	}
 	// cheap profile
 	for _, key := range []string{"sdd-orchestrator-cheap", "sdd-init-cheap", "sdd-explore-cheap",
@@ -895,6 +1034,9 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 	}
 	for _, key := range []string{"jd-judge-a-cheap", "jd-judge-b-cheap", "jd-fix-agent-cheap"} {
 		agents[key] = map[string]any{"mode": "subagent"}
+	}
+	for _, role := range opencode.DirectRoles() {
+		agents[role+"-cheap"] = map[string]any{"mode": "subagent"}
 	}
 
 	root := map[string]any{"agent": agents}
@@ -924,9 +1066,9 @@ func TestRemoveProfileAgents_RemovesProfileSDDAndJDAgents(t *testing.T) {
 
 	agentMap := root["agent"].(map[string]any)
 
-	// 11 default keys should remain
-	if len(agentMap) != 11 {
-		t.Errorf("after RemoveProfileAgents, agent count = %d, want 11; keys: %v", len(agentMap), keysOf(agentMap))
+	// 11 default SDD keys plus two unsuffixed direct roles should remain.
+	if len(agentMap) != 13 {
+		t.Errorf("after RemoveProfileAgents, agent count = %d, want 13; keys: %v", len(agentMap), keysOf(agentMap))
 	}
 
 	// No cheap keys remain
@@ -947,6 +1089,11 @@ func TestRemoveProfileAgents_RemovesProfileSDDAndJDAgents(t *testing.T) {
 		"sdd-apply", "sdd-verify", "sdd-archive", "sdd-onboard"} {
 		if _, ok := agentMap[key]; !ok {
 			t.Errorf("default key %q was removed — should be preserved", key)
+		}
+	}
+	for _, role := range opencode.DirectRoles() {
+		if _, ok := agentMap[role]; !ok {
+			t.Errorf("default direct role %q was removed", role)
 		}
 	}
 }
@@ -1026,12 +1173,10 @@ func expectedTaskPermissions(suffix string) map[string]any {
 	for _, jd := range opencode.JDPhases() {
 		permissions[jd] = "allow"
 	}
-	// Managed direct roles belong to the default SDD overlay. Named profile
-	// overlays do not own those unsuffixed definitions yet.
-	if suffix == "" {
-		for _, role := range []string{opencode.GentleReviewerAgent, opencode.GentleWorkerAgent} {
-			permissions[role] = "allow"
-		}
+	// Named profiles delegate to their matching suffixed direct roles; the
+	// default overlay keeps the unsuffixed keys from slice 1.
+	for _, role := range opencode.DirectRoles() {
+		permissions[role+suffix] = "allow"
 	}
 	return permissions
 }
