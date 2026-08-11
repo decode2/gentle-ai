@@ -1026,6 +1026,13 @@ func expectedTaskPermissions(suffix string) map[string]any {
 	for _, jd := range opencode.JDPhases() {
 		permissions[jd] = "allow"
 	}
+	// Managed direct roles belong to the default SDD overlay. Named profile
+	// overlays do not own those unsuffixed definitions yet.
+	if suffix == "" {
+		for _, role := range []string{opencode.GentleReviewerAgent, opencode.GentleWorkerAgent} {
+			permissions[role] = "allow"
+		}
+	}
 	return permissions
 }
 

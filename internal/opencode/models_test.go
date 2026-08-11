@@ -390,6 +390,22 @@ func TestReviewPhasesCompleteRuntimeSet(t *testing.T) {
 	}
 }
 
+func TestDirectRoleFamilyIsSeparateFromLifecycleFamilies(t *testing.T) {
+	directRoles := []string{GentleReviewerAgent, GentleWorkerAgent}
+
+	lifecycle := append([]string{}, SDDPhases()...)
+	lifecycle = append(lifecycle, JDPhases()...)
+	lifecycle = append(lifecycle, ReviewPhases()...)
+	lifecycle = append(lifecycle, ConfigurableAgentPhases()...)
+	for _, role := range directRoles {
+		for _, name := range lifecycle {
+			if role == name {
+				t.Fatalf("direct role %q leaked into lifecycle/configurable role set", role)
+			}
+		}
+	}
+}
+
 func TestDefaultVariantsCachePath(t *testing.T) {
 	got := DefaultVariantsCachePath()
 	if got == "" {

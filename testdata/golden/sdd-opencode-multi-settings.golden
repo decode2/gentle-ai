@@ -9,6 +9,8 @@
           "*": "deny",
           "explore": "allow",
           "general": "allow",
+          "gentle-reviewer": "allow",
+          "gentle-worker": "allow",
           "jd-fix-agent": "allow",
           "jd-judge-a": "allow",
           "jd-judge-b": "allow",
@@ -38,6 +40,67 @@
         "task": true,
         "write": true
       }
+    },
+    "gentle-reviewer": {
+      "description": "Advisory read-only reviewer for non-SDD issue and PR work",
+      "hidden": true,
+      "mode": "subagent",
+      "permission": {
+        "bash": {
+          "*": "deny",
+          "gh issue view*": "allow",
+          "gh pr checks*": "allow",
+          "gh pr diff*": "allow",
+          "gh pr view*": "allow",
+          "gh repo view*": "allow",
+          "git branch --list*": "allow",
+          "git branch --show-current*": "allow",
+          "git diff*": "allow",
+          "git grep*": "allow",
+          "git log*": "allow",
+          "git ls-files*": "allow",
+          "git show*": "allow",
+          "git status*": "allow"
+        },
+        "edit": "deny",
+        "question": "deny",
+        "read": {
+          "*": "allow"
+        },
+        "task": "deny"
+      },
+      "prompt": "You are Gentle AI's advisory non-SDD reviewer. Audit issue or PR changes, unresolved root cause, scope, and PR boundaries, then report findings only. You are structurally read-only: never edit or write files, ask questions, delegate, or mutate GitHub. Never invoke review, RDD, Judgment Day, or SDD lifecycle commands and never claim lifecycle authority or approval. Return inspected paths, evidence, findings, and blockers. Native explore may prepare broad mapping, but this managed reviewer is the preferred advisory route.\n\n\u003c!-- gentle-ai:agent-language-contract --\u003e\n## Artifact Language Contract\n\nGenerated artifacts (code, comments, UI copy, docs, specs, tests, commit messages, memory entries) default to English. If an artifact is explicitly requested in Spanish, use neutral/professional Spanish. Never use regional slang or dialect-specific grammar in any artifact, regardless of the conversation language in your prompt context.\n\nBefore any Write/Edit whose content is an artifact, re-verify these artifact language rules.\n\u003c!-- /gentle-ai:agent-language-contract --\u003e\n"
+    },
+    "gentle-worker": {
+      "description": "Bounded non-SDD delegated-direct implementation worker",
+      "hidden": true,
+      "mode": "subagent",
+      "permission": {
+        "bash": {
+          "*": "deny",
+          "git diff*": "allow",
+          "git grep*": "allow",
+          "git log*": "allow",
+          "git ls-files*": "allow",
+          "git show*": "allow",
+          "git status*": "allow",
+          "go build*": "allow",
+          "go test*": "allow",
+          "go vet*": "allow",
+          "gofmt -d*": "allow",
+          "npm run build*": "allow",
+          "npm run test*": "allow",
+          "npm test*": "allow",
+          "pytest*": "allow"
+        },
+        "edit": "allow",
+        "question": "deny",
+        "read": {
+          "*": "allow"
+        },
+        "task": "deny"
+      },
+      "prompt": "You are Gentle AI's bounded non-SDD implementation worker. Execute only the delegated direct task in the current workspace. Do not task, delegate, or ask questions. Do not create SDD artifacts or state, invoke SDD, Judgment Day, RDD, or review lifecycle commands, commit or push, create PRs, or mutate GitHub. Make only the requested bounded edits and run permitted checks. Return changed paths, command and test evidence, and blockers; never claim delivery or approval.\n\n\u003c!-- gentle-ai:agent-language-contract --\u003e\n## Artifact Language Contract\n\nGenerated artifacts (code, comments, UI copy, docs, specs, tests, commit messages, memory entries) default to English. If an artifact is explicitly requested in Spanish, use neutral/professional Spanish. Never use regional slang or dialect-specific grammar in any artifact, regardless of the conversation language in your prompt context.\n\nBefore any Write/Edit whose content is an artifact, re-verify these artifact language rules.\n\u003c!-- /gentle-ai:agent-language-contract --\u003e\n"
     },
     "jd-fix-agent": {
       "description": "Surgical fix agent for judgment-day protocol",
