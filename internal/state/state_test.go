@@ -11,6 +11,89 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 )
 
+func fullyPopulatedInstallState() InstallState {
+	lastUpdateCheck := time.Date(2026, 8, 12, 9, 30, 0, 0, time.UTC)
+	rddModeRecordedAt := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	return InstallState{
+		InstalledAgents:          []string{"claude-code", "opencode"},
+		ManagedAssetDigest:       "sha256:managed-assets",
+		SelectionConfigured:      true,
+		Components:               []model.ComponentID{model.ComponentEngram, model.ComponentSDD},
+		Skills:                   []model.SkillID{model.SkillSDDInit, model.SkillWorkUnitCommits},
+		Preset:                   model.PresetCustom,
+		SDDMode:                  model.SDDModeMulti,
+		StrictTDD:                true,
+		CommunityTools:           []string{"codegraph", "jq"},
+		CommunityToolsConfigured: true,
+		ClaudeModelAssignments:   map[string]string{"sdd-explore": "sonnet"},
+		ClaudePhaseAssignments: map[string]ClaudePhaseAssignmentState{
+			"sdd-apply": {Model: "opus", Effort: "max"},
+		},
+		KiroModelAssignments: map[string]string{"sdd-design": "opus"},
+		CodexModelAssignments: map[string]string{
+			"sdd-verify": "high",
+		},
+		CodexOrchestratorAssignment: &CodexOrchestratorAssignmentState{Model: "gpt-5.6-luna", Effort: "high"},
+		CodexCarrilModelAssignments: map[string]string{
+			"sdd-strong": "gpt-5.6-luna",
+			"sdd-cheap":  "gpt-5.4-mini",
+		},
+		CodexPhaseModelAssignments: map[string]string{
+			"sdd-propose": "gpt-5.6-sol",
+		},
+		ModelAssignments: map[string]ModelAssignmentState{
+			"sdd-init": {ProviderID: "anthropic", ModelID: "claude-sonnet-4", Effort: "medium"},
+		},
+		Persona:           "neutral",
+		PersonaPresent:    true,
+		LastUpdateCheck:   &lastUpdateCheck,
+		PendingSync:       true,
+		RDDMode:           "off",
+		RDDModeRecordedAt: &rddModeRecordedAt,
+		BackgroundIntent:  model.OpenCodeBackgroundOn,
+	}
+}
+
+func TestInstallStatePreservesEveryField(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		run  func(t *testing.T, want InstallState) InstallState
+	}{
+		{
+			name: "JSON round-trip",
+			run: func(t *testing.T, want InstallState) InstallState {
+				home := t.TempDir()
+				if err := Write(home, want); err != nil {
+					t.Fatal(err)
+				}
+				got, err := Read(home)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			},
+		},
+		{
+			name: "MergeAgents",
+			run: func(_ *testing.T, want InstallState) InstallState {
+				return MergeAgents(want, []string{"opencode", "codex"})
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			want := fullyPopulatedInstallState()
+			wantAfter := want
+			if tt.name == "MergeAgents" {
+				wantAfter.InstalledAgents = []string{"claude-code", "opencode", "codex"}
+			}
+			got := tt.run(t, want)
+			if !reflect.DeepEqual(got, wantAfter) {
+				t.Fatalf("InstallState = %#v, want %#v", got, wantAfter)
+			}
+		})
+	}
+}
+
 // TestMergeAgents verifies that MergeAgents appends new agents to existing
 // installed_agents with deduplication and preserves all other fields.
 func TestMergeAgents(t *testing.T) {
