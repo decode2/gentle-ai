@@ -4228,6 +4228,146 @@ func TestInjectOpenCodePluginIdempotent(t *testing.T) {
 	}
 }
 
+func TestInjectOpenCodeDefaultRolesAreIdempotentAndRefreshDrift(t *testing.T) {
+	home := t.TempDir()
+	opts := InjectOptions{OpenCodeModelAssignments: map[string]model.ModelAssignment{
+		"gentle-reviewer": {ProviderID: "openai", ModelID: "gpt-5.6-sol", Effort: "high"},
+	}}
+	first, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, opts)
+	if err != nil {
+		t.Fatalf("first Inject() error = %v", err)
+	}
+	if !first.Changed {
+		t.Fatal("first Inject() changed = false, want true")
+	}
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	before, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read first settings: %v", err)
+	}
+	second, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, opts)
+	if err != nil {
+		t.Fatalf("second Inject() error = %v", err)
+	}
+	if second.Changed {
+		t.Fatal("second Inject() changed = true, want idempotent")
+	}
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read second settings: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("repeated OpenCode injection changed already-managed role bytes")
+	}
+	initialAgents := readOpenCodeAgents(t, settingsPath)
+	for _, role := range opencodemodel.DirectRoles() {
+		agent := initialAgents[role].(map[string]any)
+		identity := opencodemodel.ManagedAgentIdentity{Owner: opencodemodel.ManagedOwner, Component: opencodemodel.ManagedComponent, Role: role}
+		if got := opencodemodel.ClassifyOwnership(agent, identity); got != opencodemodel.OwnershipManaged {
+			t.Fatalf("role %q ownership = %q, want managed", role, got)
+		}
+		metadata := agent[opencodemodel.ManagedMetadataKey].(map[string]any)
+		fingerprint, err := opencodemodel.Fingerprint(agent)
+		if err != nil || metadata["fingerprint"] != fingerprint {
+			t.Fatalf("role %q metadata fingerprint = %v, want %q (err=%v)", role, metadata["fingerprint"], fingerprint, err)
+		}
+	}
+
+	root := map[string]any{}
+	if err := json.Unmarshal(after, &root); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	agentsMap := root["agent"].(map[string]any)
+	reviewer := agentsMap[opencodemodel.GentleReviewerAgent].(map[string]any)
+	reviewer["description"] = "user drift"
+	reviewer["custom"] = map[string]any{"keep": false}
+	drifted, err := json.Marshal(root)
+	if err != nil {
+		t.Fatalf("encode drifted settings: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, append(drifted, '\n'), 0o644); err != nil {
+		t.Fatalf("write drifted settings: %v", err)
+	}
+
+	refreshed, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, opts)
+	if err != nil {
+		t.Fatalf("refresh Inject() error = %v", err)
+	}
+	if !refreshed.Changed {
+		t.Fatal("drift refresh changed = false, want true")
+	}
+	refreshedAgents := readOpenCodeAgents(t, settingsPath)
+	refreshedReviewer := refreshedAgents[opencodemodel.GentleReviewerAgent].(map[string]any)
+	definition, ok := opencodemodel.DirectRoleDefinitionFor(opencodemodel.GentleReviewerAgent)
+	if !ok || refreshedReviewer["description"] != definition.Description {
+		t.Fatalf("drifted reviewer was not refreshed: %#v", refreshedReviewer)
+	}
+	if _, exists := refreshedReviewer["custom"]; exists {
+		t.Fatal("drift-only custom field survived a managed refresh")
+	}
+	identity := opencodemodel.ManagedAgentIdentity{Owner: opencodemodel.ManagedOwner, Component: opencodemodel.ManagedComponent, Role: opencodemodel.GentleReviewerAgent}
+	if got := opencodemodel.ClassifyOwnership(refreshedReviewer, identity); got != opencodemodel.OwnershipManaged {
+		t.Fatalf("refreshed reviewer ownership = %q, want managed", got)
+	}
+}
+
+func TestInjectOpenCodePreservesSameNameUnownedRoles(t *testing.T) {
+	baseDefinition := map[string]any{
+		"mode":        "subagent",
+		"hidden":      false,
+		"description": "user-owned reviewer",
+		"prompt":      "keep this prompt",
+		"custom":      map[string]any{"owner": "user"},
+	}
+	tests := []struct {
+		name      string
+		metadata  any
+		wantClass opencodemodel.OwnershipClassification
+	}{
+		{name: "missing metadata", wantClass: opencodemodel.OwnershipMissingMetadata},
+		{name: "wrong owner", metadata: map[string]any{"schema": opencodemodel.ManagedMetadataSchema, "version": 1, "owner": "other", "component": opencodemodel.ManagedComponent, "role": opencodemodel.GentleReviewerAgent, "fingerprint": "sha256:" + strings.Repeat("0", 64)}, wantClass: opencodemodel.OwnershipWrongOwner},
+		{name: "malformed metadata", metadata: "not metadata", wantClass: opencodemodel.OwnershipMalformedMetadata},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			candidate := make(map[string]any, len(baseDefinition))
+			for key, value := range baseDefinition {
+				candidate[key] = value
+			}
+			if tt.metadata != nil {
+				candidate[opencodemodel.ManagedMetadataKey] = tt.metadata
+			}
+			root := map[string]any{"agent": map[string]any{opencodemodel.GentleReviewerAgent: candidate}}
+			settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+			if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			data, err := json.Marshal(root)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+			if err := os.WriteFile(settingsPath, append(data, '\n'), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+
+			result, err := Inject(home, opencodeAdapter(), model.SDDModeSingle)
+			if err != nil {
+				t.Fatalf("Inject() error = %v", err)
+			}
+			if len(result.Conflicts) != 1 || !strings.Contains(result.Conflicts[0], string(tt.wantClass)) {
+				t.Fatalf("Conflicts = %v, want one %q conflict", result.Conflicts, tt.wantClass)
+			}
+			got := readOpenCodeAgents(t, settingsPath)[opencodemodel.GentleReviewerAgent].(map[string]any)
+			want, _ := json.Marshal(candidate)
+			gotBytes, _ := json.Marshal(got)
+			if !bytes.Equal(gotBytes, want) {
+				t.Fatalf("same-name role changed:\n got %s\nwant %s", gotBytes, want)
+			}
+		})
+	}
+}
+
 func TestInjectModelAssignmentsFunction(t *testing.T) {
 	overlayJSON := []byte(`{
   "agent": {

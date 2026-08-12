@@ -21,12 +21,21 @@ import (
 const legacyMandatoryWording = "TOTALMENTE " + "obligatorio"
 
 type InjectionResult struct {
-	Changed bool
-	Files   []string
+	Changed   bool
+	Files     []string
+	Conflicts []string
 }
+
+type RoleReconciliationMode uint8
+
+const (
+	RoleReconciliationInstall RoleReconciliationMode = iota
+	RoleReconciliationSync
+)
 
 type InjectOptions struct {
 	OpenCodeModelAssignments map[string]model.ModelAssignment
+	RoleReconciliationMode   RoleReconciliationMode
 	// ClaudeModelAssignments is the legacy model-only Claude assignment map.
 	// Prefer ClaudePhaseAssignments for new callers that need per-phase effort.
 	ClaudeModelAssignments      map[string]model.ClaudeModelAlias
@@ -315,6 +324,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 
 	files := make([]string, 0)
 	changed := false
+	var conflicts []string
 
 	// 1. Inject SDD orchestrator into the global system prompt for agents that
 	// rely on prompt files. OpenCode and Kilocode are handled differently: their
@@ -516,12 +526,15 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				return InjectionResult{}, fmt.Errorf("default OpenCode share mode: %w", err)
 			}
 
-			agentResult, err := mergeJSONFile(settingsPath, overlayBytes)
+			mergeOptions := mergeJSONOptions{reconcileDirectRoles: adapter.Agent() == model.AgentOpenCode}
+			mergeOptions.roleMode = opts.RoleReconciliationMode
+			agentResult, err := mergeJSONFile(settingsPath, overlayBytes, mergeOptions)
 			if err != nil {
 				return InjectionResult{}, err
 			}
 			changed = changed || agentResult.writeResult.Changed
 			files = append(files, settingsPath)
+			conflicts = append(conflicts, agentResult.conflicts...)
 			mergedSettingsBytes = agentResult.merged
 
 			// Install OpenCode plugins (all SDD modes).
@@ -804,7 +817,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 		}
 	}
 
-	return InjectionResult{Changed: changed, Files: files}, nil
+	return InjectionResult{Changed: changed, Files: files, Conflicts: conflicts}, nil
 }
 
 func validateOpenClawWorkspacePath(workspaceDir string, adapter agents.Adapter) error {
@@ -1803,10 +1816,16 @@ type mergeJSONResult struct {
 	// re-reading the file from disk — on Windows/WSL2, the atomic rename
 	// (temp → target) may not be immediately visible to a subsequent
 	// os.ReadFile call due to VFS/NTFS metadata caching.
-	merged []byte
+	merged    []byte
+	conflicts []string
 }
 
-func mergeJSONFile(path string, overlay []byte) (mergeJSONResult, error) {
+type mergeJSONOptions struct {
+	reconcileDirectRoles bool
+	roleMode             RoleReconciliationMode
+}
+
+func mergeJSONFile(path string, overlay []byte, options ...mergeJSONOptions) (mergeJSONResult, error) {
 	baseJSON, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -1828,6 +1847,14 @@ func mergeJSONFile(path string, overlay []byte) (mergeJSONResult, error) {
 		return mergeJSONResult{}, fmt.Errorf("migrate opencode command prompt field: %w", err)
 	}
 
+	var conflicts []string
+	if len(options) > 0 && options[0].reconcileDirectRoles {
+		overlay, conflicts, err = reconcileDefaultOpenCodeRoles(baseJSON, overlay, options[0].roleMode)
+		if err != nil {
+			return mergeJSONResult{}, err
+		}
+	}
+
 	merged, err := filemerge.MergeJSONObjects(baseJSON, overlay)
 	if err != nil {
 		return mergeJSONResult{}, err
@@ -1838,7 +1865,100 @@ func mergeJSONFile(path string, overlay []byte) (mergeJSONResult, error) {
 		return mergeJSONResult{}, err
 	}
 
-	return mergeJSONResult{writeResult: writeResult, merged: merged}, nil
+	return mergeJSONResult{writeResult: writeResult, merged: merged, conflicts: conflicts}, nil
+}
+
+// reconcileDefaultOpenCodeRoles is the only ownership-aware part of the SDD
+// settings merge. It handles the two unsuffixed direct roles and leaves every
+// other agent entry to the existing JSON merge semantics.
+func reconcileDefaultOpenCodeRoles(baseJSON, overlay []byte, mode RoleReconciliationMode) ([]byte, []string, error) {
+	base, err := filemerge.UnmarshalJSONObject(baseJSON)
+	if err != nil {
+		base = map[string]any{}
+	}
+	overlayRoot, err := filemerge.UnmarshalJSONObject(overlay)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse OpenCode role overlay: %w", err)
+	}
+	overlayAgents, ok := overlayRoot["agent"].(map[string]any)
+	if !ok {
+		return overlay, nil, nil
+	}
+	baseAgents, _ := base["agent"].(map[string]any)
+	for _, fallback := range []string{"general", "explore"} {
+		if _, exists := baseAgents[fallback]; exists {
+			// Native fallbacks are compatibility entries, not package-owned
+			// direct roles. Preserve an existing definition byte-for-semantic
+			// content while still creating it on a fresh config.
+			delete(overlayAgents, fallback)
+		}
+	}
+	var conflicts []string
+	for _, role := range opencode.DirectRoles() {
+		overlayRaw, present := overlayAgents[role]
+		if !present {
+			continue
+		}
+
+		identity := opencode.ManagedAgentIdentity{
+			Owner:     opencode.ManagedOwner,
+			Component: opencode.ManagedComponent,
+			Role:      role,
+		}
+		existingRaw, exists := baseAgents[role]
+		var existing map[string]any
+		if exists {
+			var object bool
+			existing, object = existingRaw.(map[string]any)
+			if !object {
+				delete(overlayAgents, role)
+				conflicts = append(conflicts, fmt.Sprintf("preserved OpenCode role %q (%s)", role, opencode.OwnershipMalformedMetadata))
+				continue
+			}
+			classification := opencode.ClassifyOwnership(existing, identity)
+			if classification != opencode.OwnershipManaged && classification != opencode.OwnershipFingerprintDrift {
+				delete(overlayAgents, role)
+				conflicts = append(conflicts, fmt.Sprintf("preserved OpenCode role %q (%s)", role, classification))
+				continue
+			}
+		}
+		if mode == RoleReconciliationSync && !exists {
+			delete(overlayAgents, role)
+			continue
+		}
+		definition, ok := overlayRaw.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("OpenCode role overlay %q is not an object", role)
+		}
+		final := make(map[string]any, len(definition)+2)
+		for key, value := range definition {
+			final[key] = value
+		}
+		// Existing managed model choices remain effective when the current run
+		// did not produce a final model mutation for the role.
+		if existing != nil {
+			for _, key := range []string{"model", "variant"} {
+				if _, set := final[key]; !set {
+					if value, present := existing[key]; present {
+						final[key] = value
+					}
+				}
+			}
+		}
+		managed, err := opencode.WithManagedMetadata(final, identity)
+		if err != nil {
+			return nil, nil, fmt.Errorf("attach ownership metadata for OpenCode role %q: %w", role, err)
+		}
+		// Replace the complete role entry so stale fields cannot survive a
+		// proven-managed refresh and the fingerprint covers the final definition.
+		overlayAgents[role] = map[string]any{"__replace__": managed}
+	}
+
+	encoded, err := json.MarshalIndent(overlayRoot, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode OpenCode role overlay: %w", err)
+	}
+	return append(encoded, '\n'), conflicts, nil
 }
 
 // defaultOpenCodeShareDisabled adds a defensive OpenCode default for SDD

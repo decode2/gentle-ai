@@ -882,6 +882,46 @@ func TestComponentSyncStepRunsSDDInject(t *testing.T) {
 	}
 }
 
+func TestComponentSyncStepReportsDefaultRoleConflict(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, ".config", "opencode", "opencode.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	original := []byte(`{"agent":{"gentle-reviewer":{"mode":"subagent","prompt":"user-owned"}}}` + "\n")
+	if err := os.WriteFile(settingsPath, original, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var conflicts []string
+	step := componentSyncStep{
+		component: model.ComponentSDD,
+		homeDir:   home,
+		agents:    []model.AgentID{model.AgentOpenCode},
+		selection: model.Selection{SDDMode: model.SDDModeSingle},
+		conflicts: &conflicts,
+	}
+	if err := step.Run(); err != nil {
+		t.Fatalf("componentSyncStep.Run() error = %v", err)
+	}
+	if len(conflicts) != 1 || !strings.Contains(conflicts[0], "gentle-reviewer") {
+		t.Fatalf("conflicts = %v, want concise gentle-reviewer conflict", conflicts)
+	}
+	if got := readTextFile(t, settingsPath); got == "" || !strings.Contains(got, "user-owned") {
+		t.Fatalf("same-name user role was not preserved: %q", got)
+	}
+}
+
+func TestRenderSyncReportIncludesRoleConflict(t *testing.T) {
+	report := RenderSyncReport(SyncResult{
+		Agents:        []model.AgentID{model.AgentOpenCode},
+		RoleConflicts: []string{"preserved OpenCode role \"gentle-reviewer\" (missing_metadata)"},
+		NoOp:          true,
+	})
+	if !strings.Contains(report, "Role conflict:") || !strings.Contains(report, "gentle-reviewer") {
+		t.Fatalf("sync report omitted role conflict: %s", report)
+	}
+}
+
 func TestComponentSyncStepRunsGGAInjectWithoutBinaryInstall(t *testing.T) {
 	home := t.TempDir()
 	restoreCommand := runCommand
@@ -2186,6 +2226,8 @@ func TestRunSyncPreservesUnmanagedAdjacentFiles(t *testing.T) {
 	if err := os.WriteFile(userConfigPath, []byte(userContent), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
+	settingsPath := openCodeSettingsPath(home)
+	mustWriteFile(t, settingsPath, []byte(`{"keep":true,"agent":{"user-agent":{"mode":"subagent"}}}`+"\n"))
 
 	restoreHome := osUserHomeDir
 	restoreBackupHome := backup.UserHomeDirFn
@@ -2203,7 +2245,7 @@ func TestRunSyncPreservesUnmanagedAdjacentFiles(t *testing.T) {
 	runCommand = func(string, ...string) error { return nil }
 	cmdLookPath = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
 
-	_, err := RunSync([]string{"--agents", "opencode"})
+	_, err := RunSync([]string{"--agents", "opencode", "--sdd-mode", "single"})
 	if err != nil {
 		t.Fatalf("RunSync() error = %v", err)
 	}
@@ -2215,6 +2257,21 @@ func TestRunSyncPreservesUnmanagedAdjacentFiles(t *testing.T) {
 	}
 	if string(after) != userContent {
 		t.Errorf("user config modified by sync: got %q, want %q", string(after), userContent)
+	}
+	var settings struct {
+		Keep  bool           `json:"keep"`
+		Agent map[string]any `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(readTextFile(t, settingsPath)), &settings); err != nil {
+		t.Fatalf("decode synced OpenCode config: %v", err)
+	}
+	if !settings.Keep || settings.Agent["user-agent"] == nil {
+		t.Fatalf("sync modified unrelated OpenCode config: %#v", settings)
+	}
+	for _, role := range []string{"gentle-reviewer", "gentle-worker"} {
+		if _, ok := settings.Agent[role]; ok {
+			t.Fatalf("sync created absent direct role %q", role)
+		}
 	}
 }
 
