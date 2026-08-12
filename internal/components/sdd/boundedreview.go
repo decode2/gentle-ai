@@ -62,8 +62,8 @@ func boundedReviewContract() string {
 	return strings.TrimSpace(assets.MustRead(boundedReviewContractAsset))
 }
 
-func renderSDDOrchestratorAsset(agent model.AgentID) string {
-	return composeOrchestratorPrompt(agent)
+func renderSDDOrchestratorAsset(agent model.AgentID, options ...OrchestratorRenderOptions) string {
+	return composeOrchestratorPrompt(agent, options...)
 }
 
 // renderBoundedReviewAsset resolves one embedded asset into the exact bytes a

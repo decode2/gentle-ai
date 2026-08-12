@@ -7,36 +7,83 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 )
 
-const openCodeBackgroundAddendumMarker = "<!-- gentle-ai:opencode-background-subagents -->"
+const (
+	openCodeBackgroundPolicyAsset  = "opencode/background-subagents.md"
+	openCodeBackgroundPolicyMarker = "<!-- gentle-ai:opencode-background-subagents -->"
+	openCodeBackgroundPolicyEnd    = "<!-- /gentle-ai:opencode-background-subagents -->"
+)
+
+// OrchestratorRenderOptions carries already-resolved prompt policy selections.
+// The renderer does not resolve intent or runtime capability. Callers MUST set
+// IncludeOpenCodeBackgroundPolicy only after a later resolution step has done
+// that work; the zero value preserves the historical prompt bytes.
+type OrchestratorRenderOptions struct {
+	IncludeOpenCodeBackgroundPolicy bool
+}
 
 // composeOrchestratorPrompt is the renderer-owned source seam for every SDD
 // orchestrator. It composes the selected historical asset before the existing
-// bounded-review and runtime-identity substitutions. The provider addendum is
-// intentionally empty until the next issue #3043 slice adds OpenCode policy.
-func composeOrchestratorPrompt(agent model.AgentID) string {
+// bounded-review and runtime-identity substitutions.
+func composeOrchestratorPrompt(agent model.AgentID, options ...OrchestratorRenderOptions) string {
 	path := sddOrchestratorAsset(agent)
 	content := assets.MustRead(path)
-	if addendum := resolveOrchestratorProviderAddendum(agent); addendum != "" {
-		content = appendOrchestratorProviderAddendum(content, addendum)
+	var renderOptions OrchestratorRenderOptions
+	if len(options) > 0 {
+		renderOptions = options[0]
+	}
+	if policy := renderOpenCodeBackgroundPolicy(agent, renderOptions); policy != "" {
+		content = appendOpenCodeBackgroundPolicy(content, policy)
 	}
 	return bindRuntimeAgentIdentity(renderBoundedReviewAssetBodyFromContent(path, content), agent)
 }
 
-// resolveOrchestratorProviderAddendum reserves one OpenCode-only extension
-// point. Returning empty is deliberate: this slice must not change prompt
-// bytes, and Kilocode must never inherit the later OpenCode policy.
-func resolveOrchestratorProviderAddendum(agent model.AgentID) string {
-	if agent != model.AgentOpenCode {
+func renderOpenCodeBackgroundPolicy(agent model.AgentID, options ...OrchestratorRenderOptions) string {
+	var renderOptions OrchestratorRenderOptions
+	if len(options) > 0 {
+		renderOptions = options[0]
+	}
+	if agent != model.AgentOpenCode || !renderOptions.IncludeOpenCodeBackgroundPolicy {
 		return ""
 	}
-	return ""
+	return mustReadOpenCodeBackgroundPolicy()
 }
 
-func appendOrchestratorProviderAddendum(content, addendum string) string {
-	if strings.Contains(content, openCodeBackgroundAddendumMarker) {
+func mustReadOpenCodeBackgroundPolicy() string {
+	content := assets.MustRead(openCodeBackgroundPolicyAsset)
+	validateOpenCodeBackgroundPolicy(content, true)
+	return content
+}
+
+func appendOpenCodeBackgroundPolicy(content, policy string) string {
+	markerCount := strings.Count(content, openCodeBackgroundPolicyMarker)
+	endCount := strings.Count(content, openCodeBackgroundPolicyEnd)
+	if markerCount != 0 || endCount != 0 {
+		validateOpenCodeBackgroundPolicy(content, false)
 		return content
 	}
-	return strings.TrimRight(content, "\n") + "\n\n" + openCodeBackgroundAddendumMarker + "\n" + strings.TrimSpace(addendum) + "\n"
+
+	validateOpenCodeBackgroundPolicy(policy, true)
+	return strings.TrimRight(content, "\n") + "\n\n" + policy + "\n"
+}
+
+func validateOpenCodeBackgroundPolicy(content string, standalone bool) {
+	trimmed := strings.TrimSpace(content)
+	start := strings.Index(trimmed, openCodeBackgroundPolicyMarker)
+	end := strings.Index(trimmed, openCodeBackgroundPolicyEnd)
+	if strings.Count(trimmed, openCodeBackgroundPolicyMarker) != 1 ||
+		strings.Count(trimmed, openCodeBackgroundPolicyEnd) != 1 || start < 0 || end <= start ||
+		(start+len(openCodeBackgroundPolicyMarker) < len(trimmed) && trimmed[start+len(openCodeBackgroundPolicyMarker)] != '\n') ||
+		(end > 0 && trimmed[end-1] != '\n') ||
+		(start > 0 && trimmed[start-1] != '\n') ||
+		(end+len(openCodeBackgroundPolicyEnd) < len(trimmed) && trimmed[end+len(openCodeBackgroundPolicyEnd)] != '\n') {
+		panic("sdd: inconsistently marked OpenCode background policy")
+	}
+	if standalone && (start != 0 || end+len(openCodeBackgroundPolicyEnd) != len(trimmed)) {
+		panic("assets: OpenCode background policy must contain only its marked section")
+	}
+	if strings.TrimSpace(trimmed[start+len(openCodeBackgroundPolicyMarker):end]) == "" {
+		panic("sdd: empty OpenCode background policy")
+	}
 }
 
 // sddOrchestratorAsset returns the embedded asset path for the SDD orchestrator
