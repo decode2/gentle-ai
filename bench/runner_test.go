@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,109 @@ func TestSandboxEnvIncludesBenchReceiptMutationPath(t *testing.T) {
 		}
 	}
 	t.Fatal("sandbox environment has no benchmark receipt mutation path")
+}
+
+func TestSandboxEnvKeepsInheritedPathByDefault(t *testing.T) {
+	sandbox, err := newSandbox("gentle-ai", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sandbox.PathPrepend != "" {
+		t.Fatalf("default sandbox PathPrepend = %q, want empty", sandbox.PathPrepend)
+	}
+	if _, err := os.Stat(filepath.Join(sandbox.Root, "runtime")); !os.IsNotExist(err) {
+		t.Fatalf("default sandbox runtime fixture path exists: %v", err)
+	}
+	for _, entry := range sandbox.env() {
+		if strings.HasPrefix(entry, "PATH=") {
+			if got := strings.TrimPrefix(entry, "PATH="); got != os.Getenv("PATH") {
+				t.Fatalf("default sandbox PATH = %q, want inherited PATH %q", got, os.Getenv("PATH"))
+			}
+			return
+		}
+	}
+	t.Fatal("sandbox environment has no PATH")
+}
+
+func TestSandboxEnvPrependsOnlySandboxLocalPath(t *testing.T) {
+	sandbox, err := newSandbox("gentle-ai", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureDir := filepath.Join(sandbox.Root, "runtime", "bin")
+	sandbox.PathPrepend = fixtureDir
+	want := fixtureDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	for _, entry := range sandbox.env() {
+		if strings.HasPrefix(entry, "PATH=") {
+			if got := strings.TrimPrefix(entry, "PATH="); got != want {
+				t.Fatalf("sandbox PATH = %q, want %q", got, want)
+			}
+			relative, err := filepath.Rel(sandbox.Root, fixtureDir)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				t.Fatalf("PATH prepend %q is outside sandbox root %q", fixtureDir, sandbox.Root)
+			}
+			return
+		}
+	}
+	t.Fatal("sandbox environment has no PATH")
+}
+
+func TestIssue3026OpenCodeRuntimeFixtureUsesSandboxExecutableNaming(t *testing.T) {
+	root := t.TempDir()
+	sandbox, err := newSandbox(filepath.Join(root, "test-binary"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sandbox.Binary, []byte("available test binary"), 0o755); err != nil {
+		t.Fatalf("write test binary: %v", err)
+	}
+	if err := issue3026InstalledOpenCodeRuntime(sandbox); err != nil {
+		t.Fatalf("install runtime fixture: %v", err)
+	}
+	path := sandboxExecutablePath(sandbox.PathPrepend, "opencode")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat runtime fixture %q: %v", path, err)
+	}
+	if info.IsDir() || (runtime.GOOS != "windows" && info.Mode()&0o111 == 0) {
+		t.Fatalf("runtime fixture = %#v, want an executable file", info)
+	}
+	if got := sandbox.PathPrepend; got == "" || filepath.Dir(path) != got {
+		t.Fatalf("runtime fixture path = %q, prepend = %q", path, got)
+	}
+}
+
+func TestExecutableNameForGOOS(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		goos string
+		want string
+	}{
+		{name: "opencode", goos: "linux", want: "opencode"},
+		{name: "opencode", goos: "darwin", want: "opencode"},
+		{name: "opencode", goos: "windows", want: "opencode.exe"},
+		{name: "opencode.exe", goos: "windows", want: "opencode.exe"},
+	} {
+		t.Run(tt.goos+"/"+tt.name, func(t *testing.T) {
+			if got := executableNameForGOOS(tt.name, tt.goos); got != tt.want {
+				t.Fatalf("executableNameForGOOS(%q, %q) = %q, want %q", tt.name, tt.goos, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIssue3026InstallDiagnosticIncludesBoundedStderr(t *testing.T) {
+	stderr := "WARNING: prerequisite check\nError: execute install pipeline: OpenCode is not installed\nAPI_KEY=do-not-leak\n" + strings.Repeat("x", issue3026InstallDiagnosticMaxBytes)
+	got := issue3026BoundedStderr(stderr)
+	if !strings.Contains(got, "WARNING: prerequisite check") || !strings.Contains(got, "Error: execute install pipeline") {
+		t.Fatalf("bounded diagnostic = %q, want the useful stderr lines", got)
+	}
+	if strings.Contains(got, "do-not-leak") || !strings.Contains(got, "API_KEY=<redacted>") {
+		t.Fatalf("bounded diagnostic = %q, want credential value redacted", got)
+	}
+	if !strings.Contains(got, "[stderr truncated]") || len(got) > issue3026InstallDiagnosticMaxBytes {
+		t.Fatalf("bounded diagnostic length/content = %d/%q, want capped output with truncation marker", len(got), got)
+	}
 }
 
 func TestSandboxEnvKeepsTempFilesInsideTheSandbox(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -18,6 +19,11 @@ var issue3026SyncCapability = &Capability{
 		"--profile-phase", "lean:gentle-reviewer:openai/gpt-5-mini",
 		"--profile-phase", "lean:gentle-worker:openrouter/qwen/qwen3.6-plus:free",
 	},
+}
+
+var issue3026InstallCapability = &Capability{
+	Verb:  []string{"install"},
+	Flags: []string{"--agent", "--component", "--sdd-mode"},
 }
 
 type issue3026Agent struct {
@@ -33,18 +39,29 @@ type issue3026OpenCodeSettings struct {
 }
 
 // issue3026Journeys replays the non-SDD gap from #3026: a legacy orchestrator
-// had only native direct fallbacks, while public sync must publish safe managed
-// roles, conditional routing, and named profile model assignments.
+// had only native direct fallbacks, while public install and sync must publish
+// safe managed roles, conditional routing, and named profile model assignments.
 func issue3026Journeys() []Journey {
 	return []Journey{{
 		ID:     "j100-opencode-managed-direct-role-profile-routing",
-		Title:  "OpenCode sync replaces native direct fallback with conditional managed roles and profile models",
+		Title:  "OpenCode install and sync replace native direct fallback with managed roles and profile models",
 		Source: "https://github.com/Gentleman-Programming/gentle-ai/issues/3026",
 		Steps: []Step{
 			{Name: "fixture: repository", Fixture: baseRepo},
 			{Name: "fixture: legacy non-SDD routing without managed roles", Fixture: seedIssue3026LegacyRouting},
+			{Name: "fixture: installed OpenCode runtime prerequisite", Fixture: issue3026InstalledOpenCodeRuntime},
 			{
-				Name:     "public sync renders managed roles and named profile assignments",
+				Name:     "public install creates default managed roles",
+				Requires: issue3026InstallCapability,
+				Args: func(*Sandbox) ([]string, error) {
+					return []string{
+						"install", "--agent", "opencode", "--component", "sdd", "--sdd-mode", "multi",
+					}, nil
+				},
+				After: assertIssue3026InstallCreatedRoles,
+			},
+			{
+				Name:     "public sync refreshes managed roles and renders named profile assignments",
 				Requires: issue3026SyncCapability,
 				Args: func(*Sandbox) ([]string, error) {
 					return []string{
@@ -58,6 +75,62 @@ func issue3026Journeys() []Journey {
 			},
 		},
 	}}
+}
+
+func assertIssue3026InstallCreatedRoles(sandbox *Sandbox, observation Observation) error {
+	if observation.ExitCode != 0 {
+		return fmt.Errorf("public install failed (bounded stderr): %s", issue3026BoundedStderr(observation.Stderr))
+	}
+	settings, err := readIssue3026Settings(sandbox)
+	if err != nil {
+		return err
+	}
+	for _, role := range []string{"gentle-reviewer", "gentle-worker"} {
+		if _, ok := settings.Agent[role]; !ok {
+			return fmt.Errorf("public install did not create managed role %q", role)
+		}
+	}
+	return nil
+}
+
+// issue3026InstalledOpenCodeRuntime proves only the LookPath prerequisite used
+// by the public install boundary. It copies the already-built test binary so
+// the fixture is executable on every supported host, but it is intentionally
+// never invoked as OpenCode and never consults or mutates operator config.
+func issue3026InstalledOpenCodeRuntime(sandbox *Sandbox) error {
+	binDir := filepath.Join(sandbox.Root, "runtime", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	path := sandboxExecutablePath(binDir, "opencode")
+	binary, err := os.ReadFile(sandbox.Binary)
+	if err != nil {
+		return fmt.Errorf("read built test binary for private OpenCode runtime presence fixture: %w", err)
+	}
+	if err := os.WriteFile(path, binary, 0o755); err != nil {
+		return fmt.Errorf("write private OpenCode runtime presence fixture: %w", err)
+	}
+	sandbox.PathPrepend = binDir
+	return nil
+}
+
+const issue3026InstallDiagnosticMaxBytes = 4096
+
+var issue3026SecretPattern = regexp.MustCompile(`(?i)(\b(api[-_]?key|access[-_]?token|authorization|password|secret|token)\b\s*[:=]\s*)(bearer\s+)?[^\s,;]+`)
+var issue3026BearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;]+`)
+
+func issue3026BoundedStderr(stderr string) string {
+	stderr = issue3026SecretPattern.ReplaceAllString(stderr, `${1}<redacted>`)
+	stderr = issue3026BearerPattern.ReplaceAllString(stderr, "Bearer <redacted>")
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return "(no stderr emitted)"
+	}
+	if len(stderr) <= issue3026InstallDiagnosticMaxBytes {
+		return stderr
+	}
+	const suffix = "\n[stderr truncated]"
+	return stderr[:issue3026InstallDiagnosticMaxBytes-len(suffix)] + suffix
 }
 
 func seedIssue3026LegacyRouting(sandbox *Sandbox) error {
