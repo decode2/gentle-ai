@@ -2,8 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/state"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/verify"
 )
 
 const OpenCodeBackgroundSubagentsEnv = "GENTLE_AI_OPENCODE_BACKGROUND_SUBAGENTS"
@@ -93,4 +96,24 @@ func parseBackgroundIntent(source, raw string, present bool) (model.OpenCodeBack
 		return "", fmt.Errorf("%s=%q: %w; use auto, on, or off", source, raw, err)
 	}
 	return parsed, nil
+}
+
+func resolveOpenCodeBackgroundCLI(set bool, raw string, persisted state.InstallState) (OpenCodeBackgroundResolution, error) {
+	envValue, envSet := os.LookupEnv(OpenCodeBackgroundSubagentsEnv)
+	return ResolveOpenCodeBackground(OpenCodeBackgroundResolveInput{
+		CLISet:       set,
+		CLIValue:     model.OpenCodeBackgroundIntent(raw),
+		EnvSet:       envSet,
+		EnvValue:     envValue,
+		PriorManaged: persisted.BackgroundIntent,
+		Interactive:  false,
+	})
+}
+
+func withOpenCodeBackgroundPending(report verify.Report, resolution OpenCodeBackgroundResolution, runtimeReady bool, agents []model.AgentID) verify.Report {
+	if !containsAgent(agents, model.AgentOpenCode) || resolution.Effective != model.OpenCodeBackgroundOn || runtimeReady {
+		return report
+	}
+	report.FinalNote += " OpenCode background policy is prepared but runtime activation remains pending; execution stays foreground until upstream capability activation is available."
+	return report
 }

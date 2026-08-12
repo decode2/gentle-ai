@@ -53,6 +53,9 @@ type InstallResult struct {
 	Dependencies system.DependencyReport
 	PiCodeGraph  *communitytool.PiCodeGraphResult
 	DryRun       bool
+
+	Background              OpenCodeBackgroundResolution
+	BackgroundPolicyEnabled bool
 }
 
 var (
@@ -65,6 +68,8 @@ var (
 	goEnv                        = defaultGoEnv
 	installCommunityTool         = communitytool.Install
 	installCommunityToolWithHome = communitytool.InstallWithHome
+	injectSDD                    = sdd.Inject
+	writeInstallState            = state.Write
 	pathEnvEntries               = func(profile system.PlatformProfile) []string {
 		return splitPathForOS(os.Getenv("PATH"), profile.OS)
 	}
@@ -134,6 +139,20 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 	}
 	profile := ResolveInstallProfile(detection)
 	resolved.PlatformDecision = planner.PlatformDecisionFromProfile(profile)
+	homeDir, err := osUserHomeDir()
+	if err != nil {
+		return InstallResult{}, fmt.Errorf("resolve user home directory: %w", err)
+	}
+	persistedState, stateErr := state.Read(homeDir)
+	if errors.Is(stateErr, os.ErrNotExist) {
+		persistedState = state.InstallState{}
+	} else if stateErr != nil {
+		return InstallResult{}, fmt.Errorf("persist install state preflight: %w", stateErr)
+	}
+	background, err := resolveOpenCodeBackgroundCLI(flags.OpenCodeBackgroundSubagentsSet, flags.OpenCodeBackgroundSubagents, persistedState)
+	if err != nil {
+		return InstallResult{}, err
+	}
 
 	review := planner.BuildReviewPayload(input.Selection, resolved)
 	stagePlan := buildStagePlan(input.Selection, resolved)
@@ -145,15 +164,11 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 		Plan:         stagePlan,
 		Dependencies: detection.Dependencies,
 		DryRun:       input.DryRun,
+		Background:   background,
 	}
 
 	if input.DryRun {
 		return result, nil
-	}
-
-	homeDir, err := osUserHomeDir()
-	if err != nil {
-		return result, fmt.Errorf("resolve user home directory: %w", err)
 	}
 
 	if input.Scope == ScopeGlobal {
@@ -176,6 +191,7 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 			strings.Join(detection.Dependencies.MissingRequired, ", "),
 			system.FormatMissingDepsMessage(detection.Dependencies))
 	}
+	runtime.background = background
 
 	stagePlan = runtime.stagePlan()
 	result.Plan = stagePlan
@@ -187,7 +203,6 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 		return result, fmt.Errorf("execute install pipeline: %w", result.Execution.Err)
 	}
 	result.PiCodeGraph = runtime.state.piCodeGraph
-
 	result.Verify = runPostApplyVerification(postApplyVerificationInput{
 		HomeDir:      homeDir,
 		WorkspaceDir: runtime.workspaceDir,
@@ -197,6 +212,8 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 		State:        runtime.state,
 	})
 	result.Verify = withPostInstallNotes(result.Verify, resolved)
+	result.Verify = withOpenCodeBackgroundPending(result.Verify, background, runtime.runtimeReady, resolved.Agents)
+	result.BackgroundPolicyEnabled = runtime.runtimeReady && background.Effective == model.OpenCodeBackgroundOn
 	if !result.Verify.Ready {
 		return result, fmt.Errorf("post-apply verification failed:\n%s", verify.RenderReport(result.Verify))
 	}
@@ -228,11 +245,17 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 		Persona:                     string(input.Selection.Persona),
 	}
 	newState.SetSelection(input.Selection)
+	if background.Persist != "" {
+		newState.BackgroundIntent = background.Persist
+	}
 	writer, err := managedAssetDigest()
 	if err != nil {
 		return result, fmt.Errorf("derive managed asset writer identity: %w", err)
 	}
 	if err := persistInstallState(homeDir, newState, agentIDs, flags, writer); err != nil {
+		// Assets are intentionally not rolled back here: pipeline rollback covers
+		// apply failures, while this late state publication failure leaves the
+		// applied assets in place for the next repair or install run.
 		return result, fmt.Errorf("persist install state: %w", err)
 	}
 
@@ -242,15 +265,40 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 func persistInstallState(homeDir string, newState state.InstallState, agentIDs []string, flags InstallFlags, writer string) error {
 	return withInstallStateLock(homeDir, func() error {
 		if len(flags.Agents) > 0 {
-			merged, err := mergeExplicitAgentInstallState(homeDir, newState, agentIDs, flags)
-			if err != nil {
-				return fmt.Errorf("merge explicit agent install state: %w", err)
+			merged, mergeErr := mergeExplicitAgentInstallState(homeDir, newState, agentIDs, flags)
+			if mergeErr != nil {
+				return fmt.Errorf("merge explicit agent install state: %w", mergeErr)
 			}
 			newState = merged
+		} else {
+			existing, err := state.Read(homeDir)
+			if errors.Is(err, os.ErrNotExist) {
+				existing = state.InstallState{}
+			} else if err != nil {
+				return err
+			}
+			newState = mergeFullInstallState(existing, newState)
 		}
 		newState.ManagedAssetDigest = writer
-		return state.Write(homeDir, newState)
+		return writeInstallState(homeDir, newState)
 	})
+}
+
+func mergeFullInstallState(existing, fresh state.InstallState) state.InstallState {
+	merged := existing
+	merged.InstalledAgents = fresh.InstalledAgents
+	merged.SelectionConfigured, merged.Components, merged.Skills = fresh.SelectionConfigured, fresh.Components, fresh.Skills
+	merged.Preset, merged.SDDMode, merged.StrictTDD = fresh.Preset, fresh.SDDMode, fresh.StrictTDD
+	merged.CommunityTools, merged.CommunityToolsConfigured = fresh.CommunityTools, fresh.CommunityToolsConfigured
+	merged.ClaudeModelAssignments, merged.ClaudePhaseAssignments = fresh.ClaudeModelAssignments, fresh.ClaudePhaseAssignments
+	merged.KiroModelAssignments, merged.CodexModelAssignments = fresh.KiroModelAssignments, fresh.CodexModelAssignments
+	merged.CodexOrchestratorAssignment = fresh.CodexOrchestratorAssignment
+	merged.CodexCarrilModelAssignments, merged.CodexPhaseModelAssignments = fresh.CodexCarrilModelAssignments, fresh.CodexPhaseModelAssignments
+	merged.ModelAssignments, merged.Persona = fresh.ModelAssignments, fresh.Persona
+	if fresh.BackgroundIntent != "" {
+		merged.BackgroundIntent = fresh.BackgroundIntent
+	}
+	return merged
 }
 
 // mergeExplicitAgentInstallState merges a fresh single-agent install's state
@@ -317,6 +365,9 @@ func mergeExplicitAgentInstallState(homeDir string, newState state.InstallState,
 	}
 	if flags.Persona != "" || merged.Persona == "" {
 		merged.Persona = newState.Persona
+	}
+	if newState.BackgroundIntent != "" {
+		merged.BackgroundIntent = newState.BackgroundIntent
 	}
 	return merged, nil
 }
@@ -564,6 +615,9 @@ type installRuntime struct {
 	channel      InstallChannel
 	backupRoot   string
 	state        *runtimeState
+
+	background   OpenCodeBackgroundResolution
+	runtimeReady bool
 }
 
 type runtimeState struct {
@@ -684,7 +738,7 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 	}
 
 	for _, component := range r.resolved.OrderedComponents {
-		apply = append(apply, componentApplyStep{
+		step := componentApplyStep{
 			id:           "component:" + string(component),
 			component:    component,
 			homeDir:      r.homeDir,
@@ -695,7 +749,9 @@ func (r *installRuntime) stagePlan() pipeline.StagePlan {
 			profile:      r.profile,
 			channel:      r.channel,
 			state:        r.state,
-		})
+		}
+		step.backgroundPolicy = r.background.Effective == model.OpenCodeBackgroundOn
+		apply = append(apply, step)
 	}
 	// Routing guidance is scheduled per agent and outside the component loop:
 	// an agent that cannot choose between direct, delegated, and proposed work is
@@ -1220,6 +1276,8 @@ type componentApplyStep struct {
 	profile      system.PlatformProfile
 	channel      InstallChannel
 	state        *runtimeState
+
+	backgroundPolicy bool
 }
 
 type communityToolInstallStep struct {
@@ -1560,9 +1618,11 @@ func (s componentApplyStep) Run() error {
 				CodexPhaseModelAssignments:  s.selection.CodexPhaseModelAssignments,
 				WorkspaceDir:                s.workspaceDir,
 				StrictTDD:                   s.selection.StrictTDD,
+				Profiles:                    s.selection.Profiles,
 				CodeGraphGuidanceMarkdown:   codeGraphGuidanceMarkdownForSDD(s.homeDir, s.selection.CommunityTools),
 			}
-			if _, err := sdd.Inject(targetDir, adapter, s.selection.SDDMode, opts); err != nil {
+			opts.IncludeOpenCodeBackgroundPolicy = s.backgroundPolicy && adapter.Agent() == model.AgentOpenCode
+			if _, err := injectSDD(targetDir, adapter, s.selection.SDDMode, opts); err != nil {
 				return fmt.Errorf("inject sdd for %q: %w", adapter.Agent(), err)
 			}
 		}
