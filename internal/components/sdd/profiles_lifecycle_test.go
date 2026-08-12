@@ -146,6 +146,10 @@ func TestProfileLifecycle_FullCRUD(t *testing.T) {
 	editedProfile := model.Profile{
 		Name:              "cheap",
 		OrchestratorModel: sonnetModel,
+		PhaseAssignments: map[string]model.ModelAssignment{
+			opencode.GentleReviewerAgent: {ProviderID: "openai", ModelID: "gpt-5", Effort: "high"},
+			opencode.GentleWorkerAgent:   {ProviderID: "openrouter", ModelID: "qwen/qwen3.6-plus:free"},
+		},
 	}
 	editOverlayBytes, err := GenerateProfileOverlay(editedProfile, home, settingsPath, nil, "")
 	if err != nil {

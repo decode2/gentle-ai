@@ -566,6 +566,9 @@ func TestGenerateProfileOverlay_DirectRolesUseCanonicalDefinitionsAndAssignments
 		if !reflect.DeepEqual(agent["permission"], definition.Permission) {
 			t.Fatalf("%s permission drifted from canonical definition: %#v", key, agent["permission"])
 		}
+		if got := opencode.ClassifyOwnership(agent, profileRoleIdentity(role, "cheap")); got != opencode.OwnershipManaged {
+			t.Fatalf("%s ownership = %s, want managed", key, got)
+		}
 		if !strings.Contains(agent["prompt"].(string), "non-SDD") {
 			t.Fatalf("%s prompt lost direct-role boundary", key)
 		}
@@ -1024,7 +1027,7 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 		agents[key] = map[string]any{"mode": "primary"}
 	}
 	for _, role := range opencode.DirectRoles() {
-		agents[role] = map[string]any{"mode": "subagent"}
+		agents[role] = managedDirectRoleEntryForTest(t, role, "")
 	}
 	// cheap profile
 	for _, key := range []string{"sdd-orchestrator-cheap", "sdd-init-cheap", "sdd-explore-cheap",
@@ -1036,7 +1039,7 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 		agents[key] = map[string]any{"mode": "subagent"}
 	}
 	for _, role := range opencode.DirectRoles() {
-		agents[role+"-cheap"] = map[string]any{"mode": "subagent"}
+		agents[role+"-cheap"] = managedDirectRoleEntryForTest(t, role, "cheap")
 	}
 
 	root := map[string]any{"agent": agents}
@@ -1045,6 +1048,25 @@ func buildSettingsWithProfiles(t *testing.T) (path string) {
 		t.Fatalf("write settings: %v", err)
 	}
 	return settingsPath
+}
+
+func managedDirectRoleEntryForTest(t *testing.T, role, profileName string) map[string]any {
+	t.Helper()
+	definition, ok := opencode.DirectRoleDefinitionFor(role)
+	if !ok {
+		t.Fatalf("missing direct role definition %q", role)
+	}
+	entry, err := opencode.WithManagedMetadata(map[string]any{
+		"mode":        "subagent",
+		"hidden":      true,
+		"description": definition.Description,
+		"prompt":      definition.Prompt,
+		"permission":  definition.Permission,
+	}, profileRoleIdentity(role, profileName))
+	if err != nil {
+		t.Fatalf("managed direct role %q: %v", role, err)
+	}
+	return entry
 }
 
 func TestRemoveProfileAgents_RemovesProfileSDDAndJDAgents(t *testing.T) {
