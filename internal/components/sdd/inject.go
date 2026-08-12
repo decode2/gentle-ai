@@ -2134,37 +2134,6 @@ func hasSDDOrchestrator(content string) bool {
 	return false
 }
 
-// sddOrchestratorAsset returns the embedded asset path for the SDD orchestrator
-// content based on the agent. Agent-specific assets take priority; generic is fallback.
-func sddOrchestratorAsset(agent model.AgentID) string {
-	switch agent {
-	case model.AgentClaudeCode:
-		return "claude/sdd-orchestrator.md"
-	case model.AgentGeminiCLI:
-		return "gemini/sdd-orchestrator.md"
-	case model.AgentCodex:
-		return "codex/sdd-orchestrator.md"
-	case model.AgentAntigravity:
-		return "antigravity/sdd-orchestrator.md"
-	case model.AgentWindsurf:
-		return "windsurf/sdd-orchestrator.md"
-	case model.AgentCursor:
-		return "cursor/sdd-orchestrator.md"
-	case model.AgentKimi:
-		return "kimi/sdd-orchestrator.md"
-	case model.AgentQwenCode:
-		return "qwen/sdd-orchestrator.md"
-	case model.AgentKiroIDE:
-		return "kiro/sdd-orchestrator.md"
-	case model.AgentHermes:
-		return "hermes/sdd-orchestrator.md"
-	case model.AgentOpenCode, model.AgentKilocode:
-		return "opencode/sdd-orchestrator.md"
-	default:
-		return "generic/sdd-orchestrator.md"
-	}
-}
-
 func injectFileAppend(homeDir string, adapter agents.Adapter, opts InjectOptions) (InjectionResult, error) {
 	promptPath := adapter.SystemPromptFile(homeDir)
 
