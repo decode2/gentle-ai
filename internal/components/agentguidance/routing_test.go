@@ -114,6 +114,34 @@ func TestRenderRoutingKeepsSDDSelectionExplicit(t *testing.T) {
 	}
 }
 
+func TestRenderRoutingUsesManagedDirectRolesOutsideLifecycle(t *testing.T) {
+	rendered, err := RenderRouting(model.AgentOpenCode)
+	if err != nil {
+		t.Fatalf("RenderRouting error = %v", err)
+	}
+
+	for _, want := range []string{
+		"issue/PR audit",
+		"unresolved root-cause, scope, or PR-boundary work",
+		"when `gentle-reviewer` is defined in the active configuration",
+		"`gentle-reviewer`",
+		"clear delegated-direct implementation",
+		"when `gentle-worker` is defined in the active configuration",
+		"`gentle-worker`",
+		"Never select a managed direct role that is absent from the active configuration",
+		"native `explore`",
+		"explicit compatibility fallback",
+		"never create SDD artifacts",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("managed direct routing is missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Use OpenCode's native `general` agent for implementation") {
+		t.Fatalf("managed direct routing still prefers native general:\n%s", rendered)
+	}
+}
+
 // TestRenderRoutingMakesTheReviewKillSwitchDiscoverable guards the product
 // promise that configuring an agent tells it what it may do. The kill switch is
 // only real for the user if every configured agent can name it, so the exact

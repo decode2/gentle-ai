@@ -12,6 +12,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/opencodedefault"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/planner"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/system"
 )
@@ -760,6 +761,27 @@ func TestInstallRoutingGuidanceIsIndependentOfSDDSelection(t *testing.T) {
 	}
 	if !strings.Contains(sdd, sddMarker) {
 		t.Fatalf("install with the SDD component lost SDD orchestration assets:\n%s", sdd)
+	}
+}
+
+func TestInstallOpenCodeRoutingDoesNotSelectUnavailableManagedDirectRoles(t *testing.T) {
+	home := t.TempDir()
+	runInstallInjectionSteps(t, newTestInstallRuntime(t, home, model.Selection{
+		Agents: []model.AgentID{model.AgentOpenCode},
+	}))
+
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(readTextFile(t, openCodeSettingsPath(home))), &settings); err != nil {
+		t.Fatalf("decode OpenCode settings: %v", err)
+	}
+	agentsMap, ok := settings["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("OpenCode settings agent map has unexpected type: %T", settings["agent"])
+	}
+	for _, role := range []string{opencode.GentleReviewerAgent, opencode.GentleWorkerAgent} {
+		if _, ok := agentsMap[role]; ok {
+			t.Fatalf("non-SDD install provisioned managed direct role %q", role)
+		}
 	}
 }
 

@@ -28,7 +28,9 @@
             "review-readability": "allow",
             "review-reliability": "allow",
             "review-resilience": "allow",
-            "review-refuter": "allow"
+            "review-refuter": "allow",
+            "gentle-reviewer": "allow",
+            "gentle-worker": "allow"
           }
         }
       },
@@ -41,6 +43,67 @@
           "question": true,
           "task": true
         }
+      }
+    },
+    "gentle-reviewer": {
+      "mode": "subagent",
+      "hidden": true,
+      "description": "Advisory read-only reviewer for non-SDD issue and PR work",
+      "prompt": "You are Gentle AI's advisory non-SDD reviewer. Audit issue or PR changes, unresolved root cause, scope, and PR boundaries, then report findings only. You are structurally read-only: never edit or write files, ask questions, delegate, or mutate GitHub. Never invoke review, RDD, Judgment Day, or SDD lifecycle commands and never claim lifecycle authority or approval. Return inspected paths, evidence, findings, and blockers. Native explore may prepare broad mapping, but this managed reviewer is the preferred advisory route.",
+      "permission": {
+        "read": {
+          "*": "allow"
+        },
+        "edit": "deny",
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git branch --list*": "allow",
+          "git branch --show-current*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git ls-files*": "allow",
+          "git grep*": "allow",
+          "gh issue view*": "allow",
+          "gh pr view*": "allow",
+          "gh pr diff*": "allow",
+          "gh pr checks*": "allow",
+          "gh repo view*": "allow"
+        },
+        "task": "deny",
+        "question": "deny"
+      }
+    },
+    "gentle-worker": {
+      "mode": "subagent",
+      "hidden": true,
+      "description": "Bounded non-SDD delegated-direct implementation worker",
+      "prompt": "You are Gentle AI's bounded non-SDD implementation worker. Execute only the delegated direct task in the current workspace. Do not task, delegate, or ask questions. Do not create SDD artifacts or state, invoke SDD, Judgment Day, RDD, or review lifecycle commands, commit or push, create PRs, or mutate GitHub. Make only the requested bounded edits and run permitted checks. Return changed paths, command and test evidence, and blockers; never claim delivery or approval.",
+      "permission": {
+        "read": {
+          "*": "allow"
+        },
+        "edit": "allow",
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git ls-files*": "allow",
+          "git grep*": "allow",
+          "gofmt -d*": "allow",
+          "go test*": "allow",
+          "go build*": "allow",
+          "go vet*": "allow",
+          "npm test*": "allow",
+          "npm run test*": "allow",
+          "npm run build*": "allow",
+          "pytest*": "allow"
+        },
+        "task": "deny",
+        "question": "deny"
       }
     },
     "sdd-init": {

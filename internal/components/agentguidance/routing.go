@@ -12,6 +12,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/agents/capabilitymanifest"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 )
 
 // ErrUnknownRoutingPolicy fails closed when the canonical manifest carries a
@@ -57,6 +58,11 @@ func RenderRouting(agent model.AgentID) (string, error) {
 	output.WriteString("- File count, changed lines, size, or perceived risk alone never selects SDD and never forces a heavier route.\n")
 	output.WriteString("- These are implementation routes, not a ban on per-action delegation. Tests, builds, installs, and review actors may still use fresh workers without changing the selected route.\n")
 	output.WriteString("- Direct and delegated work never create SDD artifacts, prompts, phase attempts, or synthetic SDD runs.\n")
+	_, _ = fmt.Fprintf(&output, "- **issue/PR audit:** for issue/PR audit or unresolved root-cause, scope, or PR-boundary work outside formal RDD/4R, when `%s` is defined in the active configuration, route there; otherwise use the adapter's native read-only/general fallback. It is advisory only and never owns lifecycle authority.\n", opencode.GentleReviewerAgent)
+	_, _ = fmt.Fprintf(&output, "- **clear delegated-direct implementation:** when `%s` is defined in the active configuration, route there; otherwise use the adapter's native delegated/direct fallback. It is a bounded non-SDD executor that returns changed paths, evidence, and blockers.\n", opencode.GentleWorkerAgent)
+	output.WriteString("- Never select a managed direct role that is absent from the active configuration; these definitions come from the optional OpenCode SDD overlay or an equivalent user-managed configuration.\n")
+	output.WriteString("- Broad read-only mapping may use native `explore` only as preparation. Native `general` is an explicit compatibility fallback only when the managed direct role is unavailable, never the preferred managed route.\n")
+	output.WriteString("- Explicit or accepted SDD, Judgment Day, and RDD/4R work retains its existing exclusive role; direct routes do not enter those lifecycle states.\n")
 
 	// The kill switch ships in the routing block, not in the optional SDD
 	// assets, for the same reason routing itself is unconditional: it is
