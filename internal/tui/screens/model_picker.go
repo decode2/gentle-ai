@@ -267,13 +267,14 @@ const SDDOrchestratorPhase = "gentle-orchestrator"
 
 // ModelPickerRows returns the row labels for the model picker screen.
 // Row 0 is "gentle-orchestrator" (coordinator), row 1 is "Set all phases",
-// rows 2-11 are the 10 SDD sub-agent phases, followed by workflow agent sections.
+// rows 2-11 are the 10 SDD sub-agent phases, followed by workflow and managed
+// direct-role sections.
 func ModelPickerRows() []string {
 	return modelPickerRows(true)
 }
 
 func modelPickerRows(includeReview bool) []string {
-	rows := make([]string, 0, 2+len(opencode.SDDPhases())+1+len(opencode.JDPhases())+1+len(opencode.ReviewPhases()))
+	rows := make([]string, 0, 2+len(opencode.SDDPhases())+1+len(opencode.JDPhases())+1+len(opencode.ReviewPhases())+1+len(opencode.DirectRoles()))
 	rows = append(rows, SDDOrchestratorPhase)
 	rows = append(rows, "Set all SDD phases")
 	rows = append(rows, opencode.SDDPhases()...)
@@ -285,12 +286,17 @@ func modelPickerRows(includeReview bool) []string {
 		rows = append(rows, "--- Review agents ---")
 		rows = append(rows, opencode.ReviewPhases()...)
 	}
+	if len(opencode.DirectRoles()) > 0 {
+		rows = append(rows, "--- Managed direct roles ---")
+		rows = append(rows, opencode.DirectRoles()...)
+	}
 	return rows
 }
 
 // ModelPickerRowsForProfile returns model picker rows for profile creation.
-// Profiles support both SDD phase assignments and optional Judgment Day agent
-// assignments. Native review agents remain unsuffixed global runtime agents.
+// Profiles support SDD phase assignments, optional Judgment Day assignments,
+// and managed direct-role assignments. Native review agents remain unsuffixed
+// global runtime agents.
 func ModelPickerRowsForProfile() []string {
 	return modelPickerRows(false)
 }
@@ -797,9 +803,9 @@ func renderPhaseList(
 ) string {
 	var b strings.Builder
 
-	title := "Assign Models to SDD, JD & Review Agents"
+	title := "Assign Models to SDD, JD, Review & Direct Agents"
 	if state.ForProfile {
-		title = "Assign Models to SDD Phases & JD Agents"
+		title = "Assign Models to SDD, JD & Direct Agents"
 	}
 	b.WriteString(styles.TitleStyle.Render(title))
 	b.WriteString("\n\n")
