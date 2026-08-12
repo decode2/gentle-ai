@@ -133,6 +133,8 @@ type InstallState struct {
 	// recorded is authority, not a cosmetic audit field. Nil for state files
 	// written before the switch existed.
 	RDDModeRecordedAt *time.Time `json:"rdd_mode_recorded_at,omitempty"`
+
+	BackgroundIntent model.OpenCodeBackgroundIntent `json:"opencode_background_subagents,omitempty"`
 }
 
 // UnmarshalJSON preserves whether the persisted persona field was present.
@@ -240,6 +242,8 @@ func MergeAgents(existing InstallState, newAgents []string) InstallState {
 		PendingSync:                 existing.PendingSync,
 		RDDMode:                     existing.RDDMode,
 		RDDModeRecordedAt:           existing.RDDModeRecordedAt,
+
+		BackgroundIntent: existing.BackgroundIntent,
 	}
 }
 
