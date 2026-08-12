@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -52,6 +53,11 @@ type Sandbox struct {
 	// product commands do not depend on the parent process temp directory.
 	UnavailableProcessTemp string
 
+	// PathPrepend is an optional journey-owned directory placed before the
+	// inherited PATH for this sandbox only. It is empty for every journey unless
+	// a fixture explicitly opts in.
+	PathPrepend string
+
 	traceOffset int64
 }
 
@@ -74,10 +80,15 @@ func newSandbox(binary, root string) (*Sandbox, error) {
 }
 
 // env is a closed environment: only what the product legitimately needs.
-// PATH is inherited because the product shells out to git.
+// PATH is inherited because the product shells out to git; a journey may
+// prepend a sandbox-owned fixture directory without changing the default.
 func (s *Sandbox) env() []string {
+	path := os.Getenv("PATH")
+	if s.PathPrepend != "" {
+		path = s.PathPrepend + string(os.PathListSeparator) + path
+	}
 	env := []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + path,
 		"HOME=" + s.Home,
 		"USERPROFILE=" + s.Home,
 		"XDG_CONFIG_HOME=" + filepath.Join(s.Home, ".config"),
@@ -113,6 +124,17 @@ func (s *Sandbox) env() []string {
 		)
 	}
 	return env
+}
+
+func executableNameForGOOS(name, goos string) string {
+	if goos == "windows" && filepath.Ext(name) == "" {
+		return name + ".exe"
+	}
+	return name
+}
+
+func sandboxExecutablePath(dir, name string) string {
+	return filepath.Join(dir, executableNameForGOOS(name, runtime.GOOS))
 }
 
 func unavailableProcessTemp(sandbox *Sandbox) error {

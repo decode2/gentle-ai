@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -48,6 +49,7 @@ func issue3026Journeys() []Journey {
 		Steps: []Step{
 			{Name: "fixture: repository", Fixture: baseRepo},
 			{Name: "fixture: legacy non-SDD routing without managed roles", Fixture: seedIssue3026LegacyRouting},
+			{Name: "fixture: installed OpenCode runtime prerequisite", Fixture: issue3026InstalledOpenCodeRuntime},
 			{
 				Name:     "public install creates default managed roles",
 				Requires: issue3026InstallCapability,
@@ -77,7 +79,7 @@ func issue3026Journeys() []Journey {
 
 func assertIssue3026InstallCreatedRoles(sandbox *Sandbox, observation Observation) error {
 	if observation.ExitCode != 0 {
-		return fmt.Errorf("public install failed: %s", firstLine(observation.Stderr))
+		return fmt.Errorf("public install failed (bounded stderr): %s", issue3026BoundedStderr(observation.Stderr))
 	}
 	settings, err := readIssue3026Settings(sandbox)
 	if err != nil {
@@ -89,6 +91,46 @@ func assertIssue3026InstallCreatedRoles(sandbox *Sandbox, observation Observatio
 		}
 	}
 	return nil
+}
+
+// issue3026InstalledOpenCodeRuntime proves only the LookPath prerequisite used
+// by the public install boundary. It copies the already-built test binary so
+// the fixture is executable on every supported host, but it is intentionally
+// never invoked as OpenCode and never consults or mutates operator config.
+func issue3026InstalledOpenCodeRuntime(sandbox *Sandbox) error {
+	binDir := filepath.Join(sandbox.Root, "runtime", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	path := sandboxExecutablePath(binDir, "opencode")
+	binary, err := os.ReadFile(sandbox.Binary)
+	if err != nil {
+		return fmt.Errorf("read built test binary for private OpenCode runtime presence fixture: %w", err)
+	}
+	if err := os.WriteFile(path, binary, 0o755); err != nil {
+		return fmt.Errorf("write private OpenCode runtime presence fixture: %w", err)
+	}
+	sandbox.PathPrepend = binDir
+	return nil
+}
+
+const issue3026InstallDiagnosticMaxBytes = 4096
+
+var issue3026SecretPattern = regexp.MustCompile(`(?i)(\b(api[-_]?key|access[-_]?token|authorization|password|secret|token)\b\s*[:=]\s*)(bearer\s+)?[^\s,;]+`)
+var issue3026BearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;]+`)
+
+func issue3026BoundedStderr(stderr string) string {
+	stderr = issue3026SecretPattern.ReplaceAllString(stderr, `${1}<redacted>`)
+	stderr = issue3026BearerPattern.ReplaceAllString(stderr, "Bearer <redacted>")
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return "(no stderr emitted)"
+	}
+	if len(stderr) <= issue3026InstallDiagnosticMaxBytes {
+		return stderr
+	}
+	const suffix = "\n[stderr truncated]"
+	return stderr[:issue3026InstallDiagnosticMaxBytes-len(suffix)] + suffix
 }
 
 func seedIssue3026LegacyRouting(sandbox *Sandbox) error {
