@@ -81,7 +81,8 @@ type SyncResult struct {
 	// ChangedFiles lists deduplicated absolute paths of managed files
 	// processed during this sync. Paths appear once even when multiple
 	// components touch the same file. It is nil when no files changed.
-	ChangedFiles []string
+	ChangedFiles  []string
+	RoleConflicts []string
 }
 
 // ParseSyncFlags parses the CLI arguments for the sync subcommand.
@@ -453,6 +454,8 @@ type syncRuntime struct {
 	state        *runtimeState
 	managedPaths []string
 	changedFiles []string // accumulates candidate paths reported by component injectors
+
+	roleConflicts []string
 }
 
 func newSyncRuntime(homeDir string, selection model.Selection) (*syncRuntime, error) {
@@ -507,6 +510,7 @@ func (r *syncRuntime) stagePlan() pipeline.StagePlan {
 			agents:       r.agentIDs,
 			selection:    r.selection,
 			changedFiles: &r.changedFiles,
+			conflicts:    &r.roleConflicts,
 		})
 	}
 	if needsCompatibilitySkillsRefresh(r.selection.Components) {
@@ -831,6 +835,7 @@ type componentSyncStep struct {
 	agents       []model.AgentID
 	selection    model.Selection
 	changedFiles *[]string // accumulates absolute paths of files that actually changed
+	conflicts    *[]string
 }
 
 type codeGraphGuidanceSyncStep struct {
@@ -1083,6 +1088,7 @@ func (s componentSyncStep) Run() error {
 			targetDir := componentInjectionDir(s.homeDir, s.workspaceDir, adapter)
 			opts := sdd.InjectOptions{
 				OpenCodeModelAssignments:           s.selection.ModelAssignments,
+				RoleReconciliationMode:             sdd.RoleReconciliationSync,
 				ClaudeModelAssignments:             s.selection.ClaudeModelAssignments,
 				ClaudePhaseAssignments:             s.selection.ClaudePhaseAssignments,
 				KiroModelAssignments:               s.selection.KiroModelAssignments,
@@ -1100,6 +1106,7 @@ func (s componentSyncStep) Run() error {
 				return fmt.Errorf("sync sdd for %q: %w", adapter.Agent(), err)
 			}
 			s.countChanged(boolToInt(res.Changed), res.Files...)
+			s.countConflicts(res.Conflicts...)
 		}
 		return nil
 
@@ -1222,6 +1229,12 @@ func (s componentSyncStep) Run() error {
 func (s componentSyncStep) countChanged(n int, files ...string) {
 	if s.changedFiles != nil && n > 0 {
 		*s.changedFiles = append(*s.changedFiles, files...)
+	}
+}
+
+func (s componentSyncStep) countConflicts(conflicts ...string) {
+	if s.conflicts != nil {
+		*s.conflicts = append(*s.conflicts, conflicts...)
 	}
 }
 
@@ -1567,6 +1580,7 @@ func RunSyncWithSelection(homeDir string, selection model.Selection) (SyncResult
 		return result, err
 	}
 	result.ChangedFiles = dedupPaths(append(result.ChangedFiles, compatibilityChanged...))
+	result.RoleConflicts = dedupPaths(rt.roleConflicts)
 	result.FilesChanged = len(result.ChangedFiles)
 
 	// True no-op: agents were discovered but all managed assets were already
@@ -1845,6 +1859,9 @@ func RenderSyncReport(result SyncResult) string {
 			fmt.Fprintf(&b, "Agents: %s\n", joinAgentIDs(result.Agents))
 			fmt.Fprintln(&b, "All managed assets are already up to date. No files changed.")
 		}
+		for _, conflict := range result.RoleConflicts {
+			fmt.Fprintf(&b, "Role conflict: %s\n", conflict)
+		}
 		return strings.TrimRight(b.String(), "\n")
 	}
 
@@ -1879,6 +1896,9 @@ func RenderSyncReport(result SyncResult) string {
 	// FilesChanged is 0 only when all assets were already current (no-op path
 	// above handles that case). A non-zero value here reflects real writes.
 	fmt.Fprintf(&b, "Sync actions executed: %d files changed\n", result.FilesChanged)
+	for _, conflict := range result.RoleConflicts {
+		fmt.Fprintf(&b, "Role conflict: %s\n", conflict)
+	}
 
 	if len(result.ChangedFiles) > 0 {
 		for _, path := range result.ChangedFiles {

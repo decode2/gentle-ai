@@ -187,6 +187,7 @@ func RunInstall(args []string, detection system.DetectionResult) (InstallResult,
 		return result, fmt.Errorf("execute install pipeline: %w", result.Execution.Err)
 	}
 	result.PiCodeGraph = runtime.state.piCodeGraph
+	result.Execution.ManualActions = append(result.Execution.ManualActions, roleConflictActions(runtime.state.roleConflicts)...)
 
 	result.Verify = runPostApplyVerification(postApplyVerificationInput{
 		HomeDir:      homeDir,
@@ -570,6 +571,7 @@ type runtimeState struct {
 	manifest                 backup.Manifest
 	rollbackSnapshotDir      string
 	piCodeGraph              *communitytool.PiCodeGraphResult
+	roleConflicts            []string
 	compatibilityTransaction compatibilityRefreshTransaction
 
 	// engramVersionResolved, engramVersion, and engramVersionErr cache the
@@ -1552,6 +1554,7 @@ func (s componentApplyStep) Run() error {
 			targetDir := componentInjectionDirScoped(s.homeDir, s.workspaceDir, s.scope, adapter)
 			opts := sdd.InjectOptions{
 				OpenCodeModelAssignments:    s.selection.ModelAssignments,
+				RoleReconciliationMode:      sdd.RoleReconciliationInstall,
 				ClaudeModelAssignments:      s.selection.ClaudeModelAssignments,
 				ClaudePhaseAssignments:      s.selection.ClaudePhaseAssignments,
 				KiroModelAssignments:        s.selection.KiroModelAssignments,
@@ -1562,8 +1565,12 @@ func (s componentApplyStep) Run() error {
 				StrictTDD:                   s.selection.StrictTDD,
 				CodeGraphGuidanceMarkdown:   codeGraphGuidanceMarkdownForSDD(s.homeDir, s.selection.CommunityTools),
 			}
-			if _, err := sdd.Inject(targetDir, adapter, s.selection.SDDMode, opts); err != nil {
+			result, err := sdd.Inject(targetDir, adapter, s.selection.SDDMode, opts)
+			if err != nil {
 				return fmt.Errorf("inject sdd for %q: %w", adapter.Agent(), err)
+			}
+			if s.state != nil {
+				s.state.roleConflicts = append(s.state.roleConflicts, result.Conflicts...)
 			}
 		}
 		return nil
@@ -1707,6 +1714,7 @@ func ExecuteTUIInstall(homeDir string, selection model.Selection, resolved plann
 	orchestrator := pipeline.NewOrchestrator(pipeline.DefaultRollbackPolicy(), pipeline.WithFailurePolicy(pipeline.ContinueOnError), pipeline.WithProgressFunc(onProgress))
 	result := orchestrator.Execute(tuiInstallStagePlan(runtime))
 	runtime.state.cleanupRollbackSnapshot()
+	result.ManualActions = append(result.ManualActions, roleConflictActions(runtime.state.roleConflicts)...)
 	if runtime.state.piCodeGraph != nil {
 		result.ManualActions = append(result.ManualActions, runtime.state.piCodeGraph.ManualActions...)
 	}
@@ -1716,10 +1724,21 @@ func ExecuteTUIInstall(homeDir string, selection model.Selection, resolved plann
 // RenderInstallManualActions renders non-fatal completion actions after the
 // normal verification report so CLI users receive the same drift guidance.
 func RenderInstallManualActions(result InstallResult) string {
-	if result.PiCodeGraph == nil || len(result.PiCodeGraph.ManualActions) == 0 {
+	actions := append([]string{}, result.Execution.ManualActions...)
+	if result.PiCodeGraph != nil {
+		actions = append(actions, result.PiCodeGraph.ManualActions...)
+	}
+	if len(actions) == 0 {
 		return ""
 	}
-	return "\nManual actions required:\n- " + strings.Join(result.PiCodeGraph.ManualActions, "\n- ") + "\n"
+	return "\nManual actions required:\n- " + strings.Join(actions, "\n- ") + "\n"
+}
+
+func roleConflictActions(conflicts []string) []string {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return append([]string(nil), conflicts...)
 }
 
 // ResolveInstallProfile returns the platform profile from detection, defaulting to darwin/brew.
