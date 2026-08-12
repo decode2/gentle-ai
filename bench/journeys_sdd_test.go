@@ -57,6 +57,8 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// j94 proves #2031 executes recovery when escalated target scope changes;
 	// j95 proves #2945 corrected-tree inspection.
 	// j99 proves #2906 classifies missing FINALIZE contract flags before mutation.
+	// j101 proves #3065 collects an unrepresentable default workspace-overlay
+	// selector before authorization and preserves the staged predecessor.
 	// #1993 REMOVED two: j38 (the bound-passing-finish refusal routing to the
 	// review router) and j39 (the stranded-successor exit it named). Review
 	// acts after implementation and verification, so that refusal is gone and
@@ -70,13 +72,10 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// Bump this deliberately when a journey is added OR removed, and name it
 	// here: the count exists so a journey cannot appear or vanish unnoticed.
 	//
-	// 94 -> 95 because #3037 (j98) and #3038 (j99) each added one journey and
-	// each bumped 93 -> 94 against a main where the other had not landed. Both
-	// were green alone; merging both left 95 journeys under a baseline of 94
-	// and turned main red. The guard did exactly its job -- this is what a
-	// count catches that a per-PR suite cannot.
-	if got := len(seen); got != 95 {
-		t.Errorf("core journey count = %d, want 95", got)
+	// 95 -> 96 for issue #3065. Keep this explicit so a journey cannot appear
+	// or vanish unnoticed when independently-owned benchmark work lands.
+	if got := len(seen); got != 96 {
+		t.Errorf("core journey count = %d, want 96", got)
 	}
 	for id, found := range want {
 		if !found {
