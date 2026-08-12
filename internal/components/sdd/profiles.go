@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/agentguidance"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
@@ -27,6 +28,9 @@ var reservedProfileNames = func() map[string]bool {
 		"sdd-orchestrator": true,
 	}
 	for _, name := range opencode.JDPhases() {
+		names[name] = true
+	}
+	for _, name := range opencode.DirectRoles() {
 		names[name] = true
 	}
 	return names
@@ -74,11 +78,12 @@ func ProfilePhaseOrder() []string {
 }
 
 // ProfileAssignmentPhaseOrder returns the ordered list of agent names accepted
-// by profile phase assignments. This includes SDD phase agents plus the
-// Judgment Day agents that can be generated as profile-scoped overrides.
+// by profile assignments. Direct roles remain a separate runtime family even
+// though named profiles can assign them alongside SDD and Judgment Day agents.
 func ProfileAssignmentPhaseOrder() []string {
 	phases := ProfilePhaseOrder()
 	phases = append(phases, opencode.JDPhases()...)
+	phases = append(phases, opencode.DirectRoles()...)
 	return phases
 }
 
@@ -130,7 +135,7 @@ func ProfileAgentKeys(name string) []string {
 		suffix = "-" + name
 	}
 
-	keys := make([]string, 0, 14)
+	keys := make([]string, 0, 16)
 	keys = append(keys, "sdd-orchestrator"+suffix)
 	for _, phase := range profilePhaseOrder {
 		keys = append(keys, phase+suffix)
@@ -139,6 +144,7 @@ func ProfileAgentKeys(name string) []string {
 		for _, jd := range opencode.JDPhases() {
 			keys = append(keys, jd+suffix)
 		}
+		keys = append(keys, opencode.DirectRoleKeys(name)...)
 	}
 	return keys
 }
@@ -240,11 +246,14 @@ func extractModelFromAgent(agentMap map[string]any) model.ModelAssignment {
 }
 
 // GenerateProfileOverlay builds an OpenCode agent overlay JSON for the given
-// profile. The overlay contains 11 agent definitions:
+// profile. The overlay contains 13 agent definitions before optional
+// profile-scoped Judgment Day assignments:
 //   - sdd-orchestrator-{name}: primary mode, inlined orchestrator prompt (with suffixed
 //     sub-agent references and model assignments table), permissions scoped to *-{name}
 //   - sdd-{phase}-{name} (10 agents): subagent mode, hidden, file reference to
 //     the shared prompt at SharedPromptDir(homeDir)/sdd-{phase}.md
+//   - gentle-reviewer-{name} and gentle-worker-{name}: canonical managed direct
+//     role definitions with matching profile model assignments
 func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string, fallbackPhaseAssignments map[string]model.ModelAssignment, codeGraphGuidance string) ([]byte, error) {
 	if profile.Name == "" || profile.Name == "default" {
 		return nil, fmt.Errorf("GenerateProfileOverlay: profile name must be non-empty and not 'default'")
@@ -261,7 +270,7 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 	}
 
 	// Build the agent map.
-	agentMap := make(map[string]any, 11)
+	agentMap := make(map[string]any, 13)
 
 	// Orchestrator entry
 	taskPerms := map[string]any{
@@ -287,6 +296,9 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 	// need permission to delegate to the unsuffixed global agent keys.
 	for _, reviewAgent := range opencode.ReviewPhases() {
 		taskPerms[reviewAgent] = "allow"
+	}
+	for _, role := range opencode.DirectRoleKeys(profile.Name) {
+		taskPerms[role] = "allow"
 	}
 
 	orchEntry := map[string]any{
@@ -402,6 +414,31 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 			entry["variant"] = ""
 		}
 		agentMap[key] = entry
+	}
+
+	for _, role := range opencode.DirectRoles() {
+		definition, ok := opencode.DirectRoleDefinitionFor(role)
+		if !ok {
+			return nil, fmt.Errorf("missing direct role definition %q", role)
+		}
+
+		entry := map[string]any{
+			"mode":        "subagent",
+			"hidden":      true,
+			"description": definition.Description,
+			"prompt":      definition.Prompt,
+			"permission":  definition.Permission,
+		}
+		assignment := resolveProfileAssignment(profile, fallbackPhaseAssignments, role)
+		if assignment.ProviderID != "" && assignment.ModelID != "" {
+			entry["model"] = assignment.FullID()
+			if assignment.Effort != "" {
+				entry["variant"] = assignment.Effort
+			} else {
+				entry["variant"] = ""
+			}
+		}
+		agentMap[role+suffix] = entry
 	}
 
 	injectCodeGraphGuidanceIntoOpenCodeSubagentPrompts(agentMap, codeGraphGuidance)
@@ -569,6 +606,11 @@ func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
 		capability = model.ModelCapability(profile.OrchestratorModel.ModelID)
 	}
 	base = extractModelSection(base, capability)
+	routing, err := agentguidance.RenderRouting(model.AgentOpenCode)
+	if err != nil {
+		return "", fmt.Errorf("render profile routing guidance: %w", err)
+	}
+	base = filemerge.InjectMarkdownSection(base, agentguidance.RoutingSectionID, routing)
 
 	// Inject model assignments table.
 	const openMarker = "<!-- gentle-ai:sdd-model-assignments -->"
@@ -594,6 +636,9 @@ func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
 		if hasProfileAssignment(profile, jd) {
 			base = replacePhaseRef(base, jd, jd+suffix)
 		}
+	}
+	for _, role := range opencode.DirectRoles() {
+		base = replacePhaseRef(base, role, role+suffix)
 	}
 	// Also replace the orchestrator self-reference.
 	base = replacePhaseRef(base, "sdd-orchestrator", "sdd-orchestrator"+suffix)
@@ -724,6 +769,17 @@ func renderProfileModelAssignmentsSection(profile model.Profile) string {
 			"jd-fix-agent": "Judgment Day confirmed blocker fixes",
 		}[jd]
 		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", jd, phaseModel, reason))
+	}
+	for _, role := range opencode.DirectRoles() {
+		phaseModel := "—"
+		if m, ok := profile.PhaseAssignments[role]; ok && m.ProviderID != "" {
+			phaseModel = m.FullID()
+		}
+		reason := map[string]string{
+			opencode.GentleReviewerAgent: "Advisory non-SDD review",
+			opencode.GentleWorkerAgent:   "Bounded non-SDD implementation",
+		}[role]
+		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", role, phaseModel, reason))
 	}
 	b.WriteString("\n")
 	return b.String()

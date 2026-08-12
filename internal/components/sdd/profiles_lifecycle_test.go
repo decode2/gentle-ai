@@ -8,6 +8,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 )
 
 // TestProfileLifecycle_FullCRUD exercises the complete profile lifecycle:
@@ -23,7 +24,11 @@ func TestProfileLifecycle_FullCRUD(t *testing.T) {
 
 	// Step 1: Write a minimal opencode.json with just a model field.
 	initialJSON := `{
-  "model": "anthropic:claude-sonnet-4-5"
+  "model": "anthropic:claude-sonnet-4-5",
+  "agent": {
+    "existing-agent": { "mode": "subagent" },
+    "gentle-reviewer": { "mode": "subagent", "description": "user-owned" }
+  }
 }`
 	if err := os.WriteFile(settingsPath, []byte(initialJSON), 0o644); err != nil {
 		t.Fatalf("write initial opencode.json: %v", err)
@@ -56,6 +61,10 @@ func TestProfileLifecycle_FullCRUD(t *testing.T) {
 	cheapProfile := model.Profile{
 		Name:              "cheap",
 		OrchestratorModel: haikuModel,
+		PhaseAssignments: map[string]model.ModelAssignment{
+			opencode.GentleReviewerAgent: {ProviderID: "openai", ModelID: "gpt-5", Effort: "high"},
+			opencode.GentleWorkerAgent:   {ProviderID: "openrouter", ModelID: "qwen/qwen3.6-plus:free"},
+		},
 	}
 
 	overlayBytes, err := GenerateProfileOverlay(cheapProfile, home, settingsPath, nil, "")
@@ -93,8 +102,22 @@ func TestProfileLifecycle_FullCRUD(t *testing.T) {
 			t.Errorf("merged agent map missing key %q", key)
 		}
 	}
-	if len(expectedCheapKeys) != 11 {
-		t.Errorf("expected 11 cheap SDD profile keys, got %d", len(expectedCheapKeys))
+	if len(expectedCheapKeys) != 13 {
+		t.Errorf("expected 13 cheap profile keys, got %d", len(expectedCheapKeys))
+	}
+	for _, key := range []string{"existing-agent", "gentle-reviewer"} {
+		if _, exists := agentMap[key]; !exists {
+			t.Fatalf("existing agent %q was not preserved", key)
+		}
+	}
+	for key, want := range map[string]string{
+		opencode.GentleReviewerAgent + "-cheap": "openai/gpt-5",
+		opencode.GentleWorkerAgent + "-cheap":   "openrouter/qwen/qwen3.6-plus:free",
+	} {
+		agent := agentMap[key].(map[string]any)
+		if agent["model"] != want {
+			t.Fatalf("%s model = %v, want %s", key, agent["model"], want)
+		}
 	}
 
 	// Step 5: DetectProfiles → verify 1 profile detected with correct model.
@@ -113,6 +136,9 @@ func TestProfileLifecycle_FullCRUD(t *testing.T) {
 	}
 	if profiles[0].OrchestratorModel.ModelID != "claude-haiku-3-5" {
 		t.Errorf("OrchestratorModel.ModelID = %q, want %q", profiles[0].OrchestratorModel.ModelID, "claude-haiku-3-5")
+	}
+	if got := profiles[0].PhaseAssignments[opencode.GentleReviewerAgent].FullID(); got != "openai/gpt-5" {
+		t.Fatalf("reviewer assignment = %q, want openai/gpt-5", got)
 	}
 
 	// Step 6: Edit — create Profile{Name:"cheap", OrchestratorModel: sonnet} → generate new overlay → merge.
@@ -200,6 +226,9 @@ func profileSDDKeysForTest(name string) []string {
 	keys := []string{"sdd-orchestrator" + suffix}
 	for _, phase := range profilePhaseOrder {
 		keys = append(keys, phase+suffix)
+	}
+	if name != "" {
+		keys = append(keys, opencode.DirectRoleKeys(name)...)
 	}
 	return keys
 }
