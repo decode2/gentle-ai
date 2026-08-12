@@ -35,7 +35,7 @@ func makeTestState(phaseIdx int) *ModelPickerState {
 
 func TestModelPickerRows_Count(t *testing.T) {
 	rows := ModelPickerRows()
-	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases()) + 1 + len(opencode.ReviewPhases())
+	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases()) + 1 + len(opencode.ReviewPhases()) + 1 + len(opencode.DirectRoles())
 	if len(rows) != want {
 		t.Fatalf("ModelPickerRows() len = %d, want %d; rows = %v", len(rows), want, rows)
 	}
@@ -44,7 +44,17 @@ func TestModelPickerRows_Count(t *testing.T) {
 func TestModelPickerRows_ReviewAgentsFollowJudgmentDay(t *testing.T) {
 	rows := ModelPickerRows()
 	wantSuffix := append([]string{"--- Review agents ---"}, opencode.ReviewPhases()...)
-	got := rows[len(rows)-len(wantSuffix):]
+	start := -1
+	for i, row := range rows {
+		if row == "--- Review agents ---" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("review separator missing from rows: %v", rows)
+	}
+	got := rows[start : start+len(wantSuffix)]
 	for i := range wantSuffix {
 		if got[i] != wantSuffix[i] {
 			t.Fatalf("review row %d = %q, want %q; rows = %v", i, got[i], wantSuffix[i], rows)
@@ -54,7 +64,16 @@ func TestModelPickerRows_ReviewAgentsFollowJudgmentDay(t *testing.T) {
 
 func TestRenderModelPickerScrollsToReviewAgents(t *testing.T) {
 	rows := ModelPickerRows()
-	cursor := len(rows) - 1
+	cursor := -1
+	for i, row := range rows {
+		if row == "review-refuter" {
+			cursor = i
+			break
+		}
+	}
+	if cursor < 0 {
+		t.Fatal("review-refuter row missing")
+	}
 	state := ModelPickerState{AvailableIDs: []string{"openai"}}
 
 	output := RenderModelPicker(nil, state, cursor)
@@ -1506,11 +1525,34 @@ func TestHandleModelNav_ReviewAgentRowsAssignCorrectly(t *testing.T) {
 	}
 }
 
+func TestHandleModelNav_DirectRoleRowsAssignCorrectly(t *testing.T) {
+	rows := ModelPickerRows()
+	for _, role := range opencode.DirectRoles() {
+		t.Run(role, func(t *testing.T) {
+			rowIdx := -1
+			for i, row := range rows {
+				if row == role {
+					rowIdx = i
+					break
+				}
+			}
+			if rowIdx < 0 {
+				t.Fatalf("managed direct role row %q missing", role)
+			}
+			state := makeTestState(rowIdx)
+			_, updated := handleModelNav("enter", state, map[string]model.ModelAssignment{})
+			if got := updated[role]; got.ProviderID != "test-provider" || got.ModelID != "model-alpha" {
+				t.Fatalf("%s assignment = %+v, want test-provider/model-alpha", role, got)
+			}
+		})
+	}
+}
+
 // ─── ModelPickerRowsForProfile ──────────────────────────────────────────
 
 func TestModelPickerRowsForProfile(t *testing.T) {
 	rows := ModelPickerRowsForProfile()
-	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases())
+	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases()) + 1 + len(opencode.DirectRoles())
 	if len(rows) != want {
 		t.Fatalf("ModelPickerRowsForProfile() len = %d, want %d; rows = %v", len(rows), want, rows)
 	}
@@ -1533,6 +1575,18 @@ func TestModelPickerRowsForProfile(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("ModelPickerRowsForProfile() missing JD agent %q; got: %v", jd, rows)
+		}
+	}
+	for _, role := range opencode.DirectRoles() {
+		found := false
+		for _, row := range rows {
+			if row == role {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("ModelPickerRowsForProfile() missing managed direct role %q; got: %v", role, rows)
 		}
 	}
 	for _, reviewAgent := range opencode.ReviewPhases() {

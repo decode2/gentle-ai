@@ -106,9 +106,9 @@ func TestRenderProfileCreate_Step1_ShowsJDRowsAssignmentAndClearHelp(t *testing.
 		"jd-judge-a": {ProviderID: "openai", ModelID: "gpt-5"},
 	}
 
-	output := screens.RenderProfileCreate(1, draft, "", 0, "", true, assignments, picker, 0)
+	output := screens.RenderProfileCreate(1, draft, "", 0, "", true, assignments, picker, len(screens.ModelPickerRowsForProfile())-1)
 
-	for _, want := range []string{"--- Judgment Day ---", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "OpenAI / GPT-5", "backspace: clear"} {
+	for _, want := range []string{"--- Judgment Day ---", "jd-judge-a", "jd-judge-b", "jd-fix-agent", "--- Managed direct roles ---", "gentle-reviewer", "gentle-worker", "OpenAI / GPT-5", "backspace: clear"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("profile model step missing %q; got:\n%s", want, output)
 		}
@@ -164,7 +164,7 @@ func TestProfileCreateOptionCount_Step1IncludesJDRows(t *testing.T) {
 	picker := screens.ModelPickerState{AvailableIDs: []string{"anthropic"}}
 	count := screens.ProfileCreateOptionCount(1, picker)
 
-	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases()) + 2
+	want := 2 + len(opencode.SDDPhases()) + 1 + len(opencode.JDPhases()) + 1 + len(opencode.DirectRoles()) + 2
 	if count != want {
 		t.Errorf("expected option count %d for step 1 with JD rows, got %d", want, count)
 	}
