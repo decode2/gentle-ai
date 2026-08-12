@@ -67,6 +67,8 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// SDD status surfaces and preserves the same routing state.
 	//
 	// j96 proves #2891 blocks an off-path sibling in a nested same-repository workspace.
+	// j100 proves #3026 renders conditional managed OpenCode direct roles and
+	// named profile model assignments for non-SDD issue/PR work.
 	// Bump this deliberately when a journey is added OR removed, and name it
 	// here: the count exists so a journey cannot appear or vanish unnoticed.
 	//
@@ -74,9 +76,9 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// each bumped 93 -> 94 against a main where the other had not landed. Both
 	// were green alone; merging both left 95 journeys under a baseline of 94
 	// and turned main red. The guard did exactly its job -- this is what a
-	// count catches that a per-PR suite cannot.
-	if got := len(seen); got != 95 {
-		t.Errorf("core journey count = %d, want 95", got)
+	// count catches that a per-PR suite cannot. 95 -> 96 adds #3026 (j100).
+	if got := len(seen); got != 96 {
+		t.Errorf("core journey count = %d, want 96", got)
 	}
 	for id, found := range want {
 		if !found {
