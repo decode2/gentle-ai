@@ -442,6 +442,9 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 	}
 
 	injectCodeGraphGuidanceIntoOpenCodeSubagentPrompts(agentMap, codeGraphGuidance)
+	if err := attachProfileRoleOwnership(agentMap, profile.Name); err != nil {
+		return nil, err
+	}
 
 	overlay := map[string]any{
 		"agent": agentMap,
@@ -785,64 +788,75 @@ func renderProfileModelAssignmentsSection(profile model.Profile) string {
 	return b.String()
 }
 
-// RemoveProfileAgents reads the opencode.json at settingsPath, removes all agent
-// keys belonging to the named profile (sdd-orchestrator-{name},
-// sdd-{phase}-{name}, and profile-scoped Judgment Day agents), and atomically
-// writes the result back.
+// RemoveProfileAgents removes generated named-profile entries and owned direct
+// roles from opencode.json, then atomically writes the result back.
 //
 // Returns an error if name is empty or "default" (cannot remove the default profile).
 // If the profile's agent keys are not present, the operation is a no-op (no error).
 func RemoveProfileAgents(settingsPath string, profileName string) error {
+	report, err := RemoveProfileAgentsWithReport(settingsPath, profileName)
+	for _, warning := range report.Warnings() {
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", warning)
+	}
+	return err
+}
+
+func RemoveProfileAgentsWithReport(settingsPath string, profileName string) (ProfileOwnershipReport, error) {
 	if profileName == "" || profileName == "default" {
-		return fmt.Errorf("RemoveProfileAgents: cannot remove default profile (name=%q)", profileName)
+		return ProfileOwnershipReport{}, fmt.Errorf("RemoveProfileAgents: cannot remove default profile (name=%q)", profileName)
 	}
 
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // No-op: file doesn't exist
+			return ProfileOwnershipReport{}, nil // No-op: file doesn't exist
 		}
-		return fmt.Errorf("read settings %q: %w", settingsPath, err)
+		return ProfileOwnershipReport{}, fmt.Errorf("read settings %q: %w", settingsPath, err)
 	}
 
 	root, err := filemerge.UnmarshalJSONObject(data)
 	if err != nil {
-		return fmt.Errorf("parse settings %q: %w", settingsPath, err)
+		return ProfileOwnershipReport{}, fmt.Errorf("parse settings %q: %w", settingsPath, err)
 	}
 
 	agentRaw, ok := root["agent"]
 	if !ok {
-		return nil // No-op: no agent section
+		return ProfileOwnershipReport{}, nil // No-op: no agent section
 	}
 	agentMap, ok := agentRaw.(map[string]any)
 	if !ok {
-		return nil // No-op: malformed
+		return ProfileOwnershipReport{}, nil // No-op: malformed
 	}
 
 	// Delete the profile keys, tracking how many were actually present.
 	keysToDelete := ProfileAgentKeys(profileName)
 	deleted := 0
 	for _, key := range keysToDelete {
+		if key == opencode.GentleReviewerAgent+"-"+profileName || key == opencode.GentleWorkerAgent+"-"+profileName {
+			continue
+		}
 		if _, exists := agentMap[key]; exists {
 			delete(agentMap, key)
 			deleted++
 		}
 	}
+	ownedDirectRoles, ownershipReport := removeProfileRoleOwnership(agentMap, profileName)
+	deleted += ownedDirectRoles
 
 	// If no keys were found and deleted, the profile doesn't exist — no-op.
 	// Returning early avoids re-serializing the JSON, which would change key
 	// ordering and trigger false change detection on subsequent reads.
 	if deleted == 0 {
-		return nil
+		return ownershipReport, nil
 	}
 
 	root["agent"] = agentMap
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal settings: %w", err)
+		return ownershipReport, fmt.Errorf("marshal settings: %w", err)
 	}
 	out = append(out, '\n')
 
 	_, err = filemerge.WriteFileAtomic(settingsPath, out, 0o644)
-	return err
+	return ownershipReport, err
 }

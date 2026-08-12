@@ -24,6 +24,8 @@ type InjectionResult struct {
 	Changed   bool
 	Files     []string
 	Conflicts []string
+
+	OwnershipWarnings []string
 }
 
 type RoleReconciliationMode uint8
@@ -323,6 +325,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 	}
 
 	files := make([]string, 0)
+	warnings := make([]string, 0)
 	changed := false
 	var conflicts []string
 
@@ -562,10 +565,12 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("generate profile overlay %q: %w", profile.Name, profileErr)
 				}
-				profileResult, profileErr := mergeJSONFile(settingsPath, profileOverlay)
+				profileResult, ownershipReport, profileErr := mergeProfileJSONFile(settingsPath, profileOverlay, profile.Name)
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("merge profile overlay %q: %w", profile.Name, profileErr)
 				}
+				ownershipWarnings := ownershipReport.Warnings()
+				warnings = append(warnings, ownershipWarnings...)
 				changed = changed || profileResult.writeResult.Changed
 				mergedSettingsBytes = profileResult.merged
 			}
@@ -817,7 +822,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 		}
 	}
 
-	return InjectionResult{Changed: changed, Files: files, Conflicts: conflicts}, nil
+	return InjectionResult{Changed: changed, Files: files, Conflicts: conflicts, OwnershipWarnings: warnings}, nil
 }
 
 func validateOpenClawWorkspacePath(workspaceDir string, adapter agents.Adapter) error {
@@ -2110,8 +2115,8 @@ func migrateLegacyOpenCodeAgentsKey(baseJSON []byte) ([]byte, error) {
 		return baseJSON, nil
 	}
 
-	root := map[string]any{}
-	if err := json.Unmarshal(baseJSON, &root); err != nil {
+	root, err := filemerge.UnmarshalJSONObject(baseJSON)
+	if err != nil {
 		// Preserve prior behavior for non-JSON/non-parseable inputs.
 		return baseJSON, nil
 	}

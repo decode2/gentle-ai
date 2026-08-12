@@ -1058,7 +1058,11 @@ func (s componentSyncStep) Run() error {
 		//   from disk so their orchestrator prompts are refreshed from updated embedded
 		//   assets while model assignments are preserved.
 		profiles := s.selection.Profiles
-		if len(profiles) == 0 && profileStrategy != model.SDDProfileStrategyExternalSingleActive {
+		if profileStrategy == model.SDDProfileStrategyExternalSingleActive {
+			// External profile files are owned by their external manager. Do not
+			// regenerate named profiles even when a caller supplied stale entries.
+			profiles = nil
+		} else if len(profiles) == 0 {
 			settingsPath := ""
 			for _, adapter := range adapters {
 				if adapter.Agent() == model.AgentOpenCode {
@@ -1107,6 +1111,9 @@ func (s componentSyncStep) Run() error {
 			}
 			s.countChanged(boolToInt(res.Changed), res.Files...)
 			s.countConflicts(res.Conflicts...)
+			for _, warning := range res.OwnershipWarnings {
+				fmt.Fprintf(os.Stderr, "WARNING: %s\n", warning)
+			}
 		}
 		return nil
 
