@@ -72,6 +72,8 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// SDD status surfaces and preserves the same routing state.
 	//
 	// j96 proves #2891 blocks an off-path sibling in a nested same-repository workspace.
+	// j101 proves #3092 preserves a symbolic upstream review base through pre-push
+	// while origin remains the independent tracking and push destination.
 	// Bump this deliberately when a journey is added OR removed, and name it
 	// here: the count exists so a journey cannot appear or vanish unnoticed.
 	//
@@ -84,8 +86,8 @@ func TestPortableSDDFailClosedAuthorityJourneysAreRegistered(t *testing.T) {
 	// baseline, which #1890 moved to 97 while this PR was open. The branch
 	// carried 96, derived from a main that had 95. Taking either side verbatim
 	// would have left the count describing a tree that does not exist.
-	if got := len(seen); got != 98 {
-		t.Errorf("core journey count = %d, want 98", got)
+	if got := len(seen); got != 99 {
+		t.Errorf("core journey count = %d, want 99", got)
 	}
 	for id, found := range want {
 		if !found {
