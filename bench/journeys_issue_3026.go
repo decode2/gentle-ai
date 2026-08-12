@@ -20,6 +20,11 @@ var issue3026SyncCapability = &Capability{
 	},
 }
 
+var issue3026InstallCapability = &Capability{
+	Verb:  []string{"install"},
+	Flags: []string{"--agent", "--component", "--sdd-mode"},
+}
+
 type issue3026Agent struct {
 	Mode       string         `json:"mode"`
 	Hidden     bool           `json:"hidden"`
@@ -33,18 +38,28 @@ type issue3026OpenCodeSettings struct {
 }
 
 // issue3026Journeys replays the non-SDD gap from #3026: a legacy orchestrator
-// had only native direct fallbacks, while public sync must publish safe managed
-// roles, conditional routing, and named profile model assignments.
+// had only native direct fallbacks, while public install and sync must publish
+// safe managed roles, conditional routing, and named profile model assignments.
 func issue3026Journeys() []Journey {
 	return []Journey{{
 		ID:     "j100-opencode-managed-direct-role-profile-routing",
-		Title:  "OpenCode sync replaces native direct fallback with conditional managed roles and profile models",
+		Title:  "OpenCode install and sync replace native direct fallback with managed roles and profile models",
 		Source: "https://github.com/Gentleman-Programming/gentle-ai/issues/3026",
 		Steps: []Step{
 			{Name: "fixture: repository", Fixture: baseRepo},
 			{Name: "fixture: legacy non-SDD routing without managed roles", Fixture: seedIssue3026LegacyRouting},
 			{
-				Name:     "public sync renders managed roles and named profile assignments",
+				Name:     "public install creates default managed roles",
+				Requires: issue3026InstallCapability,
+				Args: func(*Sandbox) ([]string, error) {
+					return []string{
+						"install", "--agent", "opencode", "--component", "sdd", "--sdd-mode", "multi",
+					}, nil
+				},
+				After: assertIssue3026InstallCreatedRoles,
+			},
+			{
+				Name:     "public sync refreshes managed roles and renders named profile assignments",
 				Requires: issue3026SyncCapability,
 				Args: func(*Sandbox) ([]string, error) {
 					return []string{
@@ -58,6 +73,22 @@ func issue3026Journeys() []Journey {
 			},
 		},
 	}}
+}
+
+func assertIssue3026InstallCreatedRoles(sandbox *Sandbox, observation Observation) error {
+	if observation.ExitCode != 0 {
+		return fmt.Errorf("public install failed: %s", firstLine(observation.Stderr))
+	}
+	settings, err := readIssue3026Settings(sandbox)
+	if err != nil {
+		return err
+	}
+	for _, role := range []string{"gentle-reviewer", "gentle-worker"} {
+		if _, ok := settings.Agent[role]; !ok {
+			return fmt.Errorf("public install did not create managed role %q", role)
+		}
+	}
+	return nil
 }
 
 func seedIssue3026LegacyRouting(sandbox *Sandbox) error {
