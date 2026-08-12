@@ -27,6 +27,12 @@ type InjectionResult struct {
 
 type InjectOptions struct {
 	OpenCodeModelAssignments map[string]model.ModelAssignment
+	// IncludeOpenCodeBackgroundPolicy includes the resolved OpenCode-only
+	// background-task policy in rendered prompts. The zero value is false. The
+	// caller MUST set this only after a later intent/capability resolution step;
+	// this field does not resolve runtime capability or enable background work.
+	IncludeOpenCodeBackgroundPolicy bool
+
 	// ClaudeModelAssignments is the legacy model-only Claude assignment map.
 	// Prefer ClaudePhaseAssignments for new callers that need per-phase effort.
 	ClaudeModelAssignments      map[string]model.ClaudeModelAlias
@@ -67,6 +73,12 @@ type InjectOptions struct {
 	// inject into SDD phase sub-agent prompts. Empty means disabled; normal SDD
 	// installs must leave it empty unless the Community Tool path enabled CodeGraph.
 	CodeGraphGuidanceMarkdown string
+}
+
+func (opts InjectOptions) orchestratorPolicyRenderOptions() OrchestratorRenderOptions {
+	return OrchestratorRenderOptions{
+		IncludeOpenCodeBackgroundPolicy: opts.IncludeOpenCodeBackgroundPolicy,
+	}
 }
 
 // workflowInjector is an optional adapter capability: if an adapter
@@ -323,7 +335,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 	if adapter.Agent() != model.AgentOpenCode && adapter.Agent() != model.AgentKilocode {
 		switch adapter.SystemPromptStrategy() {
 		case model.StrategyMarkdownSections:
-			result, err := injectMarkdownSections(homeDir, adapter, opts.ClaudeModelAssignments, opts.ClaudePhaseAssignments)
+			result, err := injectMarkdownSections(homeDir, adapter, opts.ClaudeModelAssignments, opts.ClaudePhaseAssignments, opts.orchestratorPolicyRenderOptions())
 			if err != nil {
 				return InjectionResult{}, err
 			}
@@ -354,7 +366,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			// Write the SDD orchestrator as a standalone Jinja include module.
 			// The static KIMI.md template references it via {% include "sdd-orchestrator.md" %}.
 			configDir := adapter.GlobalConfigDir(homeDir)
-			content := renderSDDOrchestratorAsset(adapter.Agent())
+			content := renderSDDOrchestratorAsset(adapter.Agent(), opts.orchestratorPolicyRenderOptions())
 			modulePath := filepath.Join(configDir, "sdd-orchestrator.md")
 			writeResult, err := filemerge.WriteFileAtomic(modulePath, []byte(content), 0o644)
 			if err != nil {
@@ -488,7 +500,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				changed = changed || promptsChanged
 			}
 
-			overlayBytes, err = inlineOpenCodeSDDPrompts(overlayBytes, homeDir, settingsPath, adapter.Agent(), opts.PreserveOpenCodeOrchestratorPrompt, opts.CodeGraphGuidanceMarkdown)
+			overlayBytes, err = inlineOpenCodeSDDPrompts(overlayBytes, homeDir, settingsPath, adapter.Agent(), opts.PreserveOpenCodeOrchestratorPrompt, opts.orchestratorPolicyRenderOptions(), opts.CodeGraphGuidanceMarkdown)
 			if err != nil {
 				return InjectionResult{}, fmt.Errorf("inline OpenCode SDD prompts: %w", err)
 			}
@@ -551,7 +563,7 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, fmt.Errorf("clean stale profile JD agents %q: %w", profile.Name, cleanupErr)
 				}
 				changed = changed || cleanupResult.Changed
-				profileOverlay, profileErr := GenerateProfileOverlay(profile, homeDir, settingsPath, opts.OpenCodeModelAssignments, opts.CodeGraphGuidanceMarkdown)
+				profileOverlay, profileErr := GenerateProfileOverlay(profile, homeDir, settingsPath, opts.OpenCodeModelAssignments, opts.CodeGraphGuidanceMarkdown, opts.orchestratorPolicyRenderOptions())
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("generate profile overlay %q: %w", profile.Name, profileErr)
 				}
@@ -820,7 +832,7 @@ func validateOpenClawWorkspacePath(workspaceDir string, adapter agents.Adapter) 
 	return nil
 }
 
-func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string, agent model.AgentID, preserveExistingOrchestratorPrompt bool, codeGraphGuidance string) ([]byte, error) {
+func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string, agent model.AgentID, preserveExistingOrchestratorPrompt bool, renderOptions OrchestratorRenderOptions, codeGraphGuidance string) ([]byte, error) {
 	var overlay map[string]any
 	if err := json.Unmarshal(overlayBytes, &overlay); err != nil {
 		return nil, fmt.Errorf("unmarshal OpenCode SDD overlay: %w", err)
@@ -864,12 +876,12 @@ func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string,
 			}
 		}
 		if existingPrompt != "" {
-			orchestratorMap["prompt"] = renderPreservedOpenCodeOrchestratorPrompt(existingPrompt, agent)
+			orchestratorMap["prompt"] = renderPreservedOpenCodeOrchestratorPrompt(existingPrompt, agent, renderOptions)
 		} else {
-			orchestratorMap["prompt"] = renderSDDOrchestratorAsset(agent)
+			orchestratorMap["prompt"] = renderSDDOrchestratorAsset(agent, renderOptions)
 		}
 	} else {
-		orchestratorMap["prompt"] = renderSDDOrchestratorAsset(agent)
+		orchestratorMap["prompt"] = renderSDDOrchestratorAsset(agent, renderOptions)
 	}
 
 	// Carry the organic routing guidance across the wholesale prompt assignment
@@ -1041,8 +1053,16 @@ func migratePreservedOpenCodeOrchestratorPrompt(prompt string) string {
 func renderPreservedOpenCodeOrchestratorPrompt(
 	prompt string,
 	agent model.AgentID,
+	options ...OrchestratorRenderOptions,
 ) string {
 	migrated := migratePreservedOpenCodeOrchestratorPrompt(prompt)
+	var renderOptions OrchestratorRenderOptions
+	if len(options) > 0 {
+		renderOptions = options[0]
+	}
+	if policy := renderOpenCodeBackgroundPolicy(agent, renderOptions); policy != "" {
+		migrated = appendOpenCodeBackgroundPolicy(migrated, policy)
+	}
 	return strings.ReplaceAll(migrated, runtimeAgentIDPlaceholder, string(agent))
 }
 
@@ -2151,7 +2171,7 @@ func injectFileAppend(homeDir string, adapter agents.Adapter, opts InjectOptions
 	}
 
 	// Use agent-specific SDD orchestrator content when available; fall back to generic.
-	content := renderSDDOrchestratorAsset(adapter.Agent())
+	content := renderSDDOrchestratorAsset(adapter.Agent(), opts.orchestratorPolicyRenderOptions())
 
 	// Codex-only: substitute {{CODEX_PHASE_EFFORTS}} with a rendered per-phase
 	// effort table. Only fires when the adapter implements codexModelResolver.
@@ -2368,9 +2388,9 @@ func stripBareOrchestratorSection(content string) string {
 	return result
 }
 
-func injectMarkdownSections(homeDir string, adapter agents.Adapter, legacyAssignments map[string]model.ClaudeModelAlias, phaseAssignments map[string]model.ClaudePhaseAssignment) (InjectionResult, error) {
+func injectMarkdownSections(homeDir string, adapter agents.Adapter, legacyAssignments map[string]model.ClaudeModelAlias, phaseAssignments map[string]model.ClaudePhaseAssignment, renderOptions OrchestratorRenderOptions) (InjectionResult, error) {
 	promptPath := adapter.SystemPromptFile(homeDir)
-	content := renderSDDOrchestratorAsset(adapter.Agent())
+	content := renderSDDOrchestratorAsset(adapter.Agent(), renderOptions)
 
 	existing, err := readFileOrEmpty(promptPath)
 	if err != nil {
