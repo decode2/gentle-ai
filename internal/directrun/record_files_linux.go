@@ -15,13 +15,14 @@ import (
 )
 
 type linuxRecordFiles struct {
-	mu     sync.Mutex
-	lease  *reviewtransaction.RepositoryIdentityLease
-	key    Digest
-	root   int
-	rootID fileIdentity
-	dirs   [3]fileIdentity
-	closed bool
+	mu             sync.Mutex
+	lease          *reviewtransaction.RepositoryIdentityLease
+	key            Digest
+	root           int
+	rootID         fileIdentity
+	dirs           [3]fileIdentity
+	closed         bool
+	afterFirstStat func()
 }
 type fileIdentity struct{ dev, ino uint64 }
 
@@ -76,7 +77,7 @@ func (f *linuxRecordFiles) Read(ctx context.Context, key RecordKey) ([]byte, err
 		return nil, err
 	}
 	defer unix.Close(dir)
-	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return nil, ErrNotFound
 	}
@@ -85,11 +86,14 @@ func (f *linuxRecordFiles) Read(ctx context.Context, key RecordKey) ([]byte, err
 	}
 	defer unix.Close(fd)
 	var st unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o777 != 0o600 {
+	if unix.Fstat(fd, &st) != nil || !validRecordStat(&st) {
 		return nil, ErrBackendUnavailable
 	}
-	if st.Size > maxRecordBytes {
+	if st.Size < 0 || st.Size > maxRecordBytes {
 		return nil, ErrRecordTooLarge
+	}
+	if f.afterFirstStat != nil {
+		f.afterFirstStat()
 	}
 	b := make([]byte, int(st.Size))
 	for n := 0; n < len(b); {
@@ -102,7 +106,23 @@ func (f *linuxRecordFiles) Read(ctx context.Context, key RecordKey) ([]byte, err
 		}
 		n += k
 	}
+	var extra [1]byte
+	if n, err := unix.Read(fd, extra[:]); err != nil || n != 0 {
+		return nil, ErrBackendUnavailable
+	}
+	var end unix.Stat_t
+	if unix.Fstat(fd, &end) != nil || !sameRecordStat(&st, &end) {
+		return nil, ErrBackendUnavailable
+	}
 	return b, nil
+}
+
+func validRecordStat(st *unix.Stat_t) bool {
+	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&0o777 == 0o600
+}
+
+func sameRecordStat(a, b *unix.Stat_t) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mode == b.Mode && a.Mtim == b.Mtim && a.Ctim == b.Ctim
 }
 
 func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []byte) error {
@@ -180,7 +200,7 @@ func (f *linuxRecordFiles) walk(create bool) (int, error) {
 			return -1, ErrBackendUnavailable
 		}
 		var st unix.Stat_t
-		if unix.Fstat(next, &st) != nil || st.Mode&0o777 != 0o700 {
+		if unix.Fstat(next, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Mode&0o7777 != 0o700 {
 			_ = unix.Close(next)
 			return -1, ErrBackendUnavailable
 		}
