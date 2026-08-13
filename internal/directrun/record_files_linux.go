@@ -303,6 +303,33 @@ func (f *linuxRecordFiles) recordName(ctx context.Context, key RecordKey) (strin
 	}
 	return string(key.Record)[len("sha256:"):], nil
 }
+
+func (f *linuxRecordFiles) lockFile(ctx context.Context, flags int) (int, fileIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f == nil || f.closed || f.lease.Validate(ctx) != nil || digest("gentle-ai.direct-run-store/v1", []byte(f.lease.StorageKey())) != f.key {
+		return -1, fileIdentity{}, ErrIdentityChanged
+	}
+	dir, err := f.walk(false)
+	if err != nil {
+		return -1, fileIdentity{}, err
+	}
+	defer unix.Close(dir)
+	fd, err := unix.Openat(dir, ".record.lock", flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return -1, fileIdentity{}, ErrBackendUnavailable
+	}
+	var open, named unix.Stat_t
+	if unix.Fstat(fd, &open) != nil || unix.Fstatat(dir, ".record.lock", &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !validLockStat(&open) || !validLockStat(&named) || open.Dev != named.Dev || open.Ino != named.Ino {
+		_ = unix.Close(fd)
+		return -1, fileIdentity{}, ErrBackendUnavailable
+	}
+	return fd, fileIdentity{uint64(open.Dev), uint64(open.Ino)}, nil
+}
+
+func validLockStat(st *unix.Stat_t) bool {
+	return st.Mode&unix.S_IFMT == unix.S_IFREG && st.Mode&0o7777 == 0o600
+}
 func (f *linuxRecordFiles) walk(create bool) (int, error) {
 	var root unix.Stat_t
 	if unix.Fstat(f.root, &root) != nil || f.rootID != (fileIdentity{uint64(root.Dev), root.Ino}) {
