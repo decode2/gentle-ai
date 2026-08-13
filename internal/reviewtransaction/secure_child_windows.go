@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	errSecureWindowsChildInvalid = errors.New("secure Windows child access is invalid")
-	errSecureWindowsChildMissing = errors.New("secure Windows child is missing")
-	errSecureWindowsChildExists  = errors.New("secure Windows child already exists")
+	errSecureWindowsChildInvalid = errors.New("secure Windows child access is invalid") // refusal:by-design world-action: the caller must provide a valid parent authority and child name before access can proceed
+	errSecureWindowsChildMissing = errors.New("secure Windows child is missing")        // refusal:by-design world-action: the caller selects whether to create the child or open a different existing child
+	errSecureWindowsChildExists  = errors.New("secure Windows child already exists")    // refusal:by-design world-action: the caller selects conflict handling before retrying creation
 )
 
 type secureWindowsChildID struct{ volume, high, low uint32 }
