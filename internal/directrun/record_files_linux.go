@@ -1,0 +1,218 @@
+//go:build linux
+
+package directrun
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"strings"
+	"sync"
+
+	"github.com/gentleman-programming/gentle-ai/v2/internal/reviewtransaction"
+	"golang.org/x/sys/unix"
+)
+
+type linuxRecordFiles struct {
+	mu     sync.Mutex
+	lease  *reviewtransaction.RepositoryIdentityLease
+	key    Digest
+	root   int
+	rootID fileIdentity
+	dirs   [3]fileIdentity
+	closed bool
+}
+type fileIdentity struct{ dev, ino uint64 }
+
+func newLinuxRecordFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease) (*linuxRecordFiles, error) {
+	if lease == nil || lease.Validate(ctx) != nil || !hexPart(lease.StorageKey()) {
+		return nil, ErrIdentityChanged
+	}
+	root, err := unix.Open(lease.Identity().GitCommonDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, ErrBackendUnavailable
+	}
+	var st unix.Stat_t
+	if unix.Fstat(root, &st) != nil {
+		_ = unix.Close(root)
+		return nil, ErrBackendUnavailable
+	}
+	f := &linuxRecordFiles{lease: lease, key: digest("gentle-ai.direct-run-store/v1", []byte(lease.StorageKey())), root: root, rootID: fileIdentity{uint64(st.Dev), st.Ino}}
+	fd, err := f.walk(true)
+	if err != nil {
+		_ = unix.Close(root)
+		return nil, err
+	}
+	_ = unix.Close(fd)
+	return f, nil
+}
+
+func (f *linuxRecordFiles) Close() error {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	if unix.Close(f.root) != nil {
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (f *linuxRecordFiles) Read(ctx context.Context, key RecordKey) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	name, err := f.recordName(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := f.walk(false)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(dir)
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, ErrBackendUnavailable
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o777 != 0o600 {
+		return nil, ErrBackendUnavailable
+	}
+	if st.Size > maxRecordBytes {
+		return nil, ErrRecordTooLarge
+	}
+	b := make([]byte, int(st.Size))
+	for n := 0; n < len(b); {
+		k, e := unix.Read(fd, b[n:])
+		if e != nil {
+			return nil, ErrBackendUnavailable
+		}
+		if k == 0 {
+			return nil, ErrBackendUnavailable
+		}
+		n += k
+	}
+	return b, nil
+}
+
+func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(value) > maxRecordBytes {
+		return ErrRecordTooLarge
+	}
+	name, err := f.recordName(ctx, key)
+	if err != nil {
+		return err
+	}
+	dir, err := f.walk(false)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dir)
+	tmp, fd, err := newRecordTemp(dir)
+	if err != nil {
+		return ErrBackendUnavailable
+	}
+	defer unix.Close(fd)
+	defer unix.Unlinkat(dir, tmp, 0)
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o777 != 0o600 {
+		return ErrBackendUnavailable
+	}
+	for len(value) > 0 {
+		n, e := unix.Write(fd, value)
+		if e != nil || n == 0 {
+			return ErrBackendUnavailable
+		}
+		value = value[n:]
+	}
+	if unix.Fsync(fd) != nil {
+		return ErrBackendUnavailable
+	}
+	if err := unix.Linkat(dir, tmp, dir, name, 0); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return ErrAlreadyExists
+		}
+		return ErrBackendUnavailable
+	}
+	if unix.Fsync(dir) != nil {
+		_ = unix.Unlinkat(dir, name, 0)
+		_ = unix.Fsync(dir)
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+func (f *linuxRecordFiles) recordName(ctx context.Context, key RecordKey) (string, error) {
+	if f == nil || f.closed || f.lease.Validate(ctx) != nil || digest("gentle-ai.direct-run-store/v1", []byte(f.lease.StorageKey())) != f.key || key.Repository != f.key || !hexDigest(key.Record) {
+		return "", ErrIdentityChanged
+	}
+	return string(key.Record)[len("sha256:"):], nil
+}
+func (f *linuxRecordFiles) walk(create bool) (int, error) {
+	var root unix.Stat_t
+	if unix.Fstat(f.root, &root) != nil || f.rootID != (fileIdentity{uint64(root.Dev), root.Ino}) {
+		return -1, ErrBackendUnavailable
+	}
+	current := f.root
+	for i, name := range []string{"gentle-ai", "direct-run-records", string(f.key)[len("sha256:"):]} {
+		next, err := unix.Openat(current, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(err, unix.ENOENT) && create {
+			if mkdirErr := unix.Mkdirat(current, name, 0o700); mkdirErr == nil || errors.Is(mkdirErr, unix.EEXIST) {
+				next, err = unix.Openat(current, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			}
+		}
+		if current != f.root {
+			_ = unix.Close(current)
+		}
+		if err != nil {
+			return -1, ErrBackendUnavailable
+		}
+		var st unix.Stat_t
+		if unix.Fstat(next, &st) != nil || st.Mode&0o777 != 0o700 {
+			_ = unix.Close(next)
+			return -1, ErrBackendUnavailable
+		}
+		id := fileIdentity{uint64(st.Dev), st.Ino}
+		if create {
+			f.dirs[i] = id
+		} else if f.dirs[i] != id {
+			_ = unix.Close(next)
+			return -1, ErrBackendUnavailable
+		}
+		current = next
+	}
+	return current, nil
+}
+func newRecordTemp(dir int) (string, int, error) {
+	for range 8 {
+		var b [12]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			break
+		}
+		name := ".record-" + hex.EncodeToString(b[:])
+		fd, err := unix.Openat(dir, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err == nil {
+			return name, fd, nil
+		}
+	}
+	return "", -1, ErrBackendUnavailable
+}
+func hexPart(s string) bool { return len(s) == 64 && strings.Trim(s, "0123456789abcdef") == "" }
+func hexDigest(d Digest) bool {
+	return strings.HasPrefix(string(d), "sha256:") && hexPart(string(d)[len("sha256:"):])
+}
