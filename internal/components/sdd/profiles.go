@@ -255,16 +255,21 @@ func extractModelFromAgent(agentMap map[string]any) model.ModelAssignment {
 //   - gentle-reviewer-{name} and gentle-worker-{name}: canonical managed direct
 //     role definitions with matching profile model assignments
 func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string, fallbackPhaseAssignments map[string]model.ModelAssignment, codeGraphGuidance string) ([]byte, error) {
+	return generateProfileOverlayForAgent(profile, homeDir, settingsPath, fallbackPhaseAssignments, codeGraphGuidance, model.AgentOpenCode)
+}
+
+func generateProfileOverlayForAgent(profile model.Profile, homeDir, settingsPath string, fallbackPhaseAssignments map[string]model.ModelAssignment, codeGraphGuidance string, agent model.AgentID) ([]byte, error) {
 	if profile.Name == "" || profile.Name == "default" {
 		return nil, fmt.Errorf("GenerateProfileOverlay: profile name must be non-empty and not 'default'")
 	}
+	includeDirectRoles := agent == model.AgentOpenCode
 
 	suffix := "-" + profile.Name
 	orchestratorKey := "sdd-orchestrator" + suffix
 
 	// Build the orchestrator prompt: start with the base asset, inject model
 	// assignments table, then suffix sub-agent references.
-	orchestratorPrompt, err := buildProfileOrchestratorPrompt(profile)
+	orchestratorPrompt, err := buildProfileOrchestratorPrompt(profile, agent, includeDirectRoles)
 	if err != nil {
 		return nil, fmt.Errorf("build orchestrator prompt for profile %q: %w", profile.Name, err)
 	}
@@ -297,8 +302,10 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 	for _, reviewAgent := range opencode.ReviewPhases() {
 		taskPerms[reviewAgent] = "allow"
 	}
-	for _, role := range opencode.DirectRoleKeys(profile.Name) {
-		taskPerms[role] = "allow"
+	if includeDirectRoles {
+		for _, role := range opencode.DirectRoleKeys(profile.Name) {
+			taskPerms[role] = "allow"
+		}
 	}
 
 	orchEntry := map[string]any{
@@ -416,34 +423,27 @@ func GenerateProfileOverlay(profile model.Profile, homeDir, settingsPath string,
 		agentMap[key] = entry
 	}
 
-	for _, role := range opencode.DirectRoles() {
-		definition, ok := opencode.DirectRoleDefinitionFor(role)
-		if !ok {
-			return nil, fmt.Errorf("missing direct role definition %q", role)
-		}
-
-		entry := map[string]any{
-			"mode":        "subagent",
-			"hidden":      true,
-			"description": definition.Description,
-			"prompt":      definition.Prompt,
-			"permission":  definition.Permission,
-		}
-		assignment := resolveProfileAssignment(profile, fallbackPhaseAssignments, role)
-		if assignment.ProviderID != "" && assignment.ModelID != "" {
-			entry["model"] = assignment.FullID()
-			if assignment.Effort != "" {
-				entry["variant"] = assignment.Effort
-			} else {
-				entry["variant"] = ""
+	if includeDirectRoles {
+		for _, role := range opencode.DirectRoles() {
+			definition, ok := opencode.DirectRoleDefinitionFor(role)
+			if !ok {
+				return nil, fmt.Errorf("missing direct role definition %q", role)
 			}
+			entry := map[string]any{"mode": "subagent", "hidden": true, "description": definition.Description, "prompt": definition.Prompt, "permission": definition.Permission}
+			assignment := resolveProfileAssignment(profile, fallbackPhaseAssignments, role)
+			if assignment.ProviderID != "" && assignment.ModelID != "" {
+				entry["model"] = assignment.FullID()
+				entry["variant"] = assignment.Effort
+			}
+			agentMap[role+suffix] = entry
 		}
-		agentMap[role+suffix] = entry
 	}
 
 	injectCodeGraphGuidanceIntoOpenCodeSubagentPrompts(agentMap, codeGraphGuidance)
-	if err := attachProfileRoleOwnership(agentMap, profile.Name); err != nil {
-		return nil, err
+	if includeDirectRoles {
+		if err := attachProfileRoleOwnership(agentMap, profile.Name); err != nil {
+			return nil, err
+		}
 	}
 
 	overlay := map[string]any{
@@ -597,7 +597,7 @@ func jdProfileAgentEntry(jd string) map[string]any {
 //  3. Injects a model assignments table reflecting the profile's models
 //  4. Replaces bare sub-agent references (e.g. sdd-init) with suffixed ones
 //     (e.g. sdd-init-{name}) in the prompt text
-func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
+func buildProfileOrchestratorPrompt(profile model.Profile, agent model.AgentID, includeDirectRoles bool) (string, error) {
 	base := renderSDDOrchestratorAsset(model.AgentOpenCode)
 	// Named profiles have their own orchestrator surface and must not inherit
 	// the default OpenCode Desktop progress narration.
@@ -609,7 +609,7 @@ func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
 		capability = model.ModelCapability(profile.OrchestratorModel.ModelID)
 	}
 	base = extractModelSection(base, capability)
-	routing, err := agentguidance.RenderRouting(model.AgentOpenCode)
+	routing, err := agentguidance.RenderRoutingForAdapter(agent)
 	if err != nil {
 		return "", fmt.Errorf("render profile routing guidance: %w", err)
 	}
@@ -622,7 +622,7 @@ func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
 	start := strings.Index(base, openMarker)
 	end := strings.Index(base, closeMarker)
 	if start != -1 && end != -1 && end > start {
-		table := renderProfileModelAssignmentsSection(profile)
+		table := renderProfileModelAssignmentsSection(profile, includeDirectRoles)
 		afterOpen := start + len(openMarker)
 		base = base[:afterOpen] + "\n" + table + base[end:]
 	}
@@ -640,8 +640,10 @@ func buildProfileOrchestratorPrompt(profile model.Profile) (string, error) {
 			base = replacePhaseRef(base, jd, jd+suffix)
 		}
 	}
-	for _, role := range opencode.DirectRoles() {
-		base = replacePhaseRef(base, role, role+suffix)
+	if includeDirectRoles {
+		for _, role := range opencode.DirectRoles() {
+			base = replacePhaseRef(base, role, role+suffix)
+		}
 	}
 	// Also replace the orchestrator self-reference.
 	base = replacePhaseRef(base, "sdd-orchestrator", "sdd-orchestrator"+suffix)
@@ -722,7 +724,7 @@ func replacePhaseRef(content, from, to string) string {
 
 // renderProfileModelAssignmentsSection renders the model assignments table for
 // a named profile using the profile's model assignments.
-func renderProfileModelAssignmentsSection(profile model.Profile) string {
+func renderProfileModelAssignmentsSection(profile model.Profile, includeDirectRoles bool) string {
 	var b strings.Builder
 	b.WriteString("## Model Assignments\n\n")
 	b.WriteString("Read this table at session start (or before first delegation) and cache it for the session. Treat each row as the authoritative configured model for that agent. If a phase is missing, use the default OpenCode runtime model and continue.\n\n")
@@ -773,16 +775,15 @@ func renderProfileModelAssignmentsSection(profile model.Profile) string {
 		}[jd]
 		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", jd, phaseModel, reason))
 	}
-	for _, role := range opencode.DirectRoles() {
-		phaseModel := "—"
-		if m, ok := profile.PhaseAssignments[role]; ok && m.ProviderID != "" {
-			phaseModel = m.FullID()
+	if includeDirectRoles {
+		for _, role := range opencode.DirectRoles() {
+			phaseModel := "—"
+			if m, ok := profile.PhaseAssignments[role]; ok && m.ProviderID != "" {
+				phaseModel = m.FullID()
+			}
+			reason := map[string]string{opencode.GentleReviewerAgent: "Advisory non-SDD review", opencode.GentleWorkerAgent: "Bounded non-SDD implementation"}[role]
+			b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", role, phaseModel, reason))
 		}
-		reason := map[string]string{
-			opencode.GentleReviewerAgent: "Advisory non-SDD review",
-			opencode.GentleWorkerAgent:   "Bounded non-SDD implementation",
-		}[role]
-		b.WriteString(fmt.Sprintf("| %s | %s | %s |\n", role, phaseModel, reason))
 	}
 	b.WriteString("\n")
 	return b.String()

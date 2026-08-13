@@ -2564,6 +2564,45 @@ func TestInjectKilocodeSubagentPromptUsesSharedRelativePath(t *testing.T) {
 	}
 }
 
+func TestInjectKilocodeExcludesOpenCodeOnlyDirectRoles(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := kilocodeAdapter().SettingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"agent":{"gentle-reviewer":{"mode":"subagent","prompt":"user-owned"}}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inject(home, kilocodeAdapter(), model.SDDModeMulti, InjectOptions{Profiles: []model.Profile{{
+		Name: "lean", PhaseAssignments: map[string]model.ModelAssignment{
+			opencodemodel.GentleReviewerAgent: {ProviderID: "openai", ModelID: "gpt-5"},
+			opencodemodel.GentleWorkerAgent:   {ProviderID: "openai", ModelID: "gpt-5-mini"},
+		},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	agents := readOpenCodeAgents(t, settingsPath)
+	for _, key := range []string{"gentle-worker", "gentle-reviewer-lean", "gentle-worker-lean"} {
+		if _, ok := agents[key]; ok {
+			t.Fatalf("Kilocode received OpenCode-only direct role %q", key)
+		}
+	}
+	if agents["gentle-reviewer"].(map[string]any)["prompt"] != "user-owned" {
+		t.Fatalf("Kilocode mutated user-owned direct role: %#v", agents["gentle-reviewer"])
+	}
+	orchestrator := agents["gentle-orchestrator"].(map[string]any)
+	task := orchestrator["permission"].(map[string]any)["task"].(map[string]any)
+	if replacement, ok := task["__replace__"].(map[string]any); ok {
+		task = replacement
+	}
+	if task["general"] != "allow" || task["explore"] != "allow" {
+		t.Fatalf("Kilocode lost native fallbacks: %#v", task)
+	}
+	if _, ok := agents["sdd-apply"]; !ok {
+		t.Fatal("Kilocode lost legacy SDD agent")
+	}
+}
+
 func TestInjectOpenCodeEmptySDDModeDefaultsSingle(t *testing.T) {
 	mockNoPackageManager(t)
 	home := t.TempDir()
