@@ -142,6 +142,23 @@ func TestRenderRoutingUsesManagedDirectRolesOutsideLifecycle(t *testing.T) {
 	}
 }
 
+func TestRenderRoutingForKilocodeOmitsOpenCodeOnlyDirectRoles(t *testing.T) {
+	rendered, err := RenderRoutingForAdapter(model.AgentKilocode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"gentle-reviewer", "gentle-worker"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("Kilocode routing contains OpenCode-only role %q", forbidden)
+		}
+	}
+	for _, required := range []string{"native `explore`", "explicit compatibility fallback"} {
+		if !strings.Contains(rendered, required) {
+			t.Fatalf("Kilocode routing lost %q", required)
+		}
+	}
+}
+
 // TestRenderRoutingMakesTheReviewKillSwitchDiscoverable guards the product
 // promise that configuring an agent tells it what it may do. The kill switch is
 // only real for the user if every configured agent can name it, so the exact

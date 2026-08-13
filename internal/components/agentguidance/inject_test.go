@@ -46,7 +46,7 @@ func TestInjectRoutingInstallsGuidanceForEverySupportedAgent(t *testing.T) {
 			// disk: adapters whose guidance lives inside a settings document
 			// carry the block as an encoded string, never as raw markdown.
 			written := deliveredGuidance(t, path)
-			rendered, err := RenderRouting(agent.ID)
+			rendered, err := RenderRoutingForAdapter(agent.ID)
 			if err != nil {
 				t.Fatalf("RenderRouting(%q) error = %v", agent.ID, err)
 			}
@@ -309,7 +309,7 @@ func TestInjectRoutingUsesAlwaysLoadedOrchestratorScope(t *testing.T) {
 				t.Fatalf("InjectRouting(%q) touched %v, want exactly %q", agent, result.Files, settingsPath)
 			}
 
-			rendered, err := RenderRouting(agent)
+			rendered, err := RenderRoutingForAdapter(agent)
 			if err != nil {
 				t.Fatalf("RenderRouting(%q) error = %v", agent, err)
 			}

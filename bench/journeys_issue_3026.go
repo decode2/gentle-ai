@@ -12,13 +12,10 @@ import (
 
 const issue3026LegacyDirectFallback = "Use OpenCode's native `explore` agent for read-only mapping and `general` agent for implementation or command execution."
 
+var issue3026ProfileArgs = []string{"--profile", "lean:openai/gpt-5", "--profile-phase", "lean:gentle-reviewer:openai/gpt-5-mini", "--profile-phase", "lean:gentle-worker:openrouter/qwen/qwen3.6-plus:free"}
+
 var issue3026SyncCapability = &Capability{
-	Probe: []string{
-		"sync", "--agents", "opencode", "--sdd-mode", "multi", "--dry-run",
-		"--profile", "lean:openai/gpt-5",
-		"--profile-phase", "lean:gentle-reviewer:openai/gpt-5-mini",
-		"--profile-phase", "lean:gentle-worker:openrouter/qwen/qwen3.6-plus:free",
-	},
+	Probe: append([]string{"sync", "--agents", "opencode", "--sdd-mode", "multi", "--dry-run"}, issue3026ProfileArgs...),
 }
 
 var issue3026InstallCapability = &Capability{
@@ -49,6 +46,9 @@ func issue3026Journeys() []Journey {
 		Steps: []Step{
 			{Name: "fixture: repository", Fixture: baseRepo},
 			{Name: "fixture: legacy non-SDD routing without managed roles", Fixture: seedIssue3026LegacyRouting},
+			{Name: "public sync preserves Kilocode legacy SDD projection", Requires: issue3026SyncCapability, Args: func(*Sandbox) ([]string, error) {
+				return append([]string{"sync", "--agents", "kilocode", "--sdd-mode", "multi"}, issue3026ProfileArgs...), nil
+			}, After: assertIssue3026KilocodeProjection},
 			{Name: "fixture: installed OpenCode runtime prerequisite", Fixture: issue3026InstalledOpenCodeRuntime},
 			{
 				Name:     "public install creates default managed roles",
@@ -64,12 +64,7 @@ func issue3026Journeys() []Journey {
 				Name:     "public sync refreshes managed roles and renders named profile assignments",
 				Requires: issue3026SyncCapability,
 				Args: func(*Sandbox) ([]string, error) {
-					return []string{
-						"sync", "--agents", "opencode", "--sdd-mode", "multi",
-						"--profile", "lean:openai/gpt-5",
-						"--profile-phase", "lean:gentle-reviewer:openai/gpt-5-mini",
-						"--profile-phase", "lean:gentle-worker:openrouter/qwen/qwen3.6-plus:free",
-					}, nil
+					return append([]string{"sync", "--agents", "opencode", "--sdd-mode", "multi"}, issue3026ProfileArgs...), nil
 				},
 				After: assertIssue3026ManagedDirectRoles,
 			},
@@ -249,6 +244,21 @@ func assertIssue3026ManagedDirectRoles(sandbox *Sandbox, observation Observation
 			}
 			return fmt.Errorf("inspect lifecycle state %q: %w", statePath, err)
 		}
+	}
+	return nil
+}
+
+func assertIssue3026KilocodeProjection(sandbox *Sandbox, observation Observation) error {
+	if observation.ExitCode != 0 {
+		return fmt.Errorf("Kilocode sync failed: %s", issue3026BoundedStderr(observation.Stderr))
+	}
+	data, err := os.ReadFile(filepath.Join(sandbox.Home, ".config", "kilo", "opencode.json"))
+	if err != nil {
+		return err
+	}
+	text := string(data)
+	if strings.Contains(text, "gentle-reviewer") || strings.Contains(text, "gentle-worker") || !strings.Contains(text, `"sdd-apply"`) {
+		return fmt.Errorf("Kilocode projection lost legacy SDD compatibility or received direct roles")
 	}
 	return nil
 }

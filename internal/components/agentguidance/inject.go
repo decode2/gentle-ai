@@ -67,7 +67,7 @@ type templateBootstrapper interface {
 func InjectRouting(targetDir string, agent model.AgentID) (Result, error) {
 	// Render before resolving the delivery so an unsupported agent is rejected
 	// without having touched the filesystem.
-	rendered, err := RenderRouting(agent)
+	rendered, err := RenderRoutingForAdapter(agent)
 	if err != nil {
 		return Result{}, err
 	}

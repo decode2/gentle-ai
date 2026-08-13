@@ -226,6 +226,41 @@ func overlayAssetPath(sddMode model.SDDModeID) string {
 	return "opencode/sdd-overlay-single.json"
 }
 
+// projectDirectRolesForAgent keeps the shared OpenCode overlay canonical while
+// preventing Kilocode from receiving the OpenCode-only role family.
+func projectDirectRolesForAgent(overlay []byte, agent model.AgentID) ([]byte, error) {
+	if agent != model.AgentKilocode {
+		return overlay, nil
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(overlay, &root); err != nil {
+		return nil, fmt.Errorf("unmarshal SDD overlay projection: %w", err)
+	}
+	agents, ok := root["agent"].(map[string]any)
+	if !ok {
+		return overlay, nil
+	}
+	for _, role := range opencode.DirectRoles() {
+		delete(agents, role)
+	}
+	if orchestrator, ok := agents["gentle-orchestrator"].(map[string]any); ok {
+		if permission, ok := orchestrator["permission"].(map[string]any); ok {
+			if task, ok := permission["task"].(map[string]any); ok {
+				if replacement, ok := task["__replace__"].(map[string]any); ok {
+					for _, role := range opencode.DirectRoles() {
+						delete(replacement, role)
+					}
+				}
+			}
+		}
+	}
+	projected, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal SDD overlay projection: %w", err)
+	}
+	return append(projected, '\n'), nil
+}
+
 var compatibilitySDDSkillIDs = []model.SkillID{
 	"sdd-init", "sdd-explore", "sdd-propose", "sdd-spec",
 	"sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive",
@@ -471,7 +506,10 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			// the TUI model picker (multi-mode). The overlay JSON itself must
 			// NOT contain model fields — otherwise the deep merge overwrites
 			// whatever the user already has in opencode.json.
-			overlayBytes := []byte(overlayContent)
+			overlayBytes, err := projectDirectRolesForAgent([]byte(overlayContent), adapter.Agent())
+			if err != nil {
+				return InjectionResult{}, err
+			}
 			// For multi-mode, write shared prompt files before inlining references.
 			if sddMode == model.SDDModeMulti {
 				// Build phase → capability map from model assignments.
@@ -561,7 +599,13 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, fmt.Errorf("clean stale profile JD agents %q: %w", profile.Name, cleanupErr)
 				}
 				changed = changed || cleanupResult.Changed
-				profileOverlay, profileErr := GenerateProfileOverlay(profile, homeDir, settingsPath, opts.OpenCodeModelAssignments, opts.CodeGraphGuidanceMarkdown)
+				var profileOverlay []byte
+				var profileErr error
+				if adapter.Agent() == model.AgentOpenCode {
+					profileOverlay, profileErr = GenerateProfileOverlay(profile, homeDir, settingsPath, opts.OpenCodeModelAssignments, opts.CodeGraphGuidanceMarkdown)
+				} else {
+					profileOverlay, profileErr = generateProfileOverlayForAgent(profile, homeDir, settingsPath, opts.OpenCodeModelAssignments, opts.CodeGraphGuidanceMarkdown, adapter.Agent())
+				}
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("generate profile overlay %q: %w", profile.Name, profileErr)
 				}
