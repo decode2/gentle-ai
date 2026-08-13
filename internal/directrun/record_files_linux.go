@@ -23,8 +23,37 @@ type linuxRecordFiles struct {
 	dirs           [3]fileIdentity
 	closed         bool
 	afterFirstStat func()
+	operations     recordFileOperations
 }
 type fileIdentity struct{ dev, ino uint64 }
+
+// recordFileOperations is immutable after construction; tests replace it before use.
+type recordFileOperations struct {
+	writeAll      func(int, []byte) error
+	syncFile      func(int) error
+	publish       func(int, string, string) error
+	syncDirectory func(int) error
+	unlinkCleanup func(int, string) error
+}
+
+func newRecordFileOperations() recordFileOperations {
+	return recordFileOperations{
+		writeAll: func(fd int, value []byte) error {
+			for len(value) > 0 {
+				n, err := unix.Write(fd, value)
+				if err != nil || n == 0 {
+					return ErrBackendUnavailable
+				}
+				value = value[n:]
+			}
+			return nil
+		},
+		syncFile:      unix.Fsync,
+		publish:       func(dir int, tmp, name string) error { return unix.Linkat(dir, tmp, dir, name, 0) },
+		syncDirectory: unix.Fsync,
+		unlinkCleanup: func(dir int, name string) error { return unix.Unlinkat(dir, name, 0) },
+	}
+}
 
 func newLinuxRecordFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease) (*linuxRecordFiles, error) {
 	if lease == nil || lease.Validate(ctx) != nil || !hexPart(lease.StorageKey()) {
@@ -39,7 +68,7 @@ func newLinuxRecordFiles(ctx context.Context, lease *reviewtransaction.Repositor
 		_ = unix.Close(root)
 		return nil, ErrBackendUnavailable
 	}
-	f := &linuxRecordFiles{lease: lease, key: digest("gentle-ai.direct-run-store/v1", []byte(lease.StorageKey())), root: root, rootID: fileIdentity{uint64(st.Dev), st.Ino}}
+	f := &linuxRecordFiles{lease: lease, key: digest("gentle-ai.direct-run-store/v1", []byte(lease.StorageKey())), root: root, rootID: fileIdentity{uint64(st.Dev), st.Ino}, operations: newRecordFileOperations()}
 	fd, err := f.walk(true)
 	if err != nil {
 		_ = unix.Close(root)
@@ -125,9 +154,10 @@ func sameRecordStat(a, b *unix.Stat_t) bool {
 	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mode == b.Mode && a.Mtim == b.Mtim && a.Ctim == b.Ctim
 }
 
-func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []byte) error {
+func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []byte) (result error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	operations := f.operations
 	if len(value) > maxRecordBytes {
 		return ErrRecordTooLarge
 	}
@@ -140,35 +170,50 @@ func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []by
 		return err
 	}
 	defer unix.Close(dir)
+	if existing, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); err == nil {
+		_ = unix.Close(existing)
+		return ErrAlreadyExists
+	} else if !errors.Is(err, unix.ENOENT) {
+		return ErrBackendUnavailable
+	}
 	tmp, fd, err := newRecordTemp(dir)
 	if err != nil {
 		return ErrBackendUnavailable
 	}
 	defer unix.Close(fd)
-	defer unix.Unlinkat(dir, tmp, 0)
+	temporary := true
+	defer func() {
+		if temporary && operations.unlinkCleanup(dir, tmp) != nil && result == nil {
+			result = ErrBackendUnavailable
+		}
+	}()
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&0o777 != 0o600 {
 		return ErrBackendUnavailable
 	}
-	for len(value) > 0 {
-		n, e := unix.Write(fd, value)
-		if e != nil || n == 0 {
-			return ErrBackendUnavailable
-		}
-		value = value[n:]
-	}
-	if unix.Fsync(fd) != nil {
+	if operations.writeAll(fd, value) != nil {
 		return ErrBackendUnavailable
 	}
-	if err := unix.Linkat(dir, tmp, dir, name, 0); err != nil {
+	if operations.syncFile(fd) != nil {
+		return ErrBackendUnavailable
+	}
+	if err := operations.publish(dir, tmp, name); err != nil {
 		if errors.Is(err, unix.EEXIST) {
 			return ErrAlreadyExists
 		}
 		return ErrBackendUnavailable
 	}
-	if unix.Fsync(dir) != nil {
-		_ = unix.Unlinkat(dir, name, 0)
-		_ = unix.Fsync(dir)
+	if operations.unlinkCleanup(dir, tmp) != nil {
+		_ = operations.unlinkCleanup(dir, name)
+		_ = operations.unlinkCleanup(dir, tmp)
+		_ = operations.syncDirectory(dir)
+		temporary = false
+		return ErrBackendUnavailable
+	}
+	temporary = false
+	if operations.syncDirectory(dir) != nil {
+		_ = operations.unlinkCleanup(dir, name)
+		_ = operations.syncDirectory(dir)
 		return ErrBackendUnavailable
 	}
 	return nil
