@@ -32,6 +32,9 @@ type recordFileOperations struct {
 	writeAll      func(int, []byte) error
 	syncFile      func(int) error
 	publish       func(int, string, string) error
+	backupLink    func(int, string, string) error
+	replace       func(int, string, string) error
+	rollback      func(int, string, string) error
 	syncDirectory func(int) error
 	unlinkCleanup func(int, string) error
 }
@@ -50,6 +53,9 @@ func newRecordFileOperations() recordFileOperations {
 		},
 		syncFile:      unix.Fsync,
 		publish:       func(dir int, tmp, name string) error { return unix.Linkat(dir, tmp, dir, name, 0) },
+		backupLink:    func(dir int, name, backup string) error { return unix.Linkat(dir, name, dir, backup, 0) },
+		replace:       func(dir int, tmp, name string) error { return unix.Renameat(dir, tmp, dir, name) },
+		rollback:      func(dir int, backup, name string) error { return unix.Renameat(dir, backup, dir, name) },
 		syncDirectory: unix.Fsync,
 		unlinkCleanup: func(dir int, name string) error { return unix.Unlinkat(dir, name, 0) },
 	}
@@ -214,6 +220,78 @@ func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []by
 	if operations.syncDirectory(dir) != nil {
 		_ = operations.unlinkCleanup(dir, name)
 		_ = operations.syncDirectory(dir)
+		return ErrBackendUnavailable
+	}
+	return nil
+}
+
+// Replace publishes a fully durable new inode. Callers provide writer serialization.
+func (f *linuxRecordFiles) Replace(ctx context.Context, key RecordKey, value []byte) (result error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(value) > maxRecordBytes {
+		return ErrRecordTooLarge
+	}
+	name, err := f.recordName(ctx, key)
+	if err != nil {
+		return err
+	}
+	dir, err := f.walk(false)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dir)
+	old, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return ErrBackendUnavailable
+	}
+	var st unix.Stat_t
+	valid := unix.Fstat(old, &st) == nil && validRecordStat(&st)
+	_ = unix.Close(old)
+	if !valid {
+		return ErrBackendUnavailable
+	}
+	operations := f.operations
+	tmp, fd, err := newRecordTemp(dir)
+	if err != nil {
+		return ErrBackendUnavailable
+	}
+	defer unix.Close(fd)
+	temporary := true
+	defer func() {
+		if temporary && operations.unlinkCleanup(dir, tmp) != nil && result == nil {
+			result = ErrBackendUnavailable
+		}
+	}()
+	if unix.Fstat(fd, &st) != nil || !validRecordStat(&st) || operations.writeAll(fd, value) != nil || operations.syncFile(fd) != nil {
+		return ErrBackendUnavailable
+	}
+	backup, backupFD, err := newRecordTemp(dir)
+	if err != nil {
+		return ErrBackendUnavailable
+	}
+	_ = unix.Close(backupFD)
+	if operations.unlinkCleanup(dir, backup) != nil || operations.backupLink(dir, name, backup) != nil || operations.syncDirectory(dir) != nil {
+		_ = operations.unlinkCleanup(dir, backup)
+		_ = operations.syncDirectory(dir)
+		return ErrBackendUnavailable
+	}
+	if operations.replace(dir, tmp, name) != nil {
+		_ = operations.unlinkCleanup(dir, backup)
+		_ = operations.syncDirectory(dir)
+		return ErrBackendUnavailable
+	}
+	temporary = false
+	if operations.syncDirectory(dir) != nil {
+		if operations.rollback(dir, backup, name) != nil || operations.syncDirectory(dir) != nil {
+			return ErrBackendUnavailable
+		}
+		return ErrBackendUnavailable
+	}
+	if operations.unlinkCleanup(dir, backup) != nil || operations.syncDirectory(dir) != nil {
 		return ErrBackendUnavailable
 	}
 	return nil
