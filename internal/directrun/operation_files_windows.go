@@ -5,7 +5,6 @@ package directrun
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,20 +23,38 @@ type windowsOperationFiles struct {
 	lease   *reviewtransaction.RepositoryIdentityLease
 	root    windows.Handle
 	rootID  windowsFileID
-	allowed map[string]windowsFileID
+	allowed []windowsAllowedRoot
 	closed  bool
 	ops     windowsOperationFileOps
+}
+
+type windowsAllowedRoot struct {
+	logical string
+	handle  windows.Handle
+	id      windowsFileID
 }
 
 type windowsFileID struct{ volume, high, low uint32 }
 
 type windowsOperationFileOps struct {
-	open  func(windows.Handle, string, bool, uint32) (windows.Handle, error)
-	info  func(windows.Handle) (windows.ByHandleFileInformation, error)
-	read  func(windows.Handle, []byte, *uint32) error
-	write func(windows.Handle, []byte, *uint32) error
-	flush func(windows.Handle) error
-	close func(windows.Handle) error
+	open        func(windows.Handle, string, bool, uint32) (windows.Handle, error)
+	info        func(windows.Handle) (windows.ByHandleFileInformation, error)
+	read        func(windows.Handle, []byte, *uint32) error
+	write       func(windows.Handle, []byte, *uint32) error
+	flush       func(windows.Handle) error
+	security    func(windows.Handle, windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error)
+	setSecurity func(windows.Handle, windows.SECURITY_INFORMATION, *windows.SID, *windows.ACL) error
+	createEvent func() (windows.Handle, error)
+	closeEvent  func(windows.Handle) error
+	lock        func(windows.Handle, uint32, uint32, uint32, uint32, *windows.Overlapped) error
+	cancel      func(windows.Handle, *windows.Overlapped) error
+	wait        func(windows.Handle, uint32) (uint32, error)
+	result      func(windows.Handle, *windows.Overlapped, *uint32, bool) error
+	unlock      func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error
+	publish     func(windows.Handle, windows.Handle, string) error
+	cleanup     func(windows.Handle) error
+	enumerate   func(windows.Handle) ([]os.DirEntry, error)
+	close       func(windows.Handle) error
 }
 
 func newWindowsOperationFileOps() windowsOperationFileOps {
@@ -50,6 +67,25 @@ func newWindowsOperationFileOps() windowsOperationFileOps {
 		read:  func(h windows.Handle, data []byte, done *uint32) error { return windows.ReadFile(h, data, done, nil) },
 		write: func(h windows.Handle, data []byte, done *uint32) error { return windows.WriteFile(h, data, done, nil) },
 		flush: windows.FlushFileBuffers,
+		security: func(h windows.Handle, mask windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error) {
+			return windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, mask)
+		},
+		setSecurity: func(h windows.Handle, mask windows.SECURITY_INFORMATION, owner *windows.SID, dacl *windows.ACL) error {
+			return windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, mask, owner, nil, dacl, nil)
+		},
+		createEvent: func() (windows.Handle, error) { return windows.CreateEvent(nil, 0, 0, nil) },
+		closeEvent:  windows.CloseHandle,
+		lock:        windows.LockFileEx, cancel: windows.CancelIoEx, wait: windows.WaitForSingleObject, result: windows.GetOverlappedResult, unlock: windows.UnlockFileEx,
+		publish: windowsRenameRelative, cleanup: windowsDelete,
+		enumerate: func(h windows.Handle) ([]os.DirEntry, error) {
+			var duplicate windows.Handle
+			if err := windows.DuplicateHandle(windows.CurrentProcess(), h, windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+				return nil, err
+			}
+			file := os.NewFile(uintptr(duplicate), "")
+			defer file.Close()
+			return file.ReadDir(-1)
+		},
 		close: windows.CloseHandle,
 	}
 }
@@ -62,31 +98,34 @@ func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.Rep
 	if err != nil {
 		return nil, ErrOperationUnavailable
 	}
-	f := &windowsOperationFiles{lease: lease, root: root, allowed: make(map[string]windowsFileID), ops: newWindowsOperationFileOps()}
-	info, err := f.ops.info(root)
-	if err != nil || !windowsDirectory(info) || !windowsCurrentOwner(root) || !windowsLocalDisk(root) {
+	f := &windowsOperationFiles{lease: lease, root: root, ops: newWindowsOperationFileOps()}
+	fail := func() (operationFiles, error) {
+		for i := len(f.allowed) - 1; i >= 0; i-- {
+			_ = f.ops.close(f.allowed[i].handle)
+		}
 		_ = f.ops.close(root)
 		return nil, ErrOperationUnavailable
+	}
+	info, err := f.ops.info(root)
+	if err != nil || !windowsDirectory(info) || !windowsCurrentOwner(root) || !windowsLocalDisk(root) {
+		return fail()
 	}
 	f.rootID = windowsIdentity(info)
 	for _, configured := range handoff.AllowedEditRoots {
 		logical, ok := logicalEditRootWindows(lease.Identity().RepositoryRoot, configured)
 		if !ok {
-			_ = f.ops.close(root)
-			return nil, ErrOperationUnavailable
+			return fail()
 		}
 		dir, err := f.walk(logical)
 		if err != nil {
-			_ = f.ops.close(root)
-			return nil, ErrOperationUnavailable
+			return fail()
 		}
 		info, statErr := f.ops.info(dir)
-		_ = f.ops.close(dir)
 		if statErr != nil || !windowsDirectory(info) {
-			_ = f.ops.close(root)
-			return nil, ErrOperationUnavailable
+			_ = f.ops.close(dir)
+			return fail()
 		}
-		f.allowed[logical] = windowsIdentity(info)
+		f.allowed = append(f.allowed, windowsAllowedRoot{logical: logical, handle: dir, id: windowsIdentity(info)})
 	}
 	return f, nil
 }
@@ -101,10 +140,16 @@ func (f *windowsOperationFiles) Close() error {
 		return nil
 	}
 	f.closed = true
+	err := error(nil)
+	for i := len(f.allowed) - 1; i >= 0; i-- {
+		if f.ops.close(f.allowed[i].handle) != nil {
+			err = ErrOperationUnavailable
+		}
+	}
 	if f.ops.close(f.root) != nil {
 		return ErrOperationUnavailable
 	}
-	return nil
+	return err
 }
 
 func (f *windowsOperationFiles) valid(ctx context.Context) error {
@@ -114,6 +159,12 @@ func (f *windowsOperationFiles) valid(ctx context.Context) error {
 	info, err := f.ops.info(f.root)
 	if err != nil || !windowsDirectory(info) || windowsIdentity(info) != f.rootID || !windowsCurrentOwner(f.root) || !windowsLocalDisk(f.root) {
 		return ErrOperationUnavailable
+	}
+	for _, allowed := range f.allowed {
+		info, err := f.ops.info(allowed.handle)
+		if err != nil || !windowsDirectory(info) || windowsIdentity(info) != allowed.id || !windowsCurrentOwner(allowed.handle) || !windowsLocalDisk(allowed.handle) {
+			return ErrOperationUnavailable
+		}
 	}
 	return nil
 }
@@ -127,7 +178,7 @@ func (f *windowsOperationFiles) Read(ctx context.Context, logical string, offset
 	if !windowsLogicalPath(logical) || offset < 0 || limit < 1 || limit > maxContent {
 		return ReadResult{}, ErrOperationInvalidPath
 	}
-	h, err := f.openFile(logical)
+	h, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
 	if err != nil {
 		return ReadResult{}, err
 	}
@@ -164,11 +215,16 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if !windowsLogicalPath(logical) || !f.editAllowed(logical) {
 		return EditResult{}, ErrOperationInvalidPath
 	}
-	h, err := f.openFile(logical)
+	h, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.READ_CONTROL)
 	if err != nil {
 		return EditResult{}, err
 	}
 	defer f.ops.close(h)
+	release, lockErr := f.lockTarget(ctx, h)
+	if lockErr != nil {
+		return EditResult{}, lockErr
+	}
+	defer func() { _ = release() }()
 	info, err := f.ops.info(h)
 	if err != nil || info.FileSizeHigh != 0 || info.FileSizeLow > maxOperationFileBytes || !windowsCurrentOwner(h) {
 		return EditResult{}, ErrOperationUnavailable
@@ -198,7 +254,7 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	published := false
 	defer func() {
 		if !published {
-			_ = windowsDelete(candidate)
+			_ = f.ops.cleanup(candidate)
 		}
 	}()
 	if f.writeExact(candidate, final) != nil || f.ops.flush(candidate) != nil {
@@ -210,7 +266,7 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationConflict
 	}
-	if err := windowsRenameRelative(candidate, parent, name); err != nil {
+	if err := f.ops.publish(candidate, parent, name); err != nil {
 		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationUnavailable
 	}
@@ -218,7 +274,7 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if f.ops.flush(parent) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
-	verify, err := f.openFile(logical)
+	verify, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
 	if err != nil {
 		return EditResult{}, ErrOperationPublication
 	}
@@ -259,13 +315,7 @@ func (f *windowsOperationFiles) tree(ctx context.Context, dir windows.Handle, pr
 	if err != nil || !windowsDirectory(before) {
 		return ErrOperationUnavailable
 	}
-	var duplicate windows.Handle
-	if windows.DuplicateHandle(windows.CurrentProcess(), dir, windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS) != nil {
-		return ErrOperationUnavailable
-	}
-	file := os.NewFile(uintptr(duplicate), "")
-	entries, err := file.ReadDir(-1)
-	_ = file.Close()
+	entries, err := f.ops.enumerate(dir)
 	if err != nil {
 		return ErrOperationUnavailable
 	}
@@ -347,13 +397,13 @@ func (f *windowsOperationFiles) parent(logical string) (windows.Handle, string, 
 	h, err := f.walk(parent)
 	return h, parts[len(parts)-1], err
 }
-func (f *windowsOperationFiles) openFile(logical string) (windows.Handle, error) {
+func (f *windowsOperationFiles) openFile(logical string, access uint32) (windows.Handle, error) {
 	parent, name, err := f.parent(logical)
 	if err != nil {
 		return 0, err
 	}
 	defer f.ops.close(parent)
-	h, err := f.ops.open(parent, name, false, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
+	h, err := f.ops.open(parent, name, false, access)
 	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return 0, ErrOperationNotFound
 	}
@@ -371,18 +421,19 @@ func (f *windowsOperationFiles) create(parent windows.Handle, name string) (wind
 	return createWindowsRelative(parent, name)
 }
 func (f *windowsOperationFiles) editAllowed(logical string) bool {
-	for root, want := range f.allowed {
-		if root == "" || logical == root || strings.HasPrefix(logical, root+"/") {
-			h, err := f.walk(root)
-			if err != nil {
-				return false
+	return f.allowedRoot(logical) != nil
+}
+func (f *windowsOperationFiles) allowedRoot(logical string) *windowsAllowedRoot {
+	var selected *windowsAllowedRoot
+	for i := range f.allowed {
+		root := &f.allowed[i]
+		if root.logical == "" || logical == root.logical || strings.HasPrefix(logical, root.logical+"/") {
+			if selected == nil || len(root.logical) > len(selected.logical) {
+				selected = root
 			}
-			info, statErr := f.ops.info(h)
-			_ = f.ops.close(h)
-			return statErr == nil && windowsIdentity(info) == want
 		}
 	}
-	return false
+	return selected
 }
 func (f *windowsOperationFiles) readExact(h windows.Handle, size int) ([]byte, error) {
 	value := make([]byte, size)
@@ -416,6 +467,57 @@ func (f *windowsOperationFiles) writeExact(h windows.Handle, value []byte) error
 		value = value[n:]
 	}
 	return nil
+}
+
+// lockTarget consumes completion for the exact overlapped request before it
+// returns on cancellation, so a cancelled waiter cannot retain a lock.
+func (f *windowsOperationFiles) lockTarget(ctx context.Context, handle windows.Handle) (func() error, error) {
+	event, err := f.ops.createEvent()
+	if err != nil {
+		return nil, ErrOperationUnavailable
+	}
+	overlapped := &windows.Overlapped{HEvent: event}
+	err = f.ops.lock(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped)
+	if errors.Is(err, windows.ERROR_IO_PENDING) {
+		cancelled := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = f.ops.cancel(handle, overlapped)
+			case <-cancelled:
+			}
+		}()
+		status, waitErr := f.ops.wait(event, windows.INFINITE)
+		close(cancelled)
+		var bytes uint32
+		completeErr := f.ops.result(handle, overlapped, &bytes, waitErr == nil && status == windows.WAIT_OBJECT_0)
+		if waitErr != nil || status != windows.WAIT_OBJECT_0 || completeErr != nil {
+			_ = f.ops.closeEvent(event)
+			return nil, ErrOperationUnavailable
+		}
+	} else if err != nil {
+		_ = f.ops.closeEvent(event)
+		return nil, ErrOperationUnavailable
+	}
+	if ctx.Err() != nil {
+		_ = f.ops.unlock(handle, 0, 1, 0, &windows.Overlapped{})
+		_ = f.ops.closeEvent(event)
+		return nil, ctx.Err()
+	}
+	used := false
+	return func() error {
+		if used {
+			return ErrOperationUnavailable
+		}
+		used = true
+		unlockErr := f.ops.unlock(handle, 0, 1, 0, &windows.Overlapped{})
+		closeErr := f.ops.closeEvent(event)
+		if unlockErr != nil || closeErr != nil {
+			f.closed = true
+			return ErrOperationUnavailable
+		}
+		return nil
+	}, nil
 }
 
 func openWindowsRoot(path string) (windows.Handle, error) {
@@ -526,8 +628,6 @@ func logicalEditRootWindows(repository, configured string) (string, bool) {
 	relative = filepath.ToSlash(relative)
 	return relative, windowsLogicalPath(relative)
 }
-
-var _ = io.EOF
 
 const (
 	windowsMaxTreeNameBytes = 255
