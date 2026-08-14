@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package directrun
 
@@ -9,7 +9,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/reviewtransaction"
 )
 
-// linuxRecordBackend owns the files and lock for one validated repository lease.
+// linuxRecordBackend owns the Unix files and lock for one validated repository lease.
 type linuxRecordBackend struct {
 	mu     sync.Mutex
 	cond   *sync.Cond

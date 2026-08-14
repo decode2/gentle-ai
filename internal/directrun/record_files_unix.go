@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package directrun
 
@@ -157,7 +157,7 @@ func validRecordStat(st *unix.Stat_t) bool {
 }
 
 func sameRecordStat(a, b *unix.Stat_t) bool {
-	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mode == b.Mode && a.Mtim == b.Mtim && a.Ctim == b.Ctim
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.Mode == b.Mode && sameRecordTimes(a, b)
 }
 
 func (f *linuxRecordFiles) Create(ctx context.Context, key RecordKey, value []byte) (result error) {
