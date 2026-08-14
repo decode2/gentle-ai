@@ -139,6 +139,7 @@ internal/reviewtransaction/repository_locator.go	repositoryIdentityChanged
 internal/reviewtransaction/repository_locator.go	resolveReviewRepositoryDirectory
 internal/reviewtransaction/repository_locator.go	validRepositoryIdentityLease
 internal/reviewtransaction/risk.go	deriveSemanticRiskSignals
+internal/reviewtransaction/secure_child_name.go	secureWindowsChildName
 internal/reviewtransaction/snapshot.go	sanitizedGitEnvironment
 internal/reviewtransaction/snapshot.go	snapshotIdentity
 internal/reviewtransaction/store.go	SnapshotsEqualExact
