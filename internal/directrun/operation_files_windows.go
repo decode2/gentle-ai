@@ -36,6 +36,17 @@ type windowsAllowedRoot struct {
 
 type windowsFileID struct{ volume, high, low uint32 }
 
+// windowsDestinationProof is captured from the retained target handle and is
+// checked again from a no-follow relative handle at the rename boundary.
+type windowsDestinationProof struct {
+	id        windowsFileID
+	digest    Digest
+	owner     string
+	dacl      []byte
+	protected bool
+	attrs     uint32
+}
+
 type windowsOperationFileOps struct {
 	open        func(windows.Handle, string, bool, uint32) (windows.Handle, error)
 	info        func(windows.Handle) (windows.ByHandleFileInformation, error)
@@ -51,7 +62,7 @@ type windowsOperationFileOps struct {
 	wait        func(windows.Handle, uint32) (uint32, error)
 	result      func(windows.Handle, *windows.Overlapped, *uint32, bool) error
 	unlock      func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error
-	publish     func(windows.Handle, windows.Handle, string) error
+	publish     func(windows.Handle, windows.Handle, string, windowsDestinationProof) error
 	cleanup     func(windows.Handle) error
 	enumerate   func(windows.Handle) ([]os.DirEntry, error)
 	close       func(windows.Handle) error
@@ -206,7 +217,7 @@ func (f *windowsOperationFiles) Read(ctx context.Context, logical string, offset
 	return result, nil
 }
 
-func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, replacements []Replacement) (EditResult, error) {
+func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, replacements []Replacement) (result EditResult, resultErr error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.valid(ctx); err != nil {
@@ -224,7 +235,16 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if lockErr != nil {
 		return EditResult{}, lockErr
 	}
-	defer func() { _ = release() }()
+	published := false
+	defer func() {
+		if err := release(); err != nil {
+			if published {
+				result, resultErr = EditResult{}, ErrOperationPublication
+			} else if resultErr == nil {
+				resultErr = ErrOperationUnavailable
+			}
+		}
+	}()
 	info, err := f.ops.info(h)
 	if err != nil || info.FileSizeHigh != 0 || info.FileSizeLow > maxOperationFileBytes || !windowsCurrentOwner(h) {
 		return EditResult{}, ErrOperationUnavailable
@@ -232,6 +252,10 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	old, err := f.readExact(h, int(info.FileSizeLow))
 	if err != nil || DigestSHA256(old) != base {
 		return EditResult{}, ErrOperationConflict
+	}
+	proof, err := f.destinationProof(h, info, Digest(DigestSHA256(old)))
+	if err != nil {
+		return EditResult{}, ErrOperationUnavailable
 	}
 	final, err := windowsApplyReplacements(old, replacements)
 	if err != nil || len(final) > maxOperationFileBytes {
@@ -251,36 +275,48 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if err != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
-	published := false
 	defer func() {
 		if !published {
 			_ = f.ops.cleanup(candidate)
 		}
 	}()
+	if !f.applyCandidateProof(candidate, proof) || !f.candidateMatches(candidate, proof) {
+		_ = f.ops.close(candidate)
+		return EditResult{}, ErrOperationUnavailable
+	}
 	if f.writeExact(candidate, final) != nil || f.ops.flush(candidate) != nil {
 		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationUnavailable
 	}
 	current, err := f.ops.info(h)
-	if err != nil || windowsIdentity(current) != windowsIdentity(info) || current.FileSizeLow != info.FileSizeLow {
+	if err != nil || windowsIdentity(current) != proof.id || current.FileSizeLow != info.FileSizeLow || !f.targetMatches(h, proof) {
 		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationConflict
 	}
-	if err := f.ops.publish(candidate, parent, name); err != nil {
+	if err := f.ops.publish(candidate, parent, name, proof); err != nil {
 		_ = f.ops.close(candidate)
+		if errors.Is(err, errWindowsPublicationUnknown) {
+			published = true
+			return EditResult{}, ErrOperationPublication
+		}
 		return EditResult{}, ErrOperationUnavailable
 	}
 	published = true
-	if f.ops.flush(parent) != nil {
+	if !windowsSetSafeAttributes(candidate, proof.attrs) || f.ops.close(candidate) != nil || f.ops.flush(parent) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	verify, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
 	if err != nil {
 		return EditResult{}, ErrOperationPublication
 	}
+	verifyInfo, infoErr := f.ops.info(verify)
 	got, readErr := f.readAll(verify)
+	successor := proof
+	successor.id = windowsIdentity(verifyInfo)
+	successor.digest = Digest(DigestSHA256(final))
+	verified := infoErr == nil && readErr == nil && string(got) == string(final) && f.targetMatches(verify, successor)
 	closeErr := f.ops.close(verify)
-	if readErr != nil || closeErr != nil || string(got) != string(final) || f.valid(ctx) != nil {
+	if closeErr != nil || !verified || f.valid(ctx) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	return NewEditResult(final, true, "published")
@@ -562,7 +598,20 @@ func windowsDelete(h windows.Handle) error {
 	var status windows.IO_STATUS_BLOCK
 	return windows.NtSetInformationFile(h, &status, &value, 1, windows.FileDispositionInformation)
 }
-func windowsRenameRelative(source, parent windows.Handle, name string) error {
+
+var errWindowsPublicationUnknown = errors.New("Windows file publication outcome is unknown")
+
+func windowsRenameRelative(source, parent windows.Handle, name string, expected windowsDestinationProof) error {
+	// Reopen the destination under the retained parent immediately before rename.
+	// Keeping this handle open binds the name check to the native replace syscall.
+	destination, err := openWindowsRelative(parent, name, false, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(destination)
+	if !windowsTargetMatches(destination, expected) {
+		return windows.ERROR_ACCESS_DENIED
+	}
 	utf16, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -579,7 +628,10 @@ func windowsRenameRelative(source, parent windows.Handle, name string) error {
 	value.ReplaceIfExists, value.RootDirectory, value.FileNameLength = 1, parent, uint32(2*(len(utf16)-1))
 	copy((*[32767]uint16)(unsafe.Pointer(&value.FileName[0]))[:len(utf16)-1], utf16)
 	var status windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(source, &status, &data[0], uint32(len(data)), windows.FileRenameInformation)
+	if err := windows.NtSetInformationFile(source, &status, &data[0], uint32(len(data)), windows.FileRenameInformation); err != nil {
+		return err
+	}
+	return nil
 }
 func windowsIdentity(info windows.ByHandleFileInformation) windowsFileID {
 	return windowsFileID{info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow}
@@ -605,6 +657,155 @@ func windowsCurrentOwner(h windows.Handle) bool {
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	return err == nil && user != nil && user.User.Sid != nil && owner.Equals(user.User.Sid)
+}
+
+const windowsSafeFileAttributes = windows.FILE_ATTRIBUTE_READONLY | windows.FILE_ATTRIBUTE_HIDDEN | windows.FILE_ATTRIBUTE_ARCHIVE | windows.FILE_ATTRIBUTE_NORMAL
+
+type windowsBasicInformation struct {
+	creationTime, lastAccessTime, lastWriteTime, changeTime int64
+	attributes                                              uint32
+}
+
+type windowsACLHeader struct {
+	revision, reserved byte
+	size               uint16
+}
+
+func (f *windowsOperationFiles) destinationProof(h windows.Handle, info windows.ByHandleFileInformation, digest Digest) (windowsDestinationProof, error) {
+	descriptor, err := f.ops.security(h, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return windowsDestinationProof{}, err
+	}
+	return windowsProofFromDescriptor(info, digest, descriptor)
+}
+
+func windowsProofFromDescriptor(info windows.ByHandleFileInformation, digest Digest, descriptor *windows.SECURITY_DESCRIPTOR) (windowsDestinationProof, error) {
+	if !windowsRegular(info) || !windowsLocalAttributes(info.FileAttributes) || descriptor == nil || !descriptor.IsValid() {
+		return windowsDestinationProof{}, windows.ERROR_ACCESS_DENIED
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil || owner == nil || !owner.IsValid() {
+		return windowsDestinationProof{}, windows.ERROR_ACCESS_DENIED
+	}
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil || !owner.Equals(user.User.Sid) {
+		return windowsDestinationProof{}, windows.ERROR_ACCESS_DENIED
+	}
+	control, _, err := descriptor.Control()
+	if err != nil || control&windows.SE_DACL_PRESENT == 0 {
+		return windowsDestinationProof{}, windows.ERROR_ACCESS_DENIED
+	}
+	dacl, defaulted, err := descriptor.DACL()
+	aclSize := uint16(0)
+	if dacl != nil {
+		aclSize = (*windowsACLHeader)(unsafe.Pointer(dacl)).size
+	}
+	if err != nil || defaulted || dacl == nil || aclSize < uint16(unsafe.Sizeof(windows.ACL{})) {
+		return windowsDestinationProof{}, windows.ERROR_ACCESS_DENIED
+	}
+	return windowsDestinationProof{
+		id: windowsIdentity(info), digest: digest, owner: owner.String(),
+		dacl:      append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(dacl)), aclSize)...),
+		protected: control&windows.SE_DACL_PROTECTED != 0,
+		attrs:     info.FileAttributes & windowsSafeFileAttributes,
+	}, nil
+}
+
+func windowsLocalAttributes(attributes uint32) bool {
+	if attributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DEVICE|windows.FILE_ATTRIBUTE_SPARSE_FILE|windows.FILE_ATTRIBUTE_COMPRESSED|windows.FILE_ATTRIBUTE_ENCRYPTED|windows.FILE_ATTRIBUTE_SYSTEM) != 0 || attributes&^uint32(windowsSafeFileAttributes) != 0 {
+		return false
+	}
+	return attributes&windows.FILE_ATTRIBUTE_NORMAL == 0 || attributes == windows.FILE_ATTRIBUTE_NORMAL
+}
+
+func (f *windowsOperationFiles) applyCandidateProof(h windows.Handle, proof windowsDestinationProof) bool {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil || len(proof.dacl) == 0 {
+		return false
+	}
+	dacl := (*windows.ACL)(unsafe.Pointer(&proof.dacl[0]))
+	mask := windows.SECURITY_INFORMATION(windows.OWNER_SECURITY_INFORMATION | windows.DACL_SECURITY_INFORMATION)
+	if proof.protected {
+		mask |= windows.PROTECTED_DACL_SECURITY_INFORMATION
+	} else {
+		mask |= windows.UNPROTECTED_DACL_SECURITY_INFORMATION
+	}
+	// A read-only target is intentionally writable only while this private temp is written.
+	return f.ops.setSecurity(h, mask, user.User.Sid, dacl) == nil && windowsSetSafeAttributes(h, proof.attrs&^windows.FILE_ATTRIBUTE_READONLY)
+}
+
+func (f *windowsOperationFiles) candidateMatches(h windows.Handle, proof windowsDestinationProof) bool {
+	info, err := f.ops.info(h)
+	if err != nil || info.FileSizeHigh != 0 || info.FileSizeLow != 0 || info.FileAttributes != proof.attrs&^windows.FILE_ATTRIBUTE_READONLY {
+		return false
+	}
+	got, err := f.destinationProof(h, info, "")
+	return err == nil && got.owner == proof.owner && got.protected == proof.protected && string(got.dacl) == string(proof.dacl)
+}
+
+func (f *windowsOperationFiles) targetMatches(h windows.Handle, proof windowsDestinationProof) bool {
+	info, err := f.ops.info(h)
+	if err != nil || windowsIdentity(info) != proof.id || info.FileAttributes&windowsSafeFileAttributes != proof.attrs || !windowsLocalAttributes(info.FileAttributes) {
+		return false
+	}
+	got, err := f.destinationProof(h, info, proof.digest)
+	if err != nil || got.owner != proof.owner || got.protected != proof.protected || string(got.dacl) != string(proof.dacl) {
+		return false
+	}
+	if proof.digest == "" {
+		return true
+	}
+	bytes, err := windowsReadHandle(h, info)
+	return err == nil && Digest(DigestSHA256(bytes)) == proof.digest
+}
+
+func windowsTargetMatches(h windows.Handle, expected windowsDestinationProof) bool {
+	var info windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(h, &info) != nil || windowsIdentity(info) != expected.id || !windowsLocalAttributes(info.FileAttributes) || info.FileAttributes&windowsSafeFileAttributes != expected.attrs {
+		return false
+	}
+	descriptor, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return false
+	}
+	got, err := windowsProofFromDescriptor(info, expected.digest, descriptor)
+	if err != nil || got.owner != expected.owner || got.protected != expected.protected || string(got.dacl) != string(expected.dacl) {
+		return false
+	}
+	bytes, err := windowsReadHandle(h, info)
+	return err == nil && Digest(DigestSHA256(bytes)) == expected.digest
+}
+
+func windowsReadHandle(h windows.Handle, info windows.ByHandleFileInformation) ([]byte, error) {
+	if info.FileSizeHigh != 0 || info.FileSizeLow > maxOperationFileBytes {
+		return nil, windows.ERROR_FILE_TOO_LARGE
+	}
+	if _, err := windows.SetFilePointer(h, 0, nil, windows.FILE_BEGIN); err != nil {
+		return nil, err
+	}
+	bytes := make([]byte, int(info.FileSizeLow))
+	for offset := 0; offset < len(bytes); {
+		var n uint32
+		if err := windows.ReadFile(h, bytes[offset:], &n, nil); err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, errors.New("short Windows file read")
+		}
+		offset += int(n)
+	}
+	return bytes, nil
+}
+
+func windowsSetSafeAttributes(h windows.Handle, attributes uint32) bool {
+	if !windowsLocalAttributes(attributes) {
+		return false
+	}
+	if attributes == 0 {
+		attributes = windows.FILE_ATTRIBUTE_NORMAL
+	}
+	info := windowsBasicInformation{creationTime: -1, lastAccessTime: -1, lastWriteTime: -1, changeTime: -1, attributes: attributes}
+	return windows.SetFileInformationByHandle(h, windows.FileBasicInformation, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))) == nil
 }
 func windowsLogicalPath(value string) bool {
 	if path([]byte(`"`+value+`"`)) != nil || strings.ContainsAny(value, "\\:") || value != strings.TrimSpace(value) {
