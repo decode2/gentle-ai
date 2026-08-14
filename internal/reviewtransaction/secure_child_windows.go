@@ -71,6 +71,42 @@ func openSecureWindowsChildData(ctx context.Context, parent windows.Handle, want
 	return data, nil
 }
 
+// createSecureWindowsChildData creates one empty, owner-only regular file under
+// the retained parent. The caller supplies only an internal unpredictable name.
+func createSecureWindowsChildData(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string) (*secureWindowsData, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !secureWindowsChildName(name) || !secureWindowsDirectoryHandle(parent, want) {
+		return nil, errSecureWindowsChildInvalid
+	}
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return nil, errSecureWindowsChildInvalid
+	}
+	descriptor, err := ownerOnlyRARSecurityDescriptor(false)
+	if err != nil {
+		return nil, errSecureWindowsChildInvalid
+	}
+	defer runtime.KeepAlive(descriptor)
+	attributes := &windows.OBJECT_ATTRIBUTES{Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})), RootDirectory: parent, ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE, SecurityDescriptor: descriptor}
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE|windows.READ_CONTROL|windows.SYNCHRONIZE, attributes, &status, nil,
+		windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
+	if err != nil {
+		return nil, secureWindowsChildError(err)
+	}
+	data := &secureWindowsData{handle: handle}
+	info, _, ok := secureWindowsDataInfo(handle)
+	if !secureWindowsDirectoryHandle(parent, want) || !ok || !data.valid() || info.FileSizeHigh != 0 || info.FileSizeLow != 0 {
+		secureWindowsDeleteData(data)
+		return nil, errSecureWindowsChildInvalid
+	}
+	return data, nil
+}
+
 func secureWindowsChildDirectory(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string, disposition uint32) (*secureWindowsChild, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -168,6 +204,16 @@ func (data *secureWindowsData) valid() bool {
 		data.id = id
 	}
 	return data.id == id && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+func secureWindowsDeleteData(data *secureWindowsData) {
+	if data == nil || data.handle == 0 {
+		return
+	}
+	deleteFile := byte(1)
+	var status windows.IO_STATUS_BLOCK
+	_ = windows.NtSetInformationFile(data.handle, &status, &deleteFile, 1, windows.FileDispositionInformation)
+	_ = data.Close()
 }
 
 func secureWindowsDirectoryHandle(handle windows.Handle, want *secureWindowsChildID) bool {
