@@ -28,13 +28,39 @@ type retainedProgram struct {
 	mode        string
 }
 
+// retainedExecTestHook is available only inside this package. Keeping it on the
+// request context makes replacement tests deterministic without global state.
+type retainedExecTestHook struct {
+	executable     func() (string, error)
+	program        func(string) (retainedProgram, error)
+	tempHome       func() (string, error)
+	afterRetention func()
+	observeOutput  func(stdout, stderr []byte)
+}
+
+type retainedExecTestHookKey struct{}
+
+var defaultRetainedExecTestHook = retainedExecTestHook{
+	executable: os.Executable,
+	program:    retainedProgramFor,
+	tempHome: func() (string, error) {
+		return os.MkdirTemp("/tmp", "gentle-ai-direct-home-")
+	},
+	afterRetention: func() {
+	},
+}
+
 // runRetainedCommand never passes a mutable executable or cwd pathname to the
 // child. The helper fchdirs and execs the already-open descriptors.
 func runRetainedCommand(ctx context.Context, repo string, command Command, timeout time.Duration) (ExecResult, error) {
+	hook := defaultRetainedExecTestHook
+	if testHook, ok := ctx.Value(retainedExecTestHookKey{}).(retainedExecTestHook); ok {
+		hook = testHook
+	}
 	if command.validate(0) != nil || !retainedProcFSAvailable() {
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
-	program, err := retainedProgramFor(command.Argv[0])
+	program, err := hook.program(command.Argv[0])
 	if err != nil {
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
@@ -52,7 +78,7 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	if relativeErr != nil || relative == ".." || len(relative) >= 3 && relative[:3] == "../" {
 		return ExecResult{}, ErrOperationUnavailable
 	}
-	selfPath, err := os.Executable()
+	selfPath, err := hook.executable()
 	if err != nil {
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
@@ -61,8 +87,9 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
 	defer unix.Close(self)
+	hook.afterRetention()
 	// Do not inherit TMPDIR: it is worker-controllable process state.
-	home, err := os.MkdirTemp("/tmp", "gentle-ai-direct-home-")
+	home, err := hook.tempHome()
 	if err != nil {
 		return ExecResult{}, ErrOperationUnavailable
 	}
@@ -71,9 +98,10 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	defer cancel()
 	child := exec.Command(retainedProcFD(3), append([]string{"_direct-run-retained", program.mode}, command.Argv...)...)
 	child.Args = append([]string{"gentle-ai-retained", "_direct-run-retained", program.mode}, command.Argv...)
-	extra := []*os.File{os.NewFile(uintptr(self), "self"), os.NewFile(uintptr(program.target), "target"), os.NewFile(uintptr(cwd), "cwd")}
-	if program.script >= 0 {
-		extra = append(extra, os.NewFile(uintptr(program.script), "script"), os.NewFile(uintptr(program.interpreter), "interpreter"))
+	extra, err := retainedExtraFiles(self, program, cwd)
+	if err != nil {
+		_ = os.RemoveAll(home)
+		return ExecResult{}, ErrOperationUnavailable
 	}
 	child.ExtraFiles = extra
 	child.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_OPTIONAL_LOCKS=0"}
@@ -81,9 +109,11 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	stdout, stderr := &retainedOutput{}, &retainedOutput{}
 	child.Stdout, child.Stderr = stdout, stderr
 	if err := child.Start(); err != nil {
+		retainedCloseExtraFiles(extra)
 		_ = os.RemoveAll(home)
 		return ExecResult{}, ErrOperationUnavailable
 	}
+	retainedCloseExtraFiles(extra)
 	done := make(chan error, 1)
 	go func() { done <- child.Wait() }()
 	var waitErr error
@@ -107,6 +137,9 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	if err := os.RemoveAll(home); err != nil {
 		return ExecResult{}, ErrOperationUnavailable
 	}
+	if hook.observeOutput != nil {
+		hook.observeOutput(stdout.bytes(), stderr.bytes())
+	}
 	if stdout.overflow || stderr.overflow {
 		return ExecResult{}, ErrOperationLimit
 	}
@@ -122,6 +155,38 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 		exitCode = exit.ExitCode()
 	}
 	return NewExecResult(exitCode, append(stdout.bytes(), stderr.bytes()...))
+}
+
+func retainedExtraFiles(self int, program retainedProgram, cwd int) ([]*os.File, error) {
+	descriptors := []struct {
+		fd   int
+		name string
+	}{{self, "self"}, {program.target, "target"}, {cwd, "cwd"}}
+	if program.script >= 0 {
+		descriptors = append(descriptors, struct {
+			fd   int
+			name string
+		}{program.script, "script"}, struct {
+			fd   int
+			name string
+		}{program.interpreter, "interpreter"})
+	}
+	files := make([]*os.File, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		duplicate, err := unix.Dup(descriptor.fd)
+		if err != nil {
+			retainedCloseExtraFiles(files)
+			return nil, err
+		}
+		files = append(files, os.NewFile(uintptr(duplicate), descriptor.name))
+	}
+	return files, nil
+}
+
+func retainedCloseExtraFiles(files []*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 func retainedProgramFor(name string) (retainedProgram, error) {
