@@ -385,7 +385,11 @@ func (f *windowsOperationFiles) Tree(ctx context.Context, logical string) (Inspe
 	if err := f.tree(ctx, dir, "/", 0, &lines); err != nil {
 		return InspectResult{}, err
 	}
-	return NewInspectResult([]byte(strings.Join(lines, "\n")))
+	evidence := []byte(strings.Join(lines, "\n"))
+	if len(evidence) > maxContent {
+		return InspectResult{}, ErrOperationLimit
+	}
+	return NewInspectResult(evidence)
 }
 
 func (f *windowsOperationFiles) tree(ctx context.Context, dir windows.Handle, prefix string, depth int, lines *[]string) error {
@@ -422,9 +426,16 @@ func (f *windowsOperationFiles) tree(ctx context.Context, dir windows.Handle, pr
 			return ErrOperationConflict
 		}
 		info, infoErr := f.ops.info(h)
-		if infoErr != nil || info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		if infoErr != nil {
 			_ = f.ops.close(h)
 			return ErrOperationConflict
+		}
+		if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			*lines = append(*lines, "l "+child)
+			if f.ops.close(h) != nil {
+				return ErrOperationUnavailable
+			}
+			continue
 		}
 		if windowsDirectory(info) {
 			*lines = append(*lines, "d "+child)
@@ -446,7 +457,7 @@ func (f *windowsOperationFiles) tree(ctx context.Context, dir windows.Handle, pr
 		}
 	}
 	after, err := f.ops.info(dir)
-	if err != nil || windowsIdentity(before) != windowsIdentity(after) {
+	if err != nil || !windowsReadMetadataMatches(before, after) {
 		return ErrOperationConflict
 	}
 	return nil

@@ -381,6 +381,7 @@ func TestWindowsOperationFilesEditNoopAndReplacementMatrix(t *testing.T) {
 			if err := os.WriteFile(name, old, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			before := editProof(t, files, "editable/a")
 			got, err := files.Edit(t.Context(), "editable/a", tt.base, tt.replacements)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) || got != (EditResult{}) {
@@ -390,6 +391,10 @@ func TestWindowsOperationFilesEditNoopAndReplacementMatrix(t *testing.T) {
 			}
 			if err != nil || !got.Changed || got.Publication != "published" || got.ResultSHA256 != DigestSHA256(tt.want) {
 				t.Fatalf("result=%#v err=%v", got, err)
+			}
+			after := editProof(t, files, "editable/a")
+			if after.owner != before.owner || after.protected != before.protected || string(after.dacl) != string(before.dacl) || after.attrs != before.attrs {
+				t.Fatalf("successor proof changed: before=%#v after=%#v", before, after)
 			}
 			bytes, readErr := os.ReadFile(name)
 			if readErr != nil || string(bytes) != string(tt.want) {
@@ -505,6 +510,111 @@ func TestWindowsOperationFilesEditPublicationFailuresAreExplicit(t *testing.T) {
 				t.Fatalf("result=%#v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestWindowsOperationFilesTreeCanonicalAndReparse(t *testing.T) {
+	files, repo := testWindowsOperationFiles(t)
+	defer files.Close()
+	root := filepath.Join(repo, "editable")
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "z"), []byte("z"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "a"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dir", filepath.Join(root, "link")); err != nil {
+		t.Skipf("Windows reparse fixture unavailable: %v", err)
+	}
+	want := []byte("d /dir\nf /dir/a\nl /link\nf /z")
+	first, err := files.Tree(t.Context(), "editable")
+	if err != nil || first.Encoding != "utf-8" || first.Truncated || first.ContentB64 != base64.StdEncoding.EncodeToString(want) || first.EvidenceSHA256 != DigestSHA256(want) {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	second, err := files.Tree(t.Context(), "editable")
+	if err != nil || second != first {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	subtree, err := files.Tree(t.Context(), "editable/dir")
+	if err != nil || subtree.ContentB64 != base64.StdEncoding.EncodeToString([]byte("f /a")) {
+		t.Fatalf("subtree=%#v err=%v", subtree, err)
+	}
+	if _, err := files.Tree(t.Context(), "editable/link"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatalf("reparse root=%v", err)
+	}
+}
+
+func TestWindowsOperationFilesTreeFaultsAndMutation(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*windowsOperationFiles, string)
+		want error
+	}{
+		{"enumerate", func(f *windowsOperationFiles, _ string) {
+			f.ops.enumerate = func(windows.Handle) ([]os.DirEntry, error) { return nil, windows.ERROR_READ_FAULT }
+		}, ErrOperationUnavailable},
+		{"open", func(f *windowsOperationFiles, _ string) {
+			f.ops.open = func(windows.Handle, string, bool, uint32) (windows.Handle, error) {
+				return 0, windows.ERROR_ACCESS_DENIED
+			}
+		}, ErrOperationUnavailable},
+		{"mutation", func(f *windowsOperationFiles, root string) {
+			enumerate := f.ops.enumerate
+			mutated := false
+			f.ops.enumerate = func(h windows.Handle) ([]os.DirEntry, error) {
+				entries, err := enumerate(h)
+				if err == nil && !mutated {
+					mutated = true
+					err = os.WriteFile(filepath.Join(root, "new"), []byte("n"), 0o600)
+				}
+				return entries, err
+			}
+		}, ErrOperationConflict},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testWindowsOperationFiles(t)
+			defer files.Close()
+			root := filepath.Join(repo, "editable")
+			if err := os.WriteFile(filepath.Join(root, "a"), []byte("a"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(files, root)
+			got, err := files.Tree(t.Context(), "editable")
+			if !errors.Is(err, tt.want) || got != (InspectResult{}) {
+				t.Fatalf("result=%#v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestWindowsOperationFilesTreeLimitsAndLifecycle(t *testing.T) {
+	files, repo := testWindowsOperationFiles(t)
+	defer files.Close()
+	root := filepath.Join(repo, "editable")
+	path := root
+	for range maxTreeDepth + 1 {
+		path = filepath.Join(path, "d")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := files.Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationLimit) || got != (InspectResult{}) {
+		t.Fatalf("depth=%#v err=%v", got, err)
+	}
+	if _, err := (*windowsOperationFiles)(nil).Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
+	}
+	if _, err := (&windowsOperationFiles{}).Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
 	}
 }
 
