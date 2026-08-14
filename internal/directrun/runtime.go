@@ -156,16 +156,16 @@ func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error
 		return Response{}, err
 	}
 	if err := r.available(ctx); err != nil {
-		return Response{}, err
+		return wire(request, wireCode(ctx, err), "operation unavailable"), nil
 	}
 	var record Record
 	for attempts := 0; attempts < 4; attempts++ {
 		current, err := r.store.Read(ctx, request.Identity)
 		if err != nil {
-			return Response{}, err
+			return wire(request, admissionWireCode(ctx, err), "request denied"), nil
 		}
 		if current.Handoff.Revision != Digest(request.HandoffRevision) || current.RepositoryIdentity != "" && current.RepositoryIdentity != r.lease.StorageKey() {
-			return Response{}, ErrInvalidTransition
+			return wire(request, "unauthorized", "request denied"), nil
 		}
 		switch current.State {
 		case RecordRegistered:
@@ -174,21 +174,21 @@ func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error
 				continue
 			}
 			if err != nil {
-				return Response{}, err
+				return wire(request, admissionWireCode(ctx, err), "request denied"), nil
 			}
 		case RecordBound:
 			record = current
 			if record.SessionID != request.SessionID || record.RepositoryIdentity != r.lease.StorageKey() || record.ParentSessionID != request.ParentSessionID || record.ParentCallID != request.ParentCallID || record.Agent != request.Agent {
-				return Response{}, ErrInvalidTransition
+				return wire(request, "unauthorized", "request denied"), nil
 			}
 		case RecordConsumed:
 			record = current
 			if record.SessionID != request.SessionID || record.RepositoryIdentity != r.lease.StorageKey() || record.ParentSessionID != request.ParentSessionID || record.ParentCallID != request.ParentCallID || record.Agent != request.Agent {
-				return Response{}, ErrInvalidTransition
+				return wire(request, "unauthorized", "request denied"), nil
 			}
 			return r.executeOperation(ctx, record, request)
 		default:
-			return Response{}, transitionError(current.State)
+			return wire(request, "unauthorized", "request denied"), nil
 		}
 		if record.State == RecordBound {
 			record, err = r.store.Consume(ctx, request.Identity, record.Revision, request.SessionID, r.lease.StorageKey())
@@ -196,12 +196,12 @@ func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error
 				continue
 			}
 			if err != nil {
-				return Response{}, err
+				return wire(request, admissionWireCode(ctx, err), "request denied"), nil
 			}
 			return r.executeOperation(ctx, record, request)
 		}
 	}
-	return Response{}, ErrCASConflict
+	return wire(request, "unauthorized", "request denied"), nil
 }
 func (r *Runtime) executeOperation(ctx context.Context, record Record, request Request) (Response, error) {
 	if request.Operation == "direct_exec" || request.Operation == "direct_inspect" && !jsonContainsTree(request.Payload) {
@@ -279,6 +279,24 @@ func wireCode(ctx context.Context, err error) string {
 		return "limit_exceeded"
 	}
 	return "backend_failure"
+}
+func admissionWireCode(ctx context.Context, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, ErrIdentityChanged) {
+		return "repository_unavailable"
+	}
+	if errors.Is(err, ErrBackendUnavailable) || errors.Is(err, ErrOperationUnavailable) {
+		return "backend_failure"
+	}
+	if errors.Is(err, ErrNotFound) {
+		return "unauthenticated"
+	}
+	return "unauthorized"
 }
 func jsonContainsTree(raw json.RawMessage) bool {
 	var v struct {
