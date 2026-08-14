@@ -84,15 +84,15 @@ func RunDirectRun(args []string, stdin io.Reader, stdout io.Writer) error {
 		record, err := runtime.Finish(context.Background(), input.Identity, input.Revision, input.SessionID, input.Outcome, input.Output)
 		return writeDirectRun(stdout, record, err)
 	case "abort":
-		var input struct {
-			Identity string                `json:"identity"`
-			Revision directrun.Digest      `json:"revision"`
-			Reason   directrun.AbortReason `json:"reason"`
-		}
-		if err := decodeDirectRun(stdin, &input); err != nil {
+		payload, err := readDirectRunJSON(stdin)
+		if err != nil {
 			return err
 		}
-		record, err := runtime.Abort(context.Background(), input.Identity, input.Revision, input.Reason)
+		request, err := directrun.DecodeAbortRequest(payload)
+		if err != nil {
+			return directrun.ErrInvalidTransition
+		}
+		record, err := runtime.Abort(context.Background(), request)
 		return writeDirectRun(stdout, record, err)
 	default:
 		return directrun.ErrInvalidTransition

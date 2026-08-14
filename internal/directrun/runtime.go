@@ -12,6 +12,38 @@ import (
 
 const registrationTTL = 5 * time.Minute
 
+const AbortRequestSchema = "gentle-ai.direct-run-abort/v1"
+
+// AbortRequest carries the same persisted principal that admitted the child.
+// RepositoryIdentity is the opaque active lease storage key, never a path.
+type AbortRequest struct {
+	Schema             string      `json:"schema"`
+	Identity           string      `json:"identity"`
+	Revision           Digest      `json:"revision"`
+	HandoffRevision    Digest      `json:"handoff_revision"`
+	ParentSessionID    string      `json:"parent_session_id"`
+	ParentCallID       string      `json:"parent_call_id"`
+	Agent              string      `json:"agent"`
+	RepositoryIdentity string      `json:"repository_identity"`
+	ChildSessionID     string      `json:"child_session_id"`
+	Reason             AbortReason `json:"reason"`
+}
+
+func (r AbortRequest) Validate() error {
+	if r.Schema != AbortRequestSchema || !recordIdentifier(r.Identity) || !digestPattern.MatchString(string(r.Revision)) || !digestPattern.MatchString(string(r.HandoffRevision)) || !recordIdentifier(r.ParentSessionID) || !recordIdentifier(r.ParentCallID) || !recordAgent(r.Agent) || !recordIdentifier(r.RepositoryIdentity) || (r.ChildSessionID != "" && !recordIdentifier(r.ChildSessionID)) || (r.Reason != AbortCancelled && r.Reason != AbortRevoked && r.Reason != AbortExpired) {
+		return ErrInvalidTransition
+	}
+	return nil
+}
+func (r AbortRequest) CanonicalJSON() ([]byte, error) { return marshal(r, r.Validate) }
+func DecodeAbortRequest(payload []byte) (AbortRequest, error) {
+	var request AbortRequest
+	if err := decodeEnvelope(payload, &request, set("schema", "identity", "revision", "handoff_revision", "parent_session_id", "parent_call_id", "agent", "repository_identity", "child_session_id", "reason")); err != nil {
+		return request, err
+	}
+	return request, request.Validate()
+}
+
 // Runtime owns the repository lease, record backend, and file authority for one repository.
 type Runtime struct {
 	lease   *reviewtransaction.RepositoryIdentityLease
@@ -90,11 +122,34 @@ func (r *Runtime) Finish(ctx context.Context, identity string, expected Digest, 
 	}
 	return r.store.Finish(ctx, identity, expected, outcome, output)
 }
-func (r *Runtime) Abort(ctx context.Context, identity string, expected Digest, reason AbortReason) (Record, error) {
+func (r *Runtime) Abort(ctx context.Context, request AbortRequest) (Record, error) {
+	if err := request.Validate(); err != nil {
+		return Record{}, err
+	}
 	if err := r.available(ctx); err != nil {
 		return Record{}, err
 	}
-	return r.store.Abort(ctx, identity, expected, reason)
+	record, err := r.store.Read(ctx, request.Identity)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Revision != request.Revision || record.Handoff.Revision != request.HandoffRevision || record.RepositoryIdentity != r.lease.StorageKey() || request.RepositoryIdentity != r.lease.StorageKey() || record.ParentSessionID != request.ParentSessionID || record.ParentCallID != request.ParentCallID || record.Agent != request.Agent {
+		return Record{}, ErrInvalidTransition
+	}
+	switch record.State {
+	case RecordRegistered:
+		if request.ChildSessionID != "" {
+			return Record{}, ErrInvalidTransition
+		}
+	case RecordBound, RecordConsumed:
+		if request.ChildSessionID == "" || request.ChildSessionID != record.SessionID {
+			return Record{}, ErrInvalidTransition
+		}
+	default:
+		// Issued authority has no persisted principal and terminals cannot replay.
+		return Record{}, transitionError(record.State)
+	}
+	return r.store.Abort(ctx, request.Identity, request.Revision, request.Reason)
 }
 func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error) {
 	if err := request.Validate(); err != nil {
