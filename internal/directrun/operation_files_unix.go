@@ -597,22 +597,6 @@ func logicalEditRoot(repository, configured string) (string, bool) {
 	logical := strings.TrimPrefix(configured, repository+"/")
 	return logical, path([]byte(`"`+logical+`"`)) == nil
 }
-func readExact(fd int, size int64) ([]byte, error) {
-	value := make([]byte, size)
-	for n := 0; n < len(value); {
-		k, err := unix.Read(fd, value[n:])
-		if err != nil || k == 0 {
-			return nil, ErrOperationUnavailable
-		}
-		n += k
-	}
-	var extra [1]byte
-	n, err := unix.Read(fd, extra[:])
-	if err != nil || n != 0 {
-		return nil, ErrOperationUnavailable
-	}
-	return value, nil
-}
 func (f *linuxOperationFiles) readExact(fd int, size int64) ([]byte, error) {
 	value := make([]byte, size)
 	for n := 0; n < len(value); {
@@ -632,16 +616,6 @@ func (f *linuxOperationFiles) readExact(fd int, size int64) ([]byte, error) {
 func (f *linuxOperationFiles) writeExact(fd int, value []byte) error {
 	for len(value) > 0 {
 		n, err := f.ops.write(fd, value)
-		if err != nil || n == 0 {
-			return ErrOperationUnavailable
-		}
-		value = value[n:]
-	}
-	return nil
-}
-func writeExact(fd int, value []byte) error {
-	for len(value) > 0 {
-		n, err := unix.Write(fd, value)
 		if err != nil || n == 0 {
 			return ErrOperationUnavailable
 		}

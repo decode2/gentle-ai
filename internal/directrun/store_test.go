@@ -101,16 +101,18 @@ func TestStoreLifecycleAndAbort(t *testing.T) {
 			if abort {
 				r, err = s.Abort(t.Context(), h.Identity, r.Revision, AbortCancelled)
 			} else {
-				r, err = s.Bind(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026")
+				r, err = s.Register(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
 				check(t, err)
-				r, err = s.Consume(t.Context(), h.Identity, r.Revision)
+				r, err = s.Bind(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "session-3026", "repo-3026", 100)
+				check(t, err)
+				r, err = s.Consume(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026")
 				check(t, err)
 				r, err = s.Finish(t.Context(), h.Identity, r.Revision, OutcomeSucceeded, testOutput(h))
 			}
 			if err != nil || (abort && r.State != RecordAborted) || (!abort && r.State != RecordFinished) {
 				t.Fatalf("terminal = %#v, %v", r, err)
 			}
-			_, err = s.Consume(t.Context(), h.Identity, r.Revision)
+			_, err = s.Consume(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026")
 			if !errors.Is(err, ErrReplay) {
 				t.Fatalf("replay = %v", err)
 			}
@@ -134,11 +136,11 @@ func TestStoreLeaseAndBounds(t *testing.T) {
 	r, err := s.Issue(t.Context(), h)
 	check(t, err)
 	l.afterRead, l.readAt, l.failAfterRead = b, b.reads, true
-	if _, err := s.Bind(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026"); !errors.Is(err, ErrIdentityChanged) || b.reads != 1 || b.swaps != 0 {
+	if _, err := s.Register(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100); !errors.Is(err, ErrIdentityChanged) || b.reads != 1 || b.swaps != 0 {
 		t.Fatalf("pre-CAS lease drift = %v reads=%d swaps=%d", err, b.reads, b.swaps)
 	}
 	l.key, l.readAt, l.failAfterRead, l.changeKeyAfterRead = "repository-key", b.reads, false, true
-	if _, err := s.Bind(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026"); !errors.Is(err, ErrIdentityChanged) || b.reads != 2 || b.swaps != 0 {
+	if _, err := s.Register(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100); !errors.Is(err, ErrIdentityChanged) || b.reads != 2 || b.swaps != 0 {
 		t.Fatalf("pre-CAS key drift = %v reads=%d swaps=%d", err, b.reads, b.swaps)
 	}
 	l.key, l.afterRead, l.changeKeyAfterRead = "repository-key", nil, false
@@ -164,7 +166,7 @@ func TestStoreRejectsBadReadsAndStableBackendErrors(t *testing.T) {
 	if _, err := s.Read(t.Context(), h.Identity); !errors.Is(err, ErrCorruptRecord) {
 		t.Fatalf("noncanonical = %v", err)
 	}
-	other, err := NewHandoff("other-run", "worker-3026-example", []string{"/workspace/repo"}, "other behavior", []string{"criterion"}, []Command{{[]string{"go", "test", "./internal/directrun"}, "/workspace/repo"}})
+	other, err := (Handoff{Schema: HandoffSchema, Identity: "other-run", Worker: WorkerIdentity{Role: WorkerRole, ID: "worker-3026-example"}, AllowedEditRoots: []string{"/workspace/repo"}, TargetBehavior: "other behavior", AcceptanceCriteria: []string{"criterion"}, Verification: []Command{{Argv: []string{"go", "test", "./internal/directrun"}, CWD: "/workspace/repo"}}}).Seal()
 	check(t, err)
 	otherRecord, err := IssueRecord(other)
 	check(t, err)
@@ -203,13 +205,15 @@ func TestStoreIssueDuplicateAndBoundedSuccessor(t *testing.T) {
 	if _, err := s.Issue(t.Context(), different); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("different issue = %v", err)
 	}
-	bound, err := s.Bind(t.Context(), h.Identity, first.Revision, "session-3026", "repo-3026")
+	registered, err := s.Register(t.Context(), h.Identity, first.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
 	check(t, err)
-	consumed, err := s.Consume(t.Context(), h.Identity, bound.Revision)
+	bound, err := s.Bind(t.Context(), h.Identity, registered.Revision, "parent-3026", "call-3026", "gentle-worker", "session-3026", "repo-3026", 100)
+	check(t, err)
+	consumed, err := s.Consume(t.Context(), h.Identity, bound.Revision, "session-3026", "repo-3026")
 	check(t, err)
 	output := testOutput(h)
 	output.Summary = strings.Repeat("x", maxRecordBytes)
-	if _, err := s.Finish(t.Context(), h.Identity, consumed.Revision, OutcomeSucceeded, output); !errors.Is(err, ErrRecordTooLarge) || b.swaps != 2 {
+	if _, err := s.Finish(t.Context(), h.Identity, consumed.Revision, OutcomeSucceeded, output); !errors.Is(err, ErrRecordTooLarge) || b.swaps != 3 {
 		t.Fatalf("oversize successor = %v swaps=%d", err, b.swaps)
 	}
 }
@@ -224,7 +228,7 @@ func TestStoreCASConflictHasNoRetry(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			_, err := s.Bind(context.Background(), h.Identity, r.Revision, "session-3026", "repo-3026")
+			_, err := s.Register(context.Background(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
 			errs <- err
 		}()
 	}

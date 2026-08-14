@@ -7,7 +7,7 @@ import (
 )
 
 func testHandoff(t *testing.T) Handoff {
-	h, err := NewHandoff("run-3026-example", "worker-3026-example", []string{"/workspace/repo"}, "add the direct-run contract primitives", []string{"strict decoding rejects unknown fields", "canonical digests are stable"}, []Command{{[]string{"go", "test", "./internal/directrun"}, "/workspace/repo"}})
+	h, err := (Handoff{Schema: HandoffSchema, Identity: "run-3026-example", Worker: WorkerIdentity{Role: WorkerRole, ID: "worker-3026-example"}, AllowedEditRoots: []string{"/workspace/repo"}, TargetBehavior: "add the direct-run contract primitives", AcceptanceCriteria: []string{"strict decoding rejects unknown fields", "canonical digests are stable"}, Verification: []Command{{Argv: []string{"go", "test", "./internal/directrun"}, CWD: "/workspace/repo"}}}).Seal()
 	check(t, err)
 	return h
 }

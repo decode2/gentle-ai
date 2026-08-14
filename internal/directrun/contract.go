@@ -101,9 +101,6 @@ func textAt(index int, value string) error {
 }
 func commandKey(value Command) string          { return strings.Join(value.Argv, "\x00") + "\x00" + value.CWD }
 func commandAt(index int, value Command) error { return value.validate(index) }
-func NewHandoff(identity, workerID string, roots []string, target string, criteria []string, commands []Command) (Handoff, error) {
-	return (Handoff{HandoffSchema, identity, "", WorkerIdentity{WorkerRole, workerID}, roots, target, criteria, commands}).Seal()
-}
 func (h Handoff) Seal() (Handoff, error) {
 	if h.Revision != "" {
 		return Handoff{}, errors.New("handoff is already sealed")

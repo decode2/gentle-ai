@@ -2,6 +2,7 @@ package directrun
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -9,10 +10,10 @@ import (
 
 func TestRequestWire(t *testing.T) {
 	valid := map[string]string{
-		"read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a/b","offset":0,"limit":1}}`,
-		"edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[]}}`,
-		"exec":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"command_index":0,"timeout_ms":1}}`,
-		"inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"query":"tree","path":"a"}}`,
+		"read":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a/b","offset":0,"limit":1}}`,
+		"edit":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[]}}`,
+		"exec":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"command_index":0,"timeout_ms":1}}`,
+		"inspect": `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"query":"tree","path":"a"}}`,
 	}
 	for n, in := range valid {
 		t.Run(n, func(t *testing.T) {
@@ -60,7 +61,7 @@ func TestLogicalPathDevices(t *testing.T) {
 		}
 	}
 }
-func TestResponseWire(t *testing.T) {
+func TestResponseValidation(t *testing.T) {
 	valid := map[string]string{
 		"direct_read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"ok","result":{"data_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","offset":0,"total_size":0,"truncated":false}}`,
 		"direct_edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"unchanged"}}`,
@@ -68,7 +69,7 @@ func TestResponseWire(t *testing.T) {
 		"direct_inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":false}}`,
 	}
 	for op, in := range valid {
-		if _, err := DecodeResponse([]byte(in)); err != nil {
+		if err := validateResponse([]byte(in)); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
 	}
@@ -83,7 +84,7 @@ func TestResponseWire(t *testing.T) {
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"published"}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":true}}`,
 	} {
-		if _, err := DecodeResponse([]byte(in)); err == nil {
+		if err := validateResponse([]byte(in)); err == nil {
 			t.Errorf("accepted %s", in)
 		}
 	}
@@ -139,7 +140,7 @@ func TestOperationResultBuildersRejectMalformedInputs(t *testing.T) {
 	}
 }
 
-func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
+func TestOperationResultValidationRejectsMaliciousRows(t *testing.T) {
 	response := func(operation, result string) []byte {
 		return []byte(fmt.Sprintf(`{"schema":"%s","operation":"%s","request_id":"r","status":"ok","result":%s}`, OperationSchema, operation, result))
 	}
@@ -156,7 +157,7 @@ func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
 		read(fullDigest, "YmM=", 1, 3, true),
 		read(fullDigest, "", 3, 3, true),
 	} {
-		if _, err := DecodeResponse(in); err != nil {
+		if err := validateResponse(in); err != nil {
 			t.Fatalf("rejected canonical result %s: %v", in, err)
 		}
 	}
@@ -180,14 +181,22 @@ func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
 	}
 	bad = bad[1:]
 	for _, in := range bad {
-		if _, err := DecodeResponse(in); err == nil {
+		if err := validateResponse(in); err == nil {
 			t.Errorf("accepted malicious result %s", in)
 		}
 	}
 }
 
+func validateResponse(payload []byte) error {
+	var response Response
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return err
+	}
+	return response.Validate()
+}
+
 func TestEnvelopeRejectsStructuralMalice(t *testing.T) {
-	valid := `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","offset":0,"limit":1}}`
+	valid := `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a","offset":0,"limit":1}}`
 	for _, in := range [][]byte{
 		[]byte(strings.Replace(valid, `"request_id":"r"`, `"request_id":null`, 1)),
 		[]byte(strings.Replace(valid, `"payload":{`, `"unknown":1,"payload":{`, 1)),

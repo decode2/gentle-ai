@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package directrun
 
@@ -45,9 +45,11 @@ func TestLinuxRecordBackendStoreLifecycle(t *testing.T) {
 			if abort {
 				r, err = s.Abort(t.Context(), h.Identity, r.Revision, AbortCancelled)
 			} else {
-				r, err = s.Bind(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026")
+				r, err = s.Register(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
 				check(t, err)
-				r, err = s.Consume(t.Context(), h.Identity, r.Revision)
+				r, err = s.Bind(t.Context(), h.Identity, r.Revision, "parent-3026", "call-3026", "gentle-worker", "session-3026", "repo-3026", 100)
+				check(t, err)
+				r, err = s.Consume(t.Context(), h.Identity, r.Revision, "session-3026", "repo-3026")
 				check(t, err)
 				r, err = s.Finish(t.Context(), h.Identity, r.Revision, OutcomeSucceeded, testOutput(h))
 			}
@@ -102,11 +104,13 @@ func TestLinuxRecordBackendConcurrentCASAndClose(t *testing.T) {
 	h := testHandoff(t)
 	r, err := s.Issue(t.Context(), h)
 	check(t, err)
+	issued := r.Revision
 	other, err := newLinuxRecordBackend(t.Context(), lease)
 	check(t, err)
 	defer other.Close()
-	a, _ := r.Bind(r.Revision, "session-a", "repo-3026")
-	c, _ := r.Bind(r.Revision, "session-b", "repo-3026")
+	r, _ = r.Register(r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
+	a, _ := r.Bind(r.Revision, "parent-3026", "call-3026", "gentle-worker", "session-a", "repo-3026", 100)
+	c, _ := r.Bind(r.Revision, "parent-3026", "call-3026", "gentle-worker", "session-b", "repo-3026", 100)
 	pa, _ := a.CanonicalJSON()
 	pc, _ := c.CanonicalJSON()
 	start, results := make(chan struct{}), make(chan string, 2)
@@ -114,8 +118,8 @@ func TestLinuxRecordBackendConcurrentCASAndClose(t *testing.T) {
 		winner string
 		call   func() error
 	}{
-		{"a", func() error { return b.CompareAndSwap(t.Context(), s.recordKey(h.Identity), r.Revision, pa) }},
-		{"b", func() error { return other.CompareAndSwap(t.Context(), s.recordKey(h.Identity), r.Revision, pc) }},
+		{"a", func() error { return b.CompareAndSwap(t.Context(), s.recordKey(h.Identity), issued, pa) }},
+		{"b", func() error { return other.CompareAndSwap(t.Context(), s.recordKey(h.Identity), issued, pc) }},
 	} {
 		go func(winner string, call func() error) {
 			<-start
