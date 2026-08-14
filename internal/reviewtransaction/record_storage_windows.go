@@ -45,11 +45,28 @@ type RecordStorageAuthority struct {
 	digest           *secureWindowsChild
 	readHook         func()
 	createHook       func()
+	createOps        recordStorageCreateOps
+}
+
+// recordStorageCreateOps keeps the Windows CreateRecord boundary injectable per
+// authority. Tests configure it before use; CreateRecord reads it while holding
+// the authority lock.
+type recordStorageCreateOps struct {
+	tempName    func() (string, error)
+	create      func(context.Context, windows.Handle, *secureWindowsChildID, string) (*secureWindowsData, error)
+	write       func(windows.Handle, []byte, *uint32, *windows.Overlapped) error
+	flush       func(windows.Handle) error
+	verify      func(*secureWindowsData, int) bool
+	validate    func(context.Context) error
+	publish     func(windows.Handle, windows.Handle, string) error
+	postpublish func(context.Context, *secureWindowsData, string, int) bool
+	cleanup     func(*secureWindowsData) error
+	close       func(*secureWindowsData) error
 }
 
 // CreateRecord atomically publishes canonical bytes under their record identity.
 // recordDigest identifies the record; it is not a digest of canonical.
-func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest string, canonical []byte) error {
+func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest string, canonical []byte) (result error) {
 	const hardMax = 1 << 20
 	if a == nil || !recordStorageDigest(recordDigest) {
 		return errRecordStorageAuthorityInvalid
@@ -69,16 +86,17 @@ func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest 
 	if a.createHook != nil {
 		a.createHook()
 	}
+	ops := a.createOps
 	var (
 		data *secureWindowsData
 		err  error
 	)
 	for range 8 {
-		name, nameErr := recordStorageTempName()
+		name, nameErr := ops.tempName()
 		if nameErr != nil {
 			return errRecordStorageUnavailable
 		}
-		data, err = createSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, name)
+		data, err = ops.create(ctx, a.digest.handle, &a.digest.id, name)
 		if !errors.Is(err, errSecureWindowsChildExists) {
 			break
 		}
@@ -89,35 +107,40 @@ func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest 
 	published := false
 	defer func() {
 		if !published {
-			secureWindowsDeleteData(data)
+			if err := ops.cleanup(data); err != nil {
+				result = errRecordStorageUnavailable
+			}
 			return
 		}
-		_ = data.Close()
+		if err := ops.close(data); err != nil && result == nil {
+			result = errRecordStoragePublicationUnknown
+		}
 	}()
 	for offset := 0; offset < len(bytes); {
 		var wrote uint32
-		if err := windows.WriteFile(data.handle, bytes[offset:], &wrote, nil); err != nil || wrote == 0 {
+		if err := ops.write(data.handle, bytes[offset:], &wrote, nil); err != nil || wrote == 0 {
 			return errRecordStorageUnavailable
 		}
 		offset += int(wrote)
 	}
-	if err := windows.FlushFileBuffers(data.handle); err != nil || !data.valid() || !recordStorageDataSize(data.handle, len(bytes)) {
+	if err := ops.flush(data.handle); err != nil || !ops.verify(data, len(bytes)) {
 		return errRecordStorageUnavailable
 	}
-	if err := a.validateLocked(ctx); err != nil {
+	if err := ops.validate(ctx); err != nil {
 		return err
 	}
-	if err := publishWindowsNoReplaceRelative(data.handle, a.digest.handle, recordDigest); err != nil {
+	if err := ops.publish(data.handle, a.digest.handle, recordDigest); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return errRecordStorageExists
 		}
 		if errors.Is(err, errWindowsRelativePublishUnknown) {
+			published = true // The rename may have consumed source; never delete an unknown final.
 			return errRecordStoragePublicationUnknown
 		}
 		return errRecordStorageUnavailable
 	}
 	published = true
-	if err := windows.FlushFileBuffers(a.digest.handle); err != nil {
+	if !ops.postpublish(ctx, data, recordDigest, len(bytes)) || ops.flush(a.digest.handle) != nil {
 		return errRecordStoragePublicationUnknown
 	}
 	return nil
@@ -149,6 +172,7 @@ func OpenRecordStorageAuthority(ctx context.Context, lease *RepositoryIdentityLe
 	}
 	identity := lease.Identity()
 	a := &RecordStorageAuthority{lease: lease, storageKey: lease.StorageKey(), repositoryDigest: repositoryDigest, commonDir: identity.GitCommonDir}
+	a.createOps = a.defaultCreateOps()
 	if !recordStorageDigest(a.storageKey) || a.commonDir == "" || !recordStorageDigest(repositoryDigest) {
 		return nil, errRecordStorageAuthorityInvalid
 	}
@@ -180,6 +204,30 @@ func OpenRecordStorageAuthority(ctx context.Context, lease *RepositoryIdentityLe
 		return nil, recordStorageError(ctx)
 	}
 	return a, nil
+}
+
+func (a *RecordStorageAuthority) defaultCreateOps() recordStorageCreateOps {
+	return recordStorageCreateOps{
+		tempName: recordStorageTempName,
+		create:   createSecureWindowsChildData,
+		write:    windows.WriteFile,
+		flush:    windows.FlushFileBuffers,
+		verify: func(data *secureWindowsData, size int) bool {
+			return data.valid() && recordStorageDataSize(data.handle, size)
+		},
+		validate: a.validateLocked,
+		publish:  publishWindowsNoReplaceRelative,
+		postpublish: func(ctx context.Context, data *secureWindowsData, name string, size int) bool {
+			current, err := openSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, name)
+			if err != nil {
+				return false
+			}
+			defer current.Close()
+			return current.valid() && current.id == data.id && recordStorageDataSize(current.handle, size)
+		},
+		cleanup: secureWindowsDeleteData,
+		close:   (*secureWindowsData).Close,
+	}
 }
 
 func recordStorageChild(ctx context.Context, parent windows.Handle, parentID *secureWindowsChildID, name string) (*secureWindowsChild, error) {

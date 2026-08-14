@@ -101,7 +101,7 @@ func createSecureWindowsChildData(ctx context.Context, parent windows.Handle, wa
 	data := &secureWindowsData{handle: handle}
 	info, _, ok := secureWindowsDataInfo(handle)
 	if !secureWindowsDirectoryHandle(parent, want) || !ok || !data.valid() || info.FileSizeHigh != 0 || info.FileSizeLow != 0 {
-		secureWindowsDeleteData(data)
+		_ = secureWindowsDeleteData(data)
 		return nil, errSecureWindowsChildInvalid
 	}
 	return data, nil
@@ -206,14 +206,17 @@ func (data *secureWindowsData) valid() bool {
 	return data.id == id && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
-func secureWindowsDeleteData(data *secureWindowsData) {
+func secureWindowsDeleteData(data *secureWindowsData) error {
 	if data == nil || data.handle == 0 {
-		return
+		return nil
 	}
 	deleteFile := byte(1)
 	var status windows.IO_STATUS_BLOCK
-	_ = windows.NtSetInformationFile(data.handle, &status, &deleteFile, 1, windows.FileDispositionInformation)
-	_ = data.Close()
+	err := windows.NtSetInformationFile(data.handle, &status, &deleteFile, 1, windows.FileDispositionInformation)
+	if closeErr := data.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func secureWindowsDirectoryHandle(handle windows.Handle, want *secureWindowsChildID) bool {
