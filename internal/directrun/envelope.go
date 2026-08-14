@@ -2,11 +2,14 @@ package directrun
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 const OperationSchema = "gentle-ai.direct-operation/v1"
@@ -17,6 +20,7 @@ const (
 	maxPath     = 1024
 	maxText     = 256 << 10
 	maxMessage  = 512
+	maxContent  = 256 << 10
 )
 
 type Request struct {
@@ -91,7 +95,7 @@ func requestPayload(op string, b json.RawMessage) error {
 	}
 	switch op {
 	case "direct_read":
-		return all(path(m["path"]), integer(m["offset"], 0, -1), integer(m["limit"], 1, 1<<20))
+		return all(path(m["path"]), integer(m["offset"], 0, -1), integer(m["limit"], 1, maxContent))
 	case "direct_edit":
 		if err := all(path(m["path"]), sha(m["base_sha256"])); err != nil {
 			return err
@@ -128,29 +132,106 @@ func requestPayload(op string, b json.RawMessage) error {
 		return nil
 	default:
 		q := ""
-		if err := json.Unmarshal(m["query"], &q); err != nil || !set("status", "diff", "tree")[q] {
+		if err := json.Unmarshal(m["query"], &q); err != nil || q != "tree" {
 			return errors.New("invalid inspect query")
 		}
-		if q == "tree" {
-			if v, ok := m["path"]; ok {
-				return path(v)
-			}
-			return nil
-		}
-		_, ok := m["path"]
-		if ok {
-			return errors.New("inspect path only applies to tree")
+		if v, ok := m["path"]; ok {
+			return path(v)
 		}
 		return nil
 	}
 }
 func result(op string, b json.RawMessage) error {
-	key := map[string]string{"direct_read": "data_sha256", "direct_edit": "result_sha256", "direct_exec": "output_sha256", "direct_inspect": "evidence_sha256"}[op]
-	m, err := object(b, set(key))
-	if err != nil {
-		return err
+	switch op {
+	case "direct_read":
+		m, err := object(b, set("data_sha256", "content_b64", "offset", "total_size", "truncated"))
+		if err != nil || sha(m["data_sha256"]) != nil || integer(m["offset"], 0, -1) != nil || integer(m["total_size"], 0, -1) != nil || boolean(m["truncated"]) != nil {
+			return errors.New("invalid read result")
+		}
+		content, err := b64(m["content_b64"])
+		if err != nil || int64(len(content)) > maxContent {
+			return errors.New("invalid read result")
+		}
+		var offset, total int64
+		_ = json.Unmarshal(m["offset"], &offset)
+		_ = json.Unmarshal(m["total_size"], &total)
+		if offset > total || int64(len(content)) > total-offset {
+			return errors.New("invalid read result")
+		}
+		var truncated bool
+		_ = json.Unmarshal(m["truncated"], &truncated)
+		wantTruncated := offset != 0 || int64(len(content)) != total
+		if truncated != wantTruncated || (!truncated && DigestSHA256(content) != string(mustDigest(m["data_sha256"]))) {
+			return errors.New("invalid read result")
+		}
+		return nil
+	case "direct_edit":
+		m, err := object(b, set("result_sha256", "changed", "publication"))
+		if err != nil || sha(m["result_sha256"]) != nil || boolean(m["changed"]) != nil {
+			return errors.New("invalid edit result")
+		}
+		var publication string
+		if json.Unmarshal(m["publication"], &publication) != nil || (publication != "published" && publication != "unchanged") {
+			return errors.New("invalid edit result")
+		}
+		var changed bool
+		_ = json.Unmarshal(m["changed"], &changed)
+		if changed != (publication == "published") {
+			return errors.New("invalid edit result")
+		}
+		return nil
+	case "direct_inspect":
+		m, err := object(b, set("evidence_sha256", "content_b64", "encoding", "truncated"))
+		if err != nil || sha(m["evidence_sha256"]) != nil || boolean(m["truncated"]) != nil {
+			return errors.New("invalid inspect result")
+		}
+		var encoding string
+		if json.Unmarshal(m["encoding"], &encoding) != nil || encoding != "utf-8" {
+			return errors.New("invalid inspect result")
+		}
+		content, err := b64(m["content_b64"])
+		var truncated bool
+		_ = json.Unmarshal(m["truncated"], &truncated)
+		if err != nil || len(content) > maxContent || !utf8.Valid(content) || truncated || !bytes.Equal([]byte(DigestSHA256(content)), mustDigest(m["evidence_sha256"])) {
+			return errors.New("invalid inspect result")
+		}
+		return nil
+	default:
+		m, err := object(b, set("output_sha256"))
+		if err != nil {
+			return err
+		}
+		return sha(m["output_sha256"])
 	}
-	return sha(m[key])
+}
+
+// DigestSHA256 returns the lower-case SHA-256 representation used by operation envelopes.
+func DigestSHA256(value []byte) string { return fmt.Sprintf("%x", sha256.Sum256(value)) }
+
+func mustDigest(raw []byte) []byte {
+	var value string
+	_ = json.Unmarshal(raw, &value)
+	return []byte(value)
+}
+
+func b64(raw []byte) ([]byte, error) {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, errors.New("invalid base64")
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func boolean(raw []byte) error {
+	var value bool
+	if json.Unmarshal(raw, &value) != nil {
+		return errors.New("invalid boolean")
+	}
+	return nil
 }
 func object(b []byte, allowed map[string]bool) (map[string]json.RawMessage, error) {
 	var m map[string]json.RawMessage
