@@ -4,6 +4,7 @@ package directrun
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
@@ -98,5 +99,72 @@ func TestWindowsReplacementFailureMatrix(t *testing.T) {
 				t.Fatalf("got=%q err=%v", got, err)
 			}
 		})
+	}
+}
+
+func TestWindowsOperationFilesReadBoundariesAndPathRefusals(t *testing.T) {
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	editable := filepath.Join(repo, "editable")
+	if err := os.Mkdir(editable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := reviewtransaction.OpenRepositoryIdentityLease(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := NewHandoff("windows-boundaries", "windows-worker", []string{editable}, "operate files", []string{"handle relative"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := []byte{0, 1, 2, 3}
+	if err := os.WriteFile(filepath.Join(editable, "bytes"), value, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(editable, "empty"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := newOperationFiles(t.Context(), lease, handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	for _, tt := range []struct {
+		name          string
+		path          string
+		offset, limit int64
+		want          []byte
+	}{
+		{"empty", "editable/empty", 0, 1, nil},
+		{"binary", "editable/bytes", 0, 4, value},
+		{"partial", "editable/bytes", 1, 2, value[1:3]},
+		{"eof", "editable/bytes", 9, 1, nil},
+		{"max", "editable/bytes", 0, maxContent, value},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := files.Read(t.Context(), tt.path, tt.offset, tt.limit)
+			decoded, decodeErr := base64.StdEncoding.DecodeString(got.ContentB64)
+			if err != nil || decodeErr != nil || string(decoded) != string(tt.want) {
+				t.Fatalf("read=%#v err=%v decode=%v", got, err, decodeErr)
+			}
+		})
+	}
+	for _, path := range []string{"../editable/bytes", "editable/bytes:stream", `editable\\bytes`, "editable/CON", "editable/file.", "editable/file "} {
+		if _, err := files.Read(t.Context(), path, 0, 1); !errors.Is(err, ErrOperationInvalidPath) {
+			t.Errorf("%q: %v", path, err)
+		}
+	}
+}
+
+func TestWindowsOperationTempNamesArePrivateAndDistinct(t *testing.T) {
+	first, err := windowsOperationTempName()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := windowsOperationTempName()
+	if err != nil || first == second || !windowsName(first) || !windowsName(second) {
+		t.Fatalf("names %q %q: %v", first, second, err)
 	}
 }

@@ -4,6 +4,8 @@ package directrun
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -49,6 +51,8 @@ type windowsDestinationProof struct {
 
 type windowsOperationFileOps struct {
 	open        func(windows.Handle, string, bool, uint32) (windows.Handle, error)
+	create      func(windows.Handle, string) (windows.Handle, error)
+	tempName    func() (string, error)
 	info        func(windows.Handle) (windows.ByHandleFileInformation, error)
 	read        func(windows.Handle, []byte, *uint32) error
 	write       func(windows.Handle, []byte, *uint32) error
@@ -70,7 +74,9 @@ type windowsOperationFileOps struct {
 
 func newWindowsOperationFileOps() windowsOperationFileOps {
 	return windowsOperationFileOps{
-		open: openWindowsRelative,
+		open:     openWindowsRelative,
+		create:   createWindowsRelative,
+		tempName: windowsOperationTempName,
 		info: func(h windows.Handle) (windows.ByHandleFileInformation, error) {
 			var info windows.ByHandleFileInformation
 			return info, windows.GetFileInformationByHandle(h, &info)
@@ -270,9 +276,18 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 		return EditResult{}, ErrOperationUnavailable
 	}
 	defer f.ops.close(parent)
-	tmp := ".direct-windows-candidate"
-	candidate, err := f.create(parent, tmp)
-	if err != nil {
+	var candidate windows.Handle
+	for range 8 {
+		tmp, nameErr := f.ops.tempName()
+		if nameErr != nil {
+			return EditResult{}, ErrOperationUnavailable
+		}
+		candidate, err = f.ops.create(parent, tmp)
+		if !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) && !errors.Is(err, windows.ERROR_FILE_EXISTS) {
+			break
+		}
+	}
+	if err != nil || candidate == 0 {
 		return EditResult{}, ErrOperationUnavailable
 	}
 	defer func() {
@@ -454,7 +469,7 @@ func (f *windowsOperationFiles) openFile(logical string, access uint32) (windows
 	return h, nil
 }
 func (f *windowsOperationFiles) create(parent windows.Handle, name string) (windows.Handle, error) {
-	return createWindowsRelative(parent, name)
+	return f.ops.create(parent, name)
 }
 func (f *windowsOperationFiles) editAllowed(logical string) bool {
 	return f.allowedRoot(logical) != nil
@@ -592,6 +607,14 @@ func createWindowsRelative(parent windows.Handle, name string) (windows.Handle, 
 	var status windows.IO_STATUS_BLOCK
 	err = windows.NtCreateFile(&h, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE|windows.READ_CONTROL|windows.SYNCHRONIZE, attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
 	return h, err
+}
+
+func windowsOperationTempName() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return ".direct-windows-" + hex.EncodeToString(random[:]), nil
 }
 func windowsDelete(h windows.Handle) error {
 	value := byte(1)
