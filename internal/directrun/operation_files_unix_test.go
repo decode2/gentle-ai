@@ -334,3 +334,167 @@ func TestOperationFilesDirectReadFailureClosesAndRedacts(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationFilesEditNoopAndOrderedReplacements(t *testing.T) {
+	files, repo := testOperationFiles(t)
+	defer files.Close()
+	name := filepath.Join(repo, "editable", "a")
+	if err := os.WriteFile(name, []byte("abcdef"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noop, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("abcdef")), nil)
+	if err != nil || noop.Changed || noop.Publication != "unchanged" {
+		t.Fatalf("noop = %#v, %v", noop, err)
+	}
+	after, err := os.Stat(name)
+	if err != nil || !os.SameFile(before, after) || after.Mode() != before.Mode() {
+		t.Fatalf("noop changed file: %v", err)
+	}
+	got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("abcdef")), []Replacement{{Start: 1, End: 3, Text: []byte("X")}, {Start: 4, End: 6, Text: []byte("YZ")}})
+	if err != nil || !got.Changed || got.Publication != "published" || got.ResultSHA256 != DigestSHA256([]byte("aXdYZ")) {
+		t.Fatalf("edit = %#v, %v", got, err)
+	}
+	bytes, err := os.ReadFile(name)
+	if err != nil || string(bytes) != "aXdYZ" {
+		t.Fatalf("bytes = %q, %v", bytes, err)
+	}
+}
+
+func TestOperationFilesEditFaultsCleanCandidate(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*linuxOperationFiles)
+	}{
+		{"temp", func(f *linuxOperationFiles) {
+			f.ops.temp = func(int, uint32, uint32, uint32) (string, int, error) { return "", -1, unix.EIO }
+		}},
+		{"write zero", func(f *linuxOperationFiles) { f.ops.write = func(int, []byte) (int, error) { return 0, nil } }},
+		{"write error", func(f *linuxOperationFiles) { f.ops.write = func(int, []byte) (int, error) { return 0, unix.EIO } }},
+		{"file close", func(f *linuxOperationFiles) {
+			closeFD := f.ops.close
+			f.ops.close = func(fd int) error { _ = closeFD(fd); return unix.EIO }
+		}},
+		{"rename", func(f *linuxOperationFiles) { f.ops.rename = func(int, string, int, string) error { return unix.EIO } }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(files)
+			_, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if err == nil {
+				t.Fatal("accepted fault")
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != "old" {
+				t.Fatalf("bytes = %q, %v", bytes, readErr)
+			}
+			entries, readErr := os.ReadDir(filepath.Join(repo, "editable"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".direct-") {
+					t.Fatalf("residue %q", entry.Name())
+				}
+			}
+		})
+	}
+}
+
+func TestOperationFilesEditPrepublishReopensDestination(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{"same size", func(name string) error { return os.WriteFile(name, []byte("bad"), 0o600) }},
+		{"grow", func(name string) error { return os.WriteFile(name, []byte("older"), 0o600) }},
+		{"shrink", func(name string) error { return os.WriteFile(name, []byte("o"), 0o600) }},
+		{"swap", func(name string) error { return os.Rename(name+".next", name) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "swap" {
+				if err := os.WriteFile(name+".next", []byte("other"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			statAt := files.ops.fstatAt
+			mutated := false
+			files.ops.fstatAt = func(parent int, path string, stat *unix.Stat_t, flags int) error {
+				err := statAt(parent, path, stat, flags)
+				if err == nil && path == "a" && !mutated {
+					mutated = true
+					return tt.mutate(name)
+				}
+				return err
+			}
+			got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, ErrOperationConflict) || got != (EditResult{}) {
+				t.Fatalf("result = %#v, %v", got, err)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) == "new" {
+				t.Fatalf("external bytes = %q, %v", bytes, readErr)
+			}
+		})
+	}
+}
+
+func TestOperationFilesEditReportsUnknownAfterRenameAndUnlockFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*linuxOperationFiles)
+	}{
+		{"directory sync", func(f *linuxOperationFiles) {
+			sync := f.ops.fsync
+			calls := 0
+			f.ops.fsync = func(fd int) error {
+				calls++
+				if calls == 2 {
+					return unix.EIO
+				}
+				return sync(fd)
+			}
+		}},
+		{"unlock", func(f *linuxOperationFiles) {
+			flock := f.ops.flock
+			f.ops.flock = func(fd, operation int) error {
+				if operation == unix.LOCK_UN {
+					return unix.EIO
+				}
+				return flock(fd, operation)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(files)
+			got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, ErrOperationPublication) || got != (EditResult{}) {
+				t.Fatalf("result = %#v, %v", got, err)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != "new" {
+				t.Fatalf("published bytes = %q, %v", bytes, readErr)
+			}
+		})
+	}
+}

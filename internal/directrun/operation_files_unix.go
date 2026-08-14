@@ -37,7 +37,11 @@ type linuxOperationFiles struct {
 type unixOperationFileOps struct {
 	openAt   func(int, string, int, uint32) (int, error)
 	fstat    func(int, *unix.Stat_t) error
+	fstatAt  func(int, string, *unix.Stat_t, int) error
 	read     func(int, []byte) (int, error)
+	write    func(int, []byte) (int, error)
+	temp     func(int, uint32, uint32, uint32) (string, int, error)
+	unlinkAt func(int, string, int) error
 	flock    func(int, int) error
 	fchown   func(int, int, int) error
 	fchmod   func(int, uint32) error
@@ -48,7 +52,7 @@ type unixOperationFileOps struct {
 }
 
 func newUnixOperationFileOps() unixOperationFileOps {
-	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, read: unix.Read, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
+	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, fstatAt: unix.Fstatat, read: unix.Read, write: unix.Write, temp: operationTemp, unlinkAt: unix.Unlinkat, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
 }
 
 func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease, handoff Handoff) (operationFiles, error) {
@@ -161,7 +165,7 @@ func (f *linuxOperationFiles) Read(ctx context.Context, logical string, offset, 
 	return NewReadResult(contents, contents[offset:end], offset, int64(len(contents)), end < int64(len(contents))), nil
 }
 
-func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, replacements []Replacement) (EditResult, error) {
+func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, replacements []Replacement) (out EditResult, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.valid(ctx); err != nil {
@@ -174,16 +178,35 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if err != nil {
 		return EditResult{}, err
 	}
-	defer unix.Close(parent)
-	fd, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	published := false
+	defer func() {
+		if f.ops.close(parent) != nil && err == nil {
+			out = EditResult{}
+			if published {
+				err = ErrOperationPublication
+			} else {
+				err = ErrOperationUnavailable
+			}
+		}
+	}()
+	fd, err := f.ops.openAt(parent, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return EditResult{}, ErrOperationNotFound
 	}
 	if err != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
-	defer unix.Close(fd)
-	details, err := operationStatFull(fd)
+	defer func() {
+		if f.ops.close(fd) != nil && err == nil {
+			out = EditResult{}
+			if published {
+				err = ErrOperationPublication
+			} else {
+				err = ErrOperationUnavailable
+			}
+		}
+	}()
+	details, err := f.operationStatFull(fd)
 	before := details.operationFileIdentity
 	if err != nil || before.size > maxOperationFileBytes {
 		return EditResult{}, ErrOperationLimit
@@ -194,8 +217,17 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if err := lockTarget(ctx, fd, f.ops.flock); err != nil {
 		return EditResult{}, err
 	}
-	defer func() { _ = f.ops.flock(fd, unix.LOCK_UN) }()
-	old, err := readExact(fd, before.size)
+	defer func() {
+		if f.ops.flock(fd, unix.LOCK_UN) != nil && err == nil {
+			out = EditResult{}
+			if published {
+				err = ErrOperationPublication
+			} else {
+				err = ErrOperationUnavailable
+			}
+		}
+	}()
+	old, err := f.readExact(fd, before.size)
 	if err != nil || DigestSHA256(old) != base {
 		return EditResult{}, ErrOperationConflict
 	}
@@ -206,26 +238,39 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if string(final) == string(old) {
 		return NewEditResult(old, false), nil
 	}
-	tmp, temp, err := operationTemp(parent, details.mode&0o777, details.uid, details.gid)
+	tmp, temp, err := f.ops.temp(parent, details.mode&0o777, details.uid, details.gid)
 	if err != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
-	published := false
 	defer func() {
 		if !published {
-			_ = unix.Unlinkat(parent, tmp, 0)
+			_ = f.ops.unlinkAt(parent, tmp, 0)
 		}
 	}()
 	ops := f.ops
-	if ops.fchown(temp, int(details.uid), int(details.gid)) != nil || ops.fchmod(temp, details.mode&0o777) != nil || writeExact(temp, final) != nil || ops.fsync(temp) != nil {
+	if ops.fchown(temp, int(details.uid), int(details.gid)) != nil || ops.fchmod(temp, details.mode&0o777) != nil || f.writeExact(temp, final) != nil || ops.fsync(temp) != nil {
 		_ = ops.close(temp)
 		return EditResult{}, ErrOperationUnavailable
 	}
-	_ = ops.close(temp)
+	if ops.close(temp) != nil {
+		return EditResult{}, ErrOperationUnavailable
+	}
 	named, err := f.statAt(parent, name)
-	if err != nil || !sameOperationIdentity(before, named) || DigestSHA256(old) != base || f.valid(ctx) != nil {
+	if err != nil || !sameOperationIdentity(before, named) || f.valid(ctx) != nil {
 		return EditResult{}, ErrOperationConflict
 	}
+	currentFD, err := f.openFile(logical)
+	if err != nil {
+		return EditResult{}, ErrOperationConflict
+	}
+	currentBefore, currentStatErr := f.operationStat(currentFD)
+	current, currentReadErr := f.readExact(currentFD, currentBefore.size)
+	currentAfter, currentAfterErr := f.operationStat(currentFD)
+	currentCloseErr := ops.close(currentFD)
+	if currentStatErr != nil || currentReadErr != nil || currentAfterErr != nil || currentCloseErr != nil || !sameOperationIdentity(before, currentBefore) || !sameOperationIdentity(currentBefore, currentAfter) || DigestSHA256(current) != base {
+		return EditResult{}, ErrOperationConflict
+	}
+	// A noncooperative external rename can still race in the interval before renameat.
 	if ops.rename(parent, tmp, parent, name) != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
@@ -237,11 +282,11 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if err != nil {
 		return EditResult{}, ErrOperationPublication
 	}
-	verifyBefore, statErr := operationStat(verifyFD)
-	verifyBytes, readErr := readExact(verifyFD, verifyBefore.size)
-	verifyAfter, afterErr := operationStat(verifyFD)
-	_ = unix.Close(verifyFD)
-	if statErr != nil || readErr != nil || afterErr != nil || !sameOperationIdentity(verifyBefore, verifyAfter) || DigestSHA256(verifyBytes) != DigestSHA256(final) || f.valid(ctx) != nil {
+	verifyBefore, statErr := f.operationStat(verifyFD)
+	verifyBytes, readErr := f.readExact(verifyFD, verifyBefore.size)
+	verifyAfter, afterErr := f.operationStat(verifyFD)
+	closeErr := ops.close(verifyFD)
+	if statErr != nil || readErr != nil || afterErr != nil || closeErr != nil || !sameOperationIdentity(verifyBefore, verifyAfter) || DigestSHA256(verifyBytes) != DigestSHA256(final) || f.valid(ctx) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	return NewEditResult(final, true), nil
@@ -372,7 +417,7 @@ func (f *linuxOperationFiles) statAt(parent int, name string) (operationFileIden
 }
 func (f *linuxOperationFiles) statAtFull(parent int, name string) (operationStatResult, error) {
 	var st unix.Stat_t
-	if unix.Fstatat(parent, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
+	if f.ops.fstatAt(parent, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
 		return operationStatResult{}, ErrOperationUnavailable
 	}
 	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, operationMtime(&st)}, mode: uint32(st.Mode), uid: st.Uid, gid: st.Gid}, nil
@@ -489,6 +534,16 @@ func (f *linuxOperationFiles) readExact(fd int, size int64) ([]byte, error) {
 		return nil, ErrOperationUnavailable
 	}
 	return value, nil
+}
+func (f *linuxOperationFiles) writeExact(fd int, value []byte) error {
+	for len(value) > 0 {
+		n, err := f.ops.write(fd, value)
+		if err != nil || n == 0 {
+			return ErrOperationUnavailable
+		}
+		value = value[n:]
+	}
+	return nil
 }
 func writeExact(fd int, value []byte) error {
 	for len(value) > 0 {
