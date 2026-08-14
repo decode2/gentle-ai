@@ -205,19 +205,32 @@ func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error
 	return wire(request, "unauthorized", "request denied"), nil
 }
 func (r *Runtime) executeOperation(ctx context.Context, record Record, request Request) (Response, error) {
+	if err := r.lease.Validate(ctx); err != nil {
+		return wire(request, wireCode(ctx, ErrOperationUnavailable), "operation unavailable"), nil
+	}
 	if strings.HasPrefix(record.Agent, "gentle-reviewer") && request.Operation == "direct_edit" {
 		return wire(request, "unauthorized", "request denied"), nil
 	}
-	if request.Operation == "direct_exec" || request.Operation == "direct_inspect" && !jsonContainsTree(request.Payload) {
+	if request.Operation == "direct_inspect" && !jsonContainsTree(request.Payload) {
 		return wire(request, "unsupported_operation", "operation unsupported"), nil
 	}
 	files, err := newOperationFiles(ctx, r.lease, record.Handoff)
 	if err != nil {
 		return Response{}, err
 	}
+	if err := r.lease.Validate(ctx); err != nil {
+		return wire(request, wireCode(ctx, ErrOperationUnavailable), "operation unavailable"), nil
+	}
 	defer files.Close()
 	var result any
 	switch request.Operation {
+	case "direct_exec":
+		index, timeout, e := decodeExecPayload(request.Payload)
+		if e != nil || index >= len(record.Handoff.Verification) {
+			err = ErrOperationUnsupported
+		} else {
+			result, err = runRetainedCommand(ctx, r.lease.Identity().RepositoryRoot, record.Handoff.Verification[index], timeout)
+		}
 	case "direct_read":
 		p, o, l, e := decodeReadPayload(request.Payload)
 		if e != nil {
@@ -251,6 +264,24 @@ func (r *Runtime) executeOperation(ctx context.Context, record Record, request R
 	response := Response{Schema: OperationSchema, Operation: request.Operation, RequestID: request.RequestID, Status: "ok", Result: payload}
 	return response, response.Validate()
 }
+
+func decodeExecPayload(raw json.RawMessage) (int, time.Duration, error) {
+	var value struct {
+		CommandIndex int    `json:"command_index"`
+		TimeoutMS    *int64 `json:"timeout_ms"`
+	}
+	if err := json.Unmarshal(raw, &value); err != nil || value.CommandIndex < 0 {
+		return 0, 0, ErrOperationUnsupported
+	}
+	timeout := 120 * time.Second
+	if value.TimeoutMS != nil {
+		if *value.TimeoutMS < 1 || *value.TimeoutMS > 120000 {
+			return 0, 0, ErrOperationUnsupported
+		}
+		timeout = time.Duration(*value.TimeoutMS) * time.Millisecond
+	}
+	return value.CommandIndex, timeout, nil
+}
 func (r *Runtime) available(ctx context.Context) error {
 	r.mu.Lock()
 	closed := r.closed
@@ -281,6 +312,12 @@ func wireCode(ctx context.Context, err error) string {
 	}
 	if errors.Is(err, ErrOperationLimit) {
 		return "limit_exceeded"
+	}
+	if errors.Is(err, ErrOperationUnsupported) {
+		return "unsupported_operation"
+	}
+	if errors.Is(err, ErrCommandTargetUnsupported) {
+		return "unsupported_command_target"
 	}
 	return "backend_failure"
 }

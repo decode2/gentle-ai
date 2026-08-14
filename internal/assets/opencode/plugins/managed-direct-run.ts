@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { tool, type Plugin } from "@opencode-ai/plugin"
 
 const LAUNCH = "gentle_direct_launch"
-const DIRECT_TOOLS = new Set(["direct_read", "direct_edit", "direct_inspect"])
+const DIRECT_TOOLS = new Set(["direct_read", "direct_edit", "direct_inspect", "direct_exec"])
 const DENIED = new Set(["read", "edit", "bash", "task", "question"])
 const role = (value: unknown): string | undefined =>
   typeof value === "string" && /^(gentle-worker|gentle-reviewer)(-[A-Za-z0-9][A-Za-z0-9_-]*)?$/.test(value) ? value : undefined
@@ -68,7 +68,7 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
         try {
           registered = record(await native(cwd, ["direct-run", "register", "--cwd", cwd], JSON.stringify({ identity: issued.identity, revision: issued.revision, parent_session_id: context.sessionID, parent_call_id: launch.parentCallID, agent: expected })))
           children.set(created.data.id, { parentSessionID: context.sessionID, parentCallID: launch.parentCallID, agent: expected, identity: registered.identity, handoffRevision: issued.handoff.revision, bindingRevision: registered.revision })
-          await client.session.prompt({ path: { id: created.data.id }, body: { agent: expected, parts: [{ type: "text", text: "Use only direct_read, direct_edit, and direct_inspect. Native tools and delegation are denied." }] } })
+		  await client.session.prompt({ path: { id: created.data.id }, body: { agent: expected, parts: [{ type: "text", text: "Use only direct_read, direct_edit, direct_inspect, and direct_exec. Native tools and delegation are denied." }] } })
         } catch {
           children.delete(created.data.id)
 		  if (registered?.repositoryIdentity) await native(cwd, ["direct-run", "abort", "--cwd", cwd], JSON.stringify({ schema: "gentle-ai.direct-run-abort/v1", identity: registered.identity, revision: registered.revision, handoff_revision: issued.handoff.revision, parent_session_id: context.sessionID, parent_call_id: launch.parentCallID, agent: expected, repository_identity: registered.repositoryIdentity, child_session_id: "", reason: "cancelled" })).catch(() => undefined)
@@ -80,6 +80,7 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
       direct_read: tool({ description: "Read an admitted direct-run file", args: { path: tool.schema.string(), offset: tool.schema.number(), limit: tool.schema.number() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_read", args)) } }),
       direct_edit: tool({ description: "Edit an admitted direct-run file", args: { path: tool.schema.string(), base_sha256: tool.schema.string(), replacements: tool.schema.array(tool.schema.object({ start: tool.schema.number(), end: tool.schema.number(), text: tool.schema.string() })) }, async execute(args, context) { return JSON.stringify(await child(context, "direct_edit", args)) } }),
       direct_inspect: tool({ description: "Inspect an admitted direct-run tree", args: { query: tool.schema.literal("tree"), path: tool.schema.string().optional() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_inspect", args)) } }),
+      direct_exec: tool({ description: "Run one sealed verification command", args: { command_index: tool.schema.number(), timeout_ms: tool.schema.number().optional() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_exec", args)) } }),
     },
     "tool.execute.before": async (input, output) => {
       const managed = children.get(input.sessionID)

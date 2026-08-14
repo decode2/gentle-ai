@@ -50,7 +50,7 @@ type WireError struct {
 }
 
 var operations = set("direct_read", "direct_edit", "direct_exec", "direct_inspect")
-var codes = set("malformed_request", "unsupported_operation", "unauthenticated", "unauthorized", "repository_unavailable", "invalid_path", "not_found", "conflict", "limit_exceeded", "timeout", "cancelled", "backend_failure")
+var codes = set("malformed_request", "unsupported_operation", "unsupported_command_target", "unauthenticated", "unauthorized", "repository_unavailable", "invalid_path", "not_found", "conflict", "limit_exceeded", "timeout", "cancelled", "backend_failure")
 
 func (r Request) Validate() error {
 	if r.Schema != OperationSchema || !operations[r.Operation] || !opaque(r.Identity) || !opaque(r.RequestID) || !opaque(r.SessionID) || !opaque(r.HandoffRevision) || !opaque(r.BindingRevision) || !opaque(r.ParentSessionID) || !opaque(r.ParentCallID) || !recordAgent(r.Agent) {
@@ -195,11 +195,11 @@ func result(op string, b json.RawMessage) error {
 		}
 		return nil
 	default:
-		m, err := object(b, set("output_sha256"))
-		if err != nil {
-			return err
+		m, err := object(b, set("exit_code", "output_sha256"))
+		if err != nil || integer(m["exit_code"], 0, -1) != nil || sha(m["output_sha256"]) != nil {
+			return errors.New("invalid exec result")
 		}
-		return sha(m["output_sha256"])
+		return nil
 	}
 }
 

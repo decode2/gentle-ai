@@ -102,3 +102,19 @@ func TestValidationRejectsDuplicatesRoleAndUnsafeCommands(t *testing.T) {
 		t.Run(name, func(t *testing.T) { invalid(t, h, edit) })
 	}
 }
+
+func TestCommandAllowlistDeniesAlternativeRuntimes(t *testing.T) {
+	for _, argv := range [][]string{
+		{"pnpm", "test"}, {"yarn", "test"}, {"bun", "test"}, {"npm", "run", "build"}, {"npm", "test", "--", "--watch"},
+		{"pytest", "-q", "--capture=no"}, {"python", "-m", "pytest"},
+	} {
+		if allowedCommand(argv) {
+			t.Fatalf("accepted %q", argv)
+		}
+	}
+	for _, argv := range [][]string{{"npm", "test"}, {"npm", "run", "test"}, {"pytest", "-q"}, {"pytest", "-x", "tests/unit"}} {
+		if !allowedCommand(argv) {
+			t.Fatalf("rejected %q", argv)
+		}
+	}
+}

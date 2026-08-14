@@ -15,13 +15,14 @@ const (
 )
 
 var (
-	ErrOperationInvalidPath = errors.New("direct operation invalid path")
-	ErrOperationNotFound    = errors.New("direct operation not found")
-	ErrOperationConflict    = errors.New("direct operation conflict")
-	ErrOperationLimit       = errors.New("direct operation limit exceeded")
-	ErrOperationUnavailable = errors.New("direct operation authority unavailable")
-	ErrOperationPublication = errors.New("direct operation publication unknown")
-	ErrOperationUnsupported = errors.New("direct operation unsupported")
+	ErrOperationInvalidPath     = errors.New("direct operation invalid path")
+	ErrOperationNotFound        = errors.New("direct operation not found")
+	ErrOperationConflict        = errors.New("direct operation conflict")
+	ErrOperationLimit           = errors.New("direct operation limit exceeded")
+	ErrOperationUnavailable     = errors.New("direct operation authority unavailable")
+	ErrOperationPublication     = errors.New("direct operation publication unknown")
+	ErrOperationUnsupported     = errors.New("direct operation unsupported")
+	ErrCommandTargetUnsupported = errors.New("direct command target unsupported")
 )
 
 // operationFiles is deliberately private: callers retain no raw path or native authority.
