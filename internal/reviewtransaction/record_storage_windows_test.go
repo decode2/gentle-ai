@@ -74,15 +74,11 @@ func TestRecordStorageAuthorityDetectsNamespaceReplacement(t *testing.T) {
 	}
 	defer authority.Close()
 	path := filepath.Join(lease.Identity().GitCommonDir, recordStorageGentleAI)
-	if err := os.Rename(path, path+"-old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := authority.Validate(context.Background()); !errors.Is(err, errRecordStorageAuthorityInvalid) {
-		t.Fatalf("replacement error = %v", err)
-	}
+	replaceOrPreventAuthorityPath(t, authority, path, authority.gentleAI.id, func(t *testing.T, path string) {
+		if _, err := createPrivateRARDirectory(path); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestRecordStorageAuthorityCloseIsConcurrentAndRedacted(t *testing.T) {
