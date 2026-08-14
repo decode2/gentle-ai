@@ -1,6 +1,9 @@
 package directrun
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestRequestWire(t *testing.T) {
 	valid := map[string]string{
@@ -55,8 +58,13 @@ func TestLogicalPathDevices(t *testing.T) {
 	}
 }
 func TestResponseWire(t *testing.T) {
-	for op, key := range map[string]string{"direct_read": "data_sha256", "direct_edit": "result_sha256", "direct_exec": "output_sha256", "direct_inspect": "evidence_sha256"} {
-		in := `{"schema":"gentle-ai.direct-operation/v1","operation":"` + op + `","request_id":"r","status":"ok","result":{"` + key + `":"0000000000000000000000000000000000000000000000000000000000000000"}}`
+	valid := map[string]string{
+		"direct_read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"ok","result":{"data_sha256":"0000000000000000000000000000000000000000000000000000000000000000","content_b64":"","offset":0,"total_size":0,"truncated":false}}`,
+		"direct_edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"unchanged"}}`,
+		"direct_exec":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","status":"ok","result":{"output_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}`,
+		"direct_inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":false}}`,
+	}
+	for op, in := range valid {
 		if _, err := DecodeResponse([]byte(in)); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
@@ -66,9 +74,28 @@ func TestResponseWire(t *testing.T) {
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"error","result":{"data_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"error":{"code":"timeout","message":"x"}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"error","error":{"code":"oops","message":"x"}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"error","error":{"code":"timeout","message":"/native/path"}}`,
+		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"ok","result":{"data_sha256":"0000000000000000000000000000000000000000000000000000000000000000","content_b64":"%%%","offset":0,"total_size":0,"truncated":false}}`,
+		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":true,"publication":"unknown"}}`,
 	} {
 		if _, err := DecodeResponse([]byte(in)); err == nil {
 			t.Errorf("accepted %s", in)
 		}
+	}
+}
+
+func TestOperationResultBuilders(t *testing.T) {
+	read := NewReadResult([]byte{0, 1, 2}, []byte{1, 2}, 1, 3, false)
+	if read.DataSHA256 != DigestSHA256([]byte{0, 1, 2}) || read.ContentB64 != base64.StdEncoding.EncodeToString([]byte{1, 2}) {
+		t.Fatalf("read result = %#v", read)
+	}
+	if _, err := read.CanonicalJSON(); err != nil {
+		t.Fatal(err)
+	}
+	inspect := NewInspectResult([]byte("a\nb\n"))
+	if _, err := inspect.CanonicalJSON(); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewEditResult([]byte("x"), false).Publication; got != "unchanged" {
+		t.Fatalf("publication = %q", got)
 	}
 }
