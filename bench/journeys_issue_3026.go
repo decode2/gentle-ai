@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -49,6 +50,7 @@ func issue3026Journeys() []Journey {
 			{Name: "public sync preserves Kilocode legacy SDD projection", Requires: issue3026SyncCapability, Args: func(*Sandbox) ([]string, error) {
 				return append([]string{"sync", "--agents", "kilocode", "--sdd-mode", "multi"}, issue3026ProfileArgs...), nil
 			}, After: assertIssue3026KilocodeProjection},
+			{Name: "fixture: installed Engram runtime prerequisite", Fixture: issue3026InstalledEngramRuntime},
 			{Name: "fixture: installed OpenCode runtime prerequisite", Fixture: issue3026InstalledOpenCodeRuntime},
 			{
 				Name:     "public install creates default managed roles",
@@ -106,6 +108,34 @@ func issue3026InstalledOpenCodeRuntime(sandbox *Sandbox) error {
 		return fmt.Errorf("write private OpenCode runtime presence fixture: %w", err)
 	}
 	sandbox.PathPrepend = binDir
+	return nil
+}
+
+// issue3026InstalledEngramRuntime provides only the probes the public install
+// boundary performs. Its closed PATH makes a missing fixture fail locally
+// instead of downloading Engram or reading an operator installation.
+func issue3026InstalledEngramRuntime(sandbox *Sandbox) error {
+	binDir := filepath.Join(sandbox.Root, "runtime", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	binary, err := os.ReadFile(sandbox.Binary)
+	if err != nil {
+		return fmt.Errorf("read built benchmark binary for private Engram runtime fixture: %w", err)
+	}
+	if err := os.WriteFile(sandboxExecutablePath(binDir, "engram"), binary, 0o755); err != nil {
+		return fmt.Errorf("write private Engram runtime fixture: %w", err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return fmt.Errorf("resolve required git executable for isolated runtime PATH: %w", err)
+	}
+	if strings.Contains(strings.ToLower(filepath.Dir(git)), "homebrew") {
+		return fmt.Errorf("isolated runtime PATH refuses Homebrew git directory %q", filepath.Dir(git))
+	}
+	sandbox.PathOverride = strings.Join([]string{binDir, filepath.Dir(git)}, string(os.PathListSeparator))
+	sandbox.GoProxyOff = true
+	sandbox.Issue3026EngramFixture = true
 	return nil
 }
 

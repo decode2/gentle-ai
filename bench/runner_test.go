@@ -2,11 +2,21 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestMain(m *testing.M) {
+	if handled, stdout, stderr, exitCode := issue3026EngramFixtureDispatch(filepath.Base(os.Args[0]), os.Getenv(issue3026EngramFixtureMarkerEnv), os.Args[1:]); handled {
+		_, _ = os.Stdout.WriteString(stdout)
+		_, _ = os.Stderr.WriteString(stderr)
+		os.Exit(exitCode)
+	}
+	os.Exit(m.Run())
+}
 
 // fakeBinary writes an executable that answers a fixed argv with a fixed
 // message, so the capability probe can be tested without a real gentle-ai.
@@ -185,6 +195,185 @@ func TestIssue3026OpenCodeRuntimeFixtureUsesSandboxExecutableNaming(t *testing.T
 	}
 }
 
+func TestIssue3026EngramRuntimeFixtureIsHermetic(t *testing.T) {
+	root := t.TempDir()
+	sandbox, err := newSandbox(os.Args[0], root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := issue3026InstalledEngramRuntime(sandbox); err != nil {
+		t.Fatalf("install Engram runtime fixture: %v", err)
+	}
+	if err := issue3026InstalledOpenCodeRuntime(sandbox); err != nil {
+		t.Fatalf("install OpenCode runtime fixture: %v", err)
+	}
+	fixtureDir := filepath.Join(sandbox.Root, "runtime", "bin")
+	for _, name := range []string{"engram", "opencode"} {
+		path := sandboxExecutablePath(fixtureDir, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("stat local %s fixture %q: %v", name, path, err)
+		}
+		if got := pathOnSandboxPath(sandbox.PathOverride, name); got != path {
+			t.Fatalf("sandbox PATH resolves %s to %q, want %q", name, got, path)
+		}
+	}
+	if got := sandbox.PathOverride; got != fixtureDir+string(os.PathListSeparator)+filepath.Dir(mustLookPath(t, "git")) {
+		t.Fatalf("isolated PATH = %q", got)
+	}
+	if strings.Contains(strings.ToLower(sandbox.PathOverride), "homebrew") {
+		t.Fatalf("isolated PATH retained Homebrew: %q", sandbox.PathOverride)
+	}
+	for _, name := range []string{"engram", "opencode"} {
+		if global := pathOnSandboxPath(os.Getenv("PATH"), name); global != "" && strings.Contains(sandbox.PathOverride, filepath.Dir(global)) {
+			t.Fatalf("isolated PATH retained global %s directory %q", name, filepath.Dir(global))
+		}
+	}
+	proxyOff := false
+	for _, entry := range sandbox.env() {
+		if strings.HasPrefix(entry, "PATH=") {
+			if strings.Contains(entry, os.Getenv("HOME")) {
+				t.Fatalf("isolated PATH leaked an operator tool directory: %q", entry)
+			}
+		}
+		if entry == "GOPROXY=off" {
+			proxyOff = true
+		}
+	}
+	if !sandbox.GoProxyOff || !proxyOff {
+		t.Fatal("Engram fixture did not disable Go proxy fallback")
+	}
+	if !sandbox.Issue3026EngramFixture || !hasSandboxEnv(sandbox, issue3026EngramFixtureMarkerEnv+"="+issue3026EngramFixtureMarkerValue) {
+		t.Fatal("Engram fixture marker is not isolated to j100")
+	}
+}
+
+func TestIssue3026EngramFixtureResponse(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		code int
+		want string
+	}{
+		{name: "version", args: []string{"version"}, code: 0, want: "engram 1.18.0\n"},
+		{name: "setup help", args: []string{"setup", "--help"}, code: 0, want: "--protocol"},
+		{name: "setup invocation rejected", args: []string{"setup", "opencode"}, code: 64, want: "unsupported arguments"},
+		{name: "unknown invocation rejected", args: []string{"install"}, code: 64, want: "unsupported arguments"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, code := issue3026EngramFixtureResponse(tt.args)
+			if code != tt.code || !strings.Contains(stdout+stderr, tt.want) {
+				t.Fatalf("response = stdout %q stderr %q code %d", stdout, stderr, code)
+			}
+			if strings.Contains(stdout+stderr, "API_KEY") {
+				t.Fatalf("fixture diagnostic leaked sensitive-looking output: %q", stdout+stderr)
+			}
+		})
+	}
+}
+
+func TestIssue3026EngramFixtureDispatchRequiresMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		program string
+		marker  string
+		handled bool
+	}{
+		{name: "marker and engram name", program: executableNameForGOOS("engram", runtime.GOOS), marker: issue3026EngramFixtureMarkerValue, handled: true},
+		{name: "missing marker", program: executableNameForGOOS("engram", runtime.GOOS)},
+		{name: "renamed binary", program: executableNameForGOOS("bench-copy", runtime.GOOS), marker: issue3026EngramFixtureMarkerValue},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handled, _, _, _ := issue3026EngramFixtureDispatch(tt.program, tt.marker, []string{"version"})
+			if handled != tt.handled {
+				t.Fatalf("fixture dispatch handled = %v, want %v", handled, tt.handled)
+			}
+		})
+	}
+}
+
+func TestIssue3026ClosedRuntimeExecutesOnlyLocalFixtures(t *testing.T) {
+	sandbox := issue3026RuntimeSandbox(t)
+	engram := pathOnSandboxPath(sandbox.PathOverride, "engram")
+	if engram == "" || pathOnSandboxPath(sandbox.PathOverride, "opencode") == "" {
+		t.Fatal("closed PATH did not resolve local Engram and OpenCode fixtures")
+	}
+	if stdout, stderr, exitCode := runSandboxCommand(sandbox, engram, "version"); exitCode != 0 || stdout != "engram 1.18.0\n" || stderr != "" {
+		t.Fatalf("local engram version = stdout %q stderr %q exit %d", stdout, stderr, exitCode)
+	}
+	if _, _, exitCode := runSandboxCommand(sandbox, engram, "setup", "opencode"); exitCode != 64 {
+		t.Fatalf("unsupported local engram setup exit = %d, want 64", exitCode)
+	}
+	git := pathOnSandboxPath(sandbox.PathOverride, "git")
+	if stdout, stderr, exitCode := runSandboxCommand(sandbox, git, "--version"); git == "" || exitCode != 0 || stdout == "" || stderr != "" {
+		t.Fatalf("closed PATH git = stdout %q stderr %q exit %d", stdout, stderr, exitCode)
+	}
+	if err := os.Remove(engram); err != nil {
+		t.Fatalf("remove local Engram fixture: %v", err)
+	}
+	if got := pathOnSandboxPath(sandbox.PathOverride, "engram"); got != "" {
+		t.Fatalf("missing fixture resolved to %q instead of failing locally", got)
+	}
+}
+
+func issue3026RuntimeSandbox(t *testing.T) *Sandbox {
+	t.Helper()
+	root := t.TempDir()
+	sandbox, err := newSandbox(os.Args[0], root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := issue3026InstalledEngramRuntime(sandbox); err != nil {
+		t.Fatal(err)
+	}
+	if err := issue3026InstalledOpenCodeRuntime(sandbox); err != nil {
+		t.Fatal(err)
+	}
+	return sandbox
+}
+
+func runSandboxCommand(sandbox *Sandbox, command string, args ...string) (string, string, int) {
+	cmd := exec.Command(command, args...)
+	cmd.Env = sandbox.env()
+	stdout, stderr := &strings.Builder{}, &strings.Builder{}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return stdout.String(), stderr.String(), exitErr.ExitCode()
+	}
+	if err != nil {
+		return stdout.String(), stderr.String(), -1
+	}
+	return stdout.String(), stderr.String(), 0
+}
+
+func hasSandboxEnv(sandbox *Sandbox, want string) bool {
+	for _, entry := range sandbox.env() {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
+func pathOnSandboxPath(path, name string) string {
+	for _, dir := range strings.Split(path, string(os.PathListSeparator)) {
+		candidate := sandboxExecutablePath(dir, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func mustLookPath(t *testing.T, command string) string {
+	t.Helper()
+	path, err := exec.LookPath(command)
+	if err != nil {
+		t.Fatalf("look up %s: %v", command, err)
+	}
+	return path
+}
+
 func TestExecutableNameForGOOS(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -192,8 +381,11 @@ func TestExecutableNameForGOOS(t *testing.T) {
 		want string
 	}{
 		{name: "opencode", goos: "linux", want: "opencode"},
+		{name: "engram", goos: "linux", want: "engram"},
 		{name: "opencode", goos: "darwin", want: "opencode"},
+		{name: "engram", goos: "darwin", want: "engram"},
 		{name: "opencode", goos: "windows", want: "opencode.exe"},
+		{name: "engram", goos: "windows", want: "engram.exe"},
 		{name: "opencode.exe", goos: "windows", want: "opencode.exe"},
 	} {
 		t.Run(tt.goos+"/"+tt.name, func(t *testing.T) {

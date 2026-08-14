@@ -28,6 +28,15 @@ import (
 )
 
 func main() {
+	if handled, stdout, stderr, exitCode := issue3026EngramFixtureDispatch(filepath.Base(os.Args[0]), os.Getenv(issue3026EngramFixtureMarkerEnv), os.Args[1:]); handled {
+		if stdout != "" {
+			fmt.Fprint(os.Stdout, stdout)
+		}
+		if stderr != "" {
+			fmt.Fprint(os.Stderr, stderr)
+		}
+		os.Exit(exitCode)
+	}
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -50,6 +59,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown mode %q\n\n", os.Args[1])
 		usage()
 		os.Exit(2)
+	}
+}
+
+const (
+	issue3026EngramFixtureMarkerEnv   = "GENTLE_AI_BENCH_FIXTURE"
+	issue3026EngramFixtureMarkerValue = "issue-3026-engram-v1"
+)
+
+func issue3026EngramFixtureDispatch(program, marker string, args []string) (handled bool, stdout, stderr string, exitCode int) {
+	if program != executableNameForGOOS("engram", runtime.GOOS) || marker != issue3026EngramFixtureMarkerValue {
+		return false, "", "", 0
+	}
+	stdout, stderr, exitCode = issue3026EngramFixtureResponse(args)
+	return true, stdout, stderr, exitCode
+}
+
+// issue3026EngramFixtureResponse is intentionally smaller than an Engram
+// emulator: j100 needs only the public install prerequisite probes.
+func issue3026EngramFixtureResponse(args []string) (stdout, stderr string, exitCode int) {
+	switch {
+	case len(args) == 1 && args[0] == "version":
+		return "engram 1.18.0\n", "", 0
+	case len(args) == 2 && args[0] == "setup" && args[1] == "--help":
+		return "Usage: engram setup [agent] [--protocol=full|slim]\n", "", 0
+	default:
+		return "", "bench engram fixture: unsupported arguments\n", 64
 	}
 }
 
