@@ -45,6 +45,7 @@ type RecordStorageAuthority struct {
 	digest           *secureWindowsChild
 	readHook         func()
 	createHook       func()
+	replaceHook      func()
 	createOps        recordStorageCreateOps
 }
 
@@ -136,6 +137,105 @@ func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest 
 		if errors.Is(err, errWindowsRelativePublishUnknown) {
 			published = true // The rename may have consumed source; never delete an unknown final.
 			return errRecordStoragePublicationUnknown
+		}
+		return errRecordStorageUnavailable
+	}
+	published = true
+	if !ops.postpublish(ctx, data, recordDigest, len(bytes)) || ops.flush(a.digest.handle) != nil {
+		return errRecordStoragePublicationUnknown
+	}
+	return nil
+}
+
+// ReplaceRecord atomically replaces an existing record; it is not CAS.
+func (a *RecordStorageAuthority) ReplaceRecord(ctx context.Context, recordDigest string, canonical []byte) (result error) {
+	const hardMax = 1 << 20
+	if a == nil || !recordStorageDigest(recordDigest) {
+		return errRecordStorageAuthorityInvalid
+	}
+	if len(canonical) > hardMax {
+		return errRecordStorageTooLarge
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	bytes := append([]byte(nil), canonical...)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.validateLocked(ctx); err != nil {
+		return err
+	}
+	original, err := openSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, recordDigest)
+	if err != nil {
+		return recordStorageReadError(ctx, err)
+	}
+	originalID := original.id
+	if !original.valid() || !localWindowsDiskHandle(original.handle) || original.Close() != nil {
+		return errRecordStorageAuthorityInvalid
+	}
+	ops := a.createOps
+	var data *secureWindowsData
+	for range 8 {
+		name, nameErr := ops.tempName()
+		if nameErr != nil {
+			return errRecordStorageUnavailable
+		}
+		data, err = ops.create(ctx, a.digest.handle, &a.digest.id, name)
+		if !errors.Is(err, errSecureWindowsChildExists) {
+			break
+		}
+	}
+	if data == nil {
+		return recordStorageCreateError(ctx, err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			if err := ops.cleanup(data); err != nil {
+				result = errRecordStorageUnavailable
+			}
+			return
+		}
+		if err := ops.close(data); err != nil && result == nil {
+			result = errRecordStoragePublicationUnknown
+		}
+	}()
+	for offset := 0; offset < len(bytes); {
+		var wrote uint32
+		if err := ops.write(data.handle, bytes[offset:], &wrote, nil); err != nil || wrote == 0 {
+			return errRecordStorageUnavailable
+		}
+		offset += int(wrote)
+	}
+	if err := ops.flush(data.handle); err != nil || !ops.verify(data, len(bytes)) {
+		return errRecordStorageUnavailable
+	}
+	if err := ops.validate(ctx); err != nil {
+		return err
+	}
+	current, err := openSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, recordDigest)
+	if err != nil {
+		return recordStorageReadError(ctx, err)
+	}
+	if !current.valid() || !localWindowsDiskHandle(current.handle) || current.id != originalID || current.Close() != nil {
+		if current != nil {
+			_ = current.Close()
+		}
+		return errRecordStorageAuthorityInvalid
+	}
+	if a.replaceHook != nil {
+		a.replaceHook()
+	}
+	if err := publishWindowsReplaceRelative(data.handle, a.digest.handle, recordDigest, originalID); err != nil {
+		if errors.Is(err, errWindowsRelativePublishUnknown) {
+			published = true
+			return errRecordStoragePublicationUnknown
+		}
+		if errors.Is(err, errSecureWindowsChildMissing) {
+			return errRecordStorageMissing
+		}
+		if errors.Is(err, errWindowsRelativePublishInvalid) || errors.Is(err, errSecureWindowsChildInvalid) {
+			return errRecordStorageAuthorityInvalid
 		}
 		return errRecordStorageUnavailable
 	}

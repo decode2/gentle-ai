@@ -3,6 +3,7 @@
 package reviewtransaction
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"unsafe"
@@ -27,11 +28,20 @@ const windowsFileRemoteDevice = 0x10
 
 // publishWindowsNoReplaceRelative atomically publishes source as one child of destinationDir without a durability claim.
 func publishWindowsNoReplaceRelative(source, destinationDir windows.Handle, destinationName string) error {
-	return publishWindowsNoReplaceRelativeAfter(source, destinationDir, destinationName, nil)
+	return publishWindowsRelativeAfter(source, destinationDir, destinationName, false, secureWindowsChildID{}, nil)
 }
 
 // afterRename is test-only observation injection; publication may have occurred when it fails verification.
 func publishWindowsNoReplaceRelativeAfter(source, destinationDir windows.Handle, destinationName string, afterRename func()) error {
+	return publishWindowsRelativeAfter(source, destinationDir, destinationName, false, secureWindowsChildID{}, afterRename)
+}
+
+// publishWindowsReplaceRelative atomically replaces a retained child entry.
+func publishWindowsReplaceRelative(source, destinationDir windows.Handle, destinationName string, expected secureWindowsChildID) error {
+	return publishWindowsRelativeAfter(source, destinationDir, destinationName, true, expected, nil)
+}
+
+func publishWindowsRelativeAfter(source, destinationDir windows.Handle, destinationName string, replace bool, expected secureWindowsChildID, afterRename func()) error {
 	if !secureWindowsChildName(destinationName) {
 		return errWindowsRelativePublishInvalid
 	}
@@ -54,15 +64,40 @@ func publishWindowsNoReplaceRelativeAfter(source, destinationDir windows.Handle,
 	length := int(unsafe.Offsetof(layout.FileName)) + 2*(len(name)-1)
 	buffer := make([]byte, length)
 	rename := (*windowsRenameInformation)(unsafe.Pointer(&buffer[0]))
+	if replace {
+		rename.ReplaceIfExists = 1
+	}
 	rename.RootDirectory, rename.FileNameLength = destinationDir, uint32(2*(len(name)-1))
 	copy((*[32767]uint16)(unsafe.Pointer(&rename.FileName[0]))[:len(name)-1], name)
+	var current *secureWindowsData
+	if replace {
+		current, err = openSecureWindowsChildData(context.Background(), destinationDir, &destinationID, destinationName)
+		if err != nil {
+			return err
+		}
+		if !current.valid() || !localWindowsDiskHandle(current.handle) || current.id != expected {
+			if current != nil {
+				_ = current.Close()
+			}
+			return errWindowsRelativePublishInvalid
+		}
+	}
 	if _, id, valid := secureWindowsDataInfo(source); !valid || id != sourceID || !secureWindowsDirectoryHandle(destinationDir, &destinationID) {
+		if current != nil {
+			_ = current.Close()
+		}
 		return errWindowsRelativePublishInvalid
 	}
 	var status windows.IO_STATUS_BLOCK
 	err = windows.NtSetInformationFile(source, &status, &buffer[0], uint32(length), windows.FileRenameInformation)
 	if err != nil {
+		if current != nil {
+			_ = current.Close()
+		}
 		return windowsRelativePublishError(err)
+	}
+	if current != nil && current.Close() != nil {
+		return errWindowsRelativePublishUnknown
 	}
 	if afterRename != nil {
 		afterRename()
