@@ -34,6 +34,7 @@ func TestRequestWire(t *testing.T) {
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"command_index":-1}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"command_index":0,"timeout_ms":120001}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"query":"status","path":"a"}}`,
+		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"query":"diff"}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"../a","offset":0,"limit":1}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[{"start":2,"end":3,"text":"x"},{"start":1,"end":2,"text":"x"}]}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[{"start":0,"end":1,"text":"x","patch":"x"}]}}`,

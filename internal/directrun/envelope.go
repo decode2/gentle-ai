@@ -131,18 +131,11 @@ func requestPayload(op string, b json.RawMessage) error {
 		return nil
 	default:
 		q := ""
-		if err := json.Unmarshal(m["query"], &q); err != nil || !set("status", "diff", "tree")[q] {
+		if err := json.Unmarshal(m["query"], &q); err != nil || q != "tree" {
 			return errors.New("invalid inspect query")
 		}
-		if q == "tree" {
-			if v, ok := m["path"]; ok {
-				return path(v)
-			}
-			return nil
-		}
-		_, ok := m["path"]
-		if ok {
-			return errors.New("inspect path only applies to tree")
+		if v, ok := m["path"]; ok {
+			return path(v)
 		}
 		return nil
 	}
