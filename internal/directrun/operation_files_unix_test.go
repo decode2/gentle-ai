@@ -81,3 +81,35 @@ func TestOperationFilesRejectEscapesAndConflicts(t *testing.T) {
 		t.Fatalf("out of bounds: %v", err)
 	}
 }
+
+func TestOperationFilesEditFaultsPreserveOldBytes(t *testing.T) {
+	for _, fault := range []struct {
+		name string
+		set  func(*linuxOperationFiles)
+	}{
+		{"fchown", func(f *linuxOperationFiles) { f.ops.fchown = func(int, int, int) error { return errors.New("fault") } }},
+		{"fchmod", func(f *linuxOperationFiles) { f.ops.fchmod = func(int, uint32) error { return errors.New("fault") } }},
+		{"file-sync", func(f *linuxOperationFiles) { f.ops.fsync = func(int) error { return errors.New("fault") } }},
+		{"rename", func(f *linuxOperationFiles) {
+			f.ops.rename = func(int, string, int, string) error { return errors.New("fault") }
+		}},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			files, repo := testOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			fault.set(files)
+			_, err := files.Edit(context.Background(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if err == nil {
+				t.Fatal("accepted injected failure")
+			}
+			got, readErr := os.ReadFile(name)
+			if readErr != nil || string(got) != "old" {
+				t.Fatalf("got %q: %v", got, readErr)
+			}
+		})
+	}
+}

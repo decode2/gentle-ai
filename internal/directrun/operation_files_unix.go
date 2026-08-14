@@ -29,6 +29,22 @@ type linuxOperationFiles struct {
 	rootID  operationFileIdentity
 	allowed map[string]operationFileIdentity
 	closed  bool
+	ops     unixOperationFileOps
+}
+
+// unixOperationFileOps is copied into each authority before it is used. Tests
+// may replace one boundary on that authority without affecting another one.
+type unixOperationFileOps struct {
+	flock  func(int, int) error
+	fchown func(int, int, int) error
+	fchmod func(int, uint32) error
+	fsync  func(int) error
+	rename func(int, string, int, string) error
+	close  func(int) error
+}
+
+func newUnixOperationFileOps() unixOperationFileOps {
+	return unixOperationFileOps{flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close}
 }
 
 func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease, handoff Handoff) (operationFiles, error) {
@@ -39,7 +55,7 @@ func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.Rep
 	if err != nil {
 		return nil, ErrOperationUnavailable
 	}
-	f := &linuxOperationFiles{lease: lease, root: root, allowed: make(map[string]operationFileIdentity)}
+	f := &linuxOperationFiles{lease: lease, root: root, allowed: make(map[string]operationFileIdentity), ops: newUnixOperationFileOps()}
 	if f.rootID, err = operationStat(root); err != nil || !isDirectory(root) {
 		_ = unix.Close(root)
 		return nil, ErrOperationUnavailable
@@ -159,10 +175,10 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if details.uid != uint32(unix.Geteuid()) || details.mode&0o7000 != 0 {
 		return EditResult{}, ErrOperationUnavailable
 	}
-	if err := lockTarget(ctx, fd); err != nil {
+	if err := lockTarget(ctx, fd, f.ops.flock); err != nil {
 		return EditResult{}, err
 	}
-	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
+	defer func() { _ = f.ops.flock(fd, unix.LOCK_UN) }()
 	old, err := readExact(fd, before.size)
 	if err != nil || DigestSHA256(old) != base {
 		return EditResult{}, ErrOperationConflict
@@ -184,20 +200,21 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 			_ = unix.Unlinkat(parent, tmp, 0)
 		}
 	}()
-	if unix.Fchown(temp, int(details.uid), int(details.gid)) != nil || unix.Fchmod(temp, details.mode&0o777) != nil || writeExact(temp, final) != nil || unix.Fsync(temp) != nil {
-		_ = unix.Close(temp)
+	ops := f.ops
+	if ops.fchown(temp, int(details.uid), int(details.gid)) != nil || ops.fchmod(temp, details.mode&0o777) != nil || writeExact(temp, final) != nil || ops.fsync(temp) != nil {
+		_ = ops.close(temp)
 		return EditResult{}, ErrOperationUnavailable
 	}
-	_ = unix.Close(temp)
+	_ = ops.close(temp)
 	named, err := f.statAt(parent, name)
 	if err != nil || !sameOperationIdentity(before, named) || DigestSHA256(old) != base || f.valid(ctx) != nil {
 		return EditResult{}, ErrOperationConflict
 	}
-	if unix.Renameat(parent, tmp, parent, name) != nil {
+	if ops.rename(parent, tmp, parent, name) != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
 	published = true
-	if unix.Fsync(parent) != nil {
+	if ops.fsync(parent) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	verifyFD, err := f.openFile(logical)
@@ -457,9 +474,9 @@ func operationTemp(parent int, mode, uid, gid uint32) (string, int, error) {
 	}
 	return "", -1, ErrOperationUnavailable
 }
-func lockTarget(ctx context.Context, fd int) error {
+func lockTarget(ctx context.Context, fd int, flock func(int, int) error) error {
 	for {
-		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+		if err := flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
 			return nil
 		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
 			return ErrOperationUnavailable
