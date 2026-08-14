@@ -95,7 +95,7 @@ func requestPayload(op string, b json.RawMessage) error {
 	}
 	switch op {
 	case "direct_read":
-		return all(path(m["path"]), integer(m["offset"], 0, -1), integer(m["limit"], 1, 1<<20))
+		return all(path(m["path"]), integer(m["offset"], 0, -1), integer(m["limit"], 1, maxContent))
 	case "direct_edit":
 		if err := all(path(m["path"]), sha(m["base_sha256"])); err != nil {
 			return err

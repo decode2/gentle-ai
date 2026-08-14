@@ -44,7 +44,7 @@ func decodeReadPayload(raw json.RawMessage) (string, int64, int64, error) {
 		Offset int64  `json:"offset"`
 		Limit  int64  `json:"limit"`
 	}
-	if err := json.Unmarshal(raw, &value); err != nil || path([]byte(`"`+value.Path+`"`)) != nil || value.Offset < 0 || value.Limit < 1 || value.Limit > maxOperationFileBytes {
+	if err := json.Unmarshal(raw, &value); err != nil || path([]byte(`"`+value.Path+`"`)) != nil || value.Offset < 0 || value.Limit < 1 || value.Limit > maxContent {
 		return "", 0, 0, ErrOperationInvalidPath
 	}
 	return value.Path, value.Offset, value.Limit, nil

@@ -35,16 +35,20 @@ type linuxOperationFiles struct {
 // unixOperationFileOps is copied into each authority before it is used. Tests
 // may replace one boundary on that authority without affecting another one.
 type unixOperationFileOps struct {
-	flock  func(int, int) error
-	fchown func(int, int, int) error
-	fchmod func(int, uint32) error
-	fsync  func(int) error
-	rename func(int, string, int, string) error
-	close  func(int) error
+	openAt   func(int, string, int, uint32) (int, error)
+	fstat    func(int, *unix.Stat_t) error
+	read     func(int, []byte) (int, error)
+	flock    func(int, int) error
+	fchown   func(int, int, int) error
+	fchmod   func(int, uint32) error
+	fsync    func(int) error
+	rename   func(int, string, int, string) error
+	close    func(int) error
+	postRead func() error
 }
 
 func newUnixOperationFileOps() unixOperationFileOps {
-	return unixOperationFileOps{flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close}
+	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, read: unix.Read, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
 }
 
 func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease, handoff Handoff) (operationFiles, error) {
@@ -110,29 +114,41 @@ func (f *linuxOperationFiles) valid(ctx context.Context) error {
 }
 
 func (f *linuxOperationFiles) Read(ctx context.Context, logical string, offset, limit int64) (ReadResult, error) {
+	if f == nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.valid(ctx); err != nil {
 		return ReadResult{}, err
 	}
-	if path([]byte(`"`+logical+`"`)) != nil || offset < 0 || limit < 1 || limit > maxOperationFileBytes {
+	if path([]byte(`"`+logical+`"`)) != nil || offset < 0 || limit < 1 || limit > maxContent {
 		return ReadResult{}, ErrOperationInvalidPath
 	}
 	fd, err := f.openFile(logical)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	defer unix.Close(fd)
-	before, err := operationStat(fd)
+	defer f.ops.close(fd)
+	before, err := f.operationStat(fd)
 	if err != nil || before.size > maxOperationFileBytes {
 		return ReadResult{}, ErrOperationLimit
 	}
-	contents, err := readExact(fd, before.size)
+	contents, err := f.readExact(fd, before.size)
 	if err != nil {
 		return ReadResult{}, ErrOperationUnavailable
 	}
-	after, err := operationStat(fd)
-	if err != nil || !sameOperationIdentity(before, after) || f.valid(ctx) != nil {
+	if f.ops.postRead() != nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
+	after, err := f.operationStat(fd)
+	parent, name, parentErr := f.parent(logical)
+	if parentErr != nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
+	named, namedErr := f.statAt(parent, name)
+	_ = f.ops.close(parent)
+	if err != nil || namedErr != nil || !sameOperationIdentity(before, after) || !sameOperationIdentity(before, named) || f.valid(ctx) != nil {
 		return ReadResult{}, ErrOperationUnavailable
 	}
 	end := offset + limit
@@ -332,6 +348,17 @@ func operationStat(fd int) (operationFileIdentity, error) {
 	st, err := operationStatFull(fd)
 	return st.operationFileIdentity, err
 }
+func (f *linuxOperationFiles) operationStat(fd int) (operationFileIdentity, error) {
+	st, err := f.operationStatFull(fd)
+	return st.operationFileIdentity, err
+}
+func (f *linuxOperationFiles) operationStatFull(fd int) (operationStatResult, error) {
+	var st unix.Stat_t
+	if f.ops.fstat(fd, &st) != nil {
+		return operationStatResult{}, ErrOperationUnavailable
+	}
+	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, operationMtime(&st)}, mode: uint32(st.Mode), uid: st.Uid, gid: st.Gid}, nil
+}
 func operationStatFull(fd int) (operationStatResult, error) {
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil {
@@ -368,8 +395,8 @@ func (f *linuxOperationFiles) walk(logical string, directory bool) (int, error) 
 		return current, nil
 	}
 	for _, segment := range strings.Split(logical, "/") {
-		next, openErr := unix.Openat(current, segment, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|map[bool]int{true: unix.O_DIRECTORY}[directory], 0)
-		_ = unix.Close(current)
+		next, openErr := f.ops.openAt(current, segment, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|map[bool]int{true: unix.O_DIRECTORY}[directory], 0)
+		_ = f.ops.close(current)
 		if openErr != nil {
 			return -1, ErrOperationUnavailable
 		}
@@ -391,17 +418,17 @@ func (f *linuxOperationFiles) openFile(logical string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	fd, openErr := unix.Openat(parent, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	_ = unix.Close(parent)
+	fd, openErr := f.ops.openAt(parent, name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	_ = f.ops.close(parent)
 	if errors.Is(openErr, unix.ENOENT) {
 		return -1, ErrOperationNotFound
 	}
 	if openErr != nil {
 		return -1, ErrOperationUnavailable
 	}
-	st, statErr := operationStatFull(fd)
+	st, statErr := f.operationStatFull(fd)
 	if statErr != nil || st.mode&unix.S_IFMT != unix.S_IFREG {
-		_ = unix.Close(fd)
+		_ = f.ops.close(fd)
 		return -1, ErrOperationUnavailable
 	}
 	return fd, nil
@@ -442,6 +469,22 @@ func readExact(fd int, size int64) ([]byte, error) {
 	}
 	var extra [1]byte
 	n, err := unix.Read(fd, extra[:])
+	if err != nil || n != 0 {
+		return nil, ErrOperationUnavailable
+	}
+	return value, nil
+}
+func (f *linuxOperationFiles) readExact(fd int, size int64) ([]byte, error) {
+	value := make([]byte, size)
+	for n := 0; n < len(value); {
+		k, err := f.ops.read(fd, value[n:])
+		if err != nil || k == 0 {
+			return nil, ErrOperationUnavailable
+		}
+		n += k
+	}
+	var extra [1]byte
+	n, err := f.ops.read(fd, extra[:])
 	if err != nil || n != 0 {
 		return nil, ErrOperationUnavailable
 	}
