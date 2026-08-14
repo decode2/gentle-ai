@@ -23,6 +23,10 @@ var (
 	errRecordStorageExists             = errors.New("record storage record already exists")          // refusal:by-design world-action: callers must retain the already-published record rather than overwrite it
 	errRecordStorageUnavailable        = errors.New("record storage is unavailable")                 // refusal:by-design world-action: callers must retry only after local secure storage is available
 	errRecordStoragePublicationUnknown = errors.New("record storage publication outcome is unknown") // refusal:by-design human-authority: the caller must reconcile the record before treating creation as complete
+	// These are the only storage outcomes consumers may safely distinguish.
+	ErrRecordStorageMissing  = errRecordStorageMissing
+	ErrRecordStorageExists   = errRecordStorageExists
+	ErrRecordStorageTooLarge = errRecordStorageTooLarge
 )
 
 const (
