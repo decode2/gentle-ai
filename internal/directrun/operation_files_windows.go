@@ -252,12 +252,20 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if err != nil {
 		return EditResult{}, err
 	}
-	defer f.ops.close(h)
 	release, lockErr := f.lockTarget(ctx, h)
 	if lockErr != nil {
 		return EditResult{}, lockErr
 	}
 	published := false
+	defer func() {
+		if closeErr := f.ops.close(h); closeErr != nil {
+			if published {
+				result, resultErr = EditResult{}, ErrOperationPublication
+			} else if resultErr == nil {
+				resultErr = ErrOperationUnavailable
+			}
+		}
+	}()
 	defer func() {
 		if err := release(); err != nil {
 			if published {
@@ -306,26 +314,26 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if err != nil || candidate == 0 {
 		return EditResult{}, ErrOperationUnavailable
 	}
+	candidateOpen := true
 	defer func() {
-		if !published {
-			_ = f.ops.cleanup(candidate)
+		if candidateOpen {
+			if !published {
+				_ = f.ops.cleanup(candidate)
+			}
+			_ = f.ops.close(candidate)
 		}
 	}()
 	if !f.applyCandidateProof(candidate, proof) || !f.candidateMatches(candidate, proof) {
-		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationUnavailable
 	}
 	if f.writeExact(candidate, final) != nil || f.ops.flush(candidate) != nil {
-		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationUnavailable
 	}
 	current, err := f.ops.info(h)
 	if err != nil || windowsIdentity(current) != proof.id || current.FileSizeLow != info.FileSizeLow || !f.targetMatches(h, proof) {
-		_ = f.ops.close(candidate)
 		return EditResult{}, ErrOperationConflict
 	}
 	if err := f.ops.publish(candidate, parent, name, proof); err != nil {
-		_ = f.ops.close(candidate)
 		if errors.Is(err, errWindowsPublicationUnknown) {
 			published = true
 			return EditResult{}, ErrOperationPublication
@@ -333,7 +341,13 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 		return EditResult{}, ErrOperationUnavailable
 	}
 	published = true
-	if !windowsSetSafeAttributes(candidate, proof.attrs) || f.ops.close(candidate) != nil || f.ops.flush(parent) != nil {
+	attributesSet := windowsSetSafeAttributes(candidate, proof.attrs)
+	candidateCloseErr := f.ops.close(candidate)
+	candidateOpen = false
+	if !attributesSet || candidateCloseErr != nil {
+		return EditResult{}, ErrOperationPublication
+	}
+	if f.ops.flush(parent) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	verify, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)

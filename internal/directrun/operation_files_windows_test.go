@@ -340,6 +340,192 @@ func TestWindowsOperationFilesReadAuthoritiesAreIsolated(t *testing.T) {
 	}
 }
 
+func TestWindowsOperationFilesEditNoopAndReplacementMatrix(t *testing.T) {
+	files, repo := testWindowsOperationFiles(t)
+	defer files.Close()
+	name := filepath.Join(repo, "editable", "a")
+	old := []byte("abcdef")
+	if err := os.WriteFile(name, old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temps, publishes := 0, 0
+	tempName, publish := files.ops.tempName, files.ops.publish
+	files.ops.tempName = func() (string, error) { temps++; return tempName() }
+	files.ops.publish = func(source, parent windows.Handle, target string, proof windowsDestinationProof) error {
+		publishes++
+		return publish(source, parent, target, proof)
+	}
+	before := editProof(t, files, "editable/a")
+	result, err := files.Edit(t.Context(), "editable/a", DigestSHA256(old), nil)
+	after := editProof(t, files, "editable/a")
+	if err != nil || result != (EditResult{ResultSHA256: DigestSHA256(old), Publication: "unchanged"}) || temps != 0 || publishes != 0 || before.id != after.id || before.owner != after.owner || before.protected != after.protected || string(before.dacl) != string(after.dacl) || before.attrs != after.attrs {
+		t.Fatalf("noop=%#v err=%v temp=%d publish=%d", result, err, temps, publishes)
+	}
+	for _, tt := range []struct {
+		name         string
+		base         string
+		replacements []Replacement
+		want         []byte
+		wantErr      error
+	}{
+		{"empty", DigestSHA256(old), []Replacement{{Start: 0, End: 6}}, nil, nil},
+		{"small", DigestSHA256(old), []Replacement{{Start: 1, End: 3, Text: []byte("X")}}, []byte("aXdef"), nil},
+		{"multiple", DigestSHA256(old), []Replacement{{Start: 1, End: 3, Text: []byte("X")}, {Start: 4, End: 6, Text: []byte("YZ")}}, []byte("aXdYZ"), nil},
+		{"wrong-base", DigestSHA256([]byte("wrong")), nil, nil, ErrOperationConflict},
+		{"overlap", DigestSHA256(old), []Replacement{{Start: 1, End: 3}, {Start: 2, End: 4}}, nil, ErrOperationConflict},
+		{"unsorted", DigestSHA256(old), []Replacement{{Start: 4, End: 5}, {Start: 1, End: 2}}, nil, ErrOperationConflict},
+		{"out-of-bounds", DigestSHA256(old), []Replacement{{Start: 0, End: 7}}, nil, ErrOperationLimit},
+		{"oversize", DigestSHA256(old), []Replacement{{Start: 0, End: 0, Text: make([]byte, maxOperationFileBytes+1)}}, nil, ErrOperationLimit},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := os.WriteFile(name, old, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := files.Edit(t.Context(), "editable/a", tt.base, tt.replacements)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) || got != (EditResult{}) {
+					t.Fatalf("result=%#v err=%v", got, err)
+				}
+				return
+			}
+			if err != nil || !got.Changed || got.Publication != "published" || got.ResultSHA256 != DigestSHA256(tt.want) {
+				t.Fatalf("result=%#v err=%v", got, err)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != string(tt.want) {
+				t.Fatalf("bytes=%q err=%v", bytes, readErr)
+			}
+		})
+	}
+}
+
+func TestWindowsOperationFilesEditFaultsCleanCandidateExactlyOnce(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*windowsOperationFiles)
+	}{
+		{"create", func(f *windowsOperationFiles) {
+			f.ops.create = func(windows.Handle, string) (windows.Handle, error) { return 0, windows.ERROR_ACCESS_DENIED }
+		}},
+		{"write-zero", func(f *windowsOperationFiles) {
+			f.ops.write = func(windows.Handle, []byte, *uint32) error { return nil }
+		}},
+		{"write-error", func(f *windowsOperationFiles) {
+			f.ops.write = func(windows.Handle, []byte, *uint32) error { return windows.ERROR_WRITE_FAULT }
+		}},
+		{"flush", func(f *windowsOperationFiles) {
+			f.ops.flush = func(windows.Handle) error { return windows.ERROR_WRITE_FAULT }
+		}},
+		{"publish", func(f *windowsOperationFiles) {
+			f.ops.publish = func(windows.Handle, windows.Handle, string, windowsDestinationProof) error {
+				return windows.ERROR_ACCESS_DENIED
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testWindowsOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			candidate, closes, cleanups := windows.Handle(0), 0, 0
+			create, closeHandle, cleanup := files.ops.create, files.ops.close, files.ops.cleanup
+			files.ops.create = func(parent windows.Handle, temp string) (windows.Handle, error) {
+				h, err := create(parent, temp)
+				candidate = h
+				return h, err
+			}
+			files.ops.close = func(h windows.Handle) error {
+				if h == candidate && h != 0 {
+					closes++
+				}
+				return closeHandle(h)
+			}
+			files.ops.cleanup = func(h windows.Handle) error {
+				if h == candidate {
+					cleanups++
+				}
+				return cleanup(h)
+			}
+			tt.set(files)
+			result, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, ErrOperationUnavailable) || result != (EditResult{}) {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != "old" {
+				t.Fatalf("bytes=%q err=%v", bytes, readErr)
+			}
+			if candidate != 0 && (closes != 1 || cleanups != 1) {
+				t.Fatalf("candidate closes=%d cleanups=%d", closes, cleanups)
+			}
+		})
+	}
+}
+
+func TestWindowsOperationFilesEditPublicationFailuresAreExplicit(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*windowsOperationFiles)
+		want error
+	}{
+		{"unknown-publish", func(f *windowsOperationFiles) {
+			f.ops.publish = func(windows.Handle, windows.Handle, string, windowsDestinationProof) error {
+				return errWindowsPublicationUnknown
+			}
+		}, ErrOperationPublication},
+		{"source-close-after-publish", func(f *windowsOperationFiles) {
+			lock := f.ops.lock
+			var source windows.Handle
+			f.ops.lock = func(h windows.Handle, flags, reserved, low, high uint32, over *windows.Overlapped) error {
+				source = h
+				return lock(h, flags, reserved, low, high, over)
+			}
+			closeHandle := f.ops.close
+			f.ops.close = func(h windows.Handle) error {
+				err := closeHandle(h)
+				if h == source {
+					return windows.ERROR_INVALID_HANDLE
+				}
+				return err
+			}
+		}, ErrOperationPublication},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testWindowsOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(files)
+			result, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, tt.want) || result != (EditResult{}) {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func editProof(t *testing.T, f *windowsOperationFiles, logical string) windowsDestinationProof {
+	t.Helper()
+	h, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.ops.close(h)
+	info, err := f.ops.info(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := f.destinationProof(h, info, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return proof
+}
+
 func testWindowsOperationFiles(t *testing.T) (*windowsOperationFiles, string) {
 	t.Helper()
 	repo := t.TempDir()
