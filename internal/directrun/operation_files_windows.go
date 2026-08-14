@@ -505,10 +505,18 @@ func windowsCurrentOwner(h windows.Handle) bool {
 	return err == nil && user != nil && user.User.Sid != nil && owner.Equals(user.User.Sid)
 }
 func windowsLogicalPath(value string) bool {
-	return path([]byte(`"`+value+`"`)) == nil && !strings.ContainsAny(value, "\\:") && value == strings.TrimSpace(value)
+	if path([]byte(`"`+value+`"`)) != nil || strings.ContainsAny(value, "\\:") || value != strings.TrimSpace(value) {
+		return false
+	}
+	for _, component := range strings.Split(value, "/") {
+		if !windowsName(component) {
+			return false
+		}
+	}
+	return true
 }
 func windowsName(value string) bool {
-	return value != "" && len(value) <= windowsMaxTreeNameBytes && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\\/:\x00\r\n")
+	return value != "" && len(value) <= windowsMaxTreeNameBytes && strings.TrimSpace(value) == value && !strings.HasSuffix(value, ".") && !reservedDevice(value) && !strings.ContainsAny(value, "\\/:\x00\r\n")
 }
 func logicalEditRootWindows(repository, configured string) (string, bool) {
 	relative, err := filepath.Rel(repository, configured)

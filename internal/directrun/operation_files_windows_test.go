@@ -60,9 +60,43 @@ func TestWindowsOperationFilesReadEditAndTree(t *testing.T) {
 }
 
 func TestWindowsLogicalPathsRejectWindowsAmbiguity(t *testing.T) {
-	for _, value := range []string{"a:b", `a\\b`, "a/ ", "a/COM1"} {
+	for _, value := range []string{"a:b", `a\\b`, "a/ ", "a/COM1", "a/NUL", "a/file."} {
 		if windowsLogicalPath(value) {
 			t.Errorf("accepted %q", value)
 		}
+	}
+}
+
+func TestWindowsTreeNamesRejectAmbiguousAndSpecialEntries(t *testing.T) {
+	for _, value := range []string{"", "x/y", "x:y", "x\x00y", "x\r", "x\n", "NUL", "COM1", "file.", " name"} {
+		if windowsName(value) {
+			t.Errorf("accepted %q", value)
+		}
+	}
+	for _, value := range []string{"a", "file.txt", "a-b_1"} {
+		if !windowsName(value) {
+			t.Errorf("rejected %q", value)
+		}
+	}
+}
+
+func TestWindowsReplacementFailureMatrix(t *testing.T) {
+	old := []byte("abcdef")
+	for _, tt := range []struct {
+		name   string
+		values []Replacement
+		want   string
+		err    error
+	}{
+		{"ordered", []Replacement{{Start: 1, End: 3, Text: []byte("X")}, {Start: 4, End: 6, Text: []byte("YZ")}}, "aXdYZ", nil},
+		{"overlap", []Replacement{{Start: 1, End: 3}, {Start: 2, End: 4}}, "", ErrOperationConflict},
+		{"outside", []Replacement{{Start: 0, End: 7}}, "", ErrOperationConflict},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := windowsApplyReplacements(old, tt.values)
+			if !errors.Is(err, tt.err) || string(got) != tt.want {
+				t.Fatalf("got=%q err=%v", got, err)
+			}
+		})
 	}
 }
