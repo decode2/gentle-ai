@@ -5,12 +5,64 @@ package directrun
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+
+	"github.com/gentleman-programming/gentle-ai/v2/internal/reviewtransaction"
 )
 
-func TestWindowsOperationFilesFailClosedUntilRelativeAuthorityExists(t *testing.T) {
+func TestWindowsOperationFilesRejectInvalidAuthority(t *testing.T) {
 	files, err := newPlatformOperationFiles(context.Background(), nil, Handoff{})
-	if files != nil || !errors.Is(err, ErrOperationUnsupported) {
+	if files != nil || !errors.Is(err, ErrOperationUnavailable) {
 		t.Fatalf("files=%v err=%v", files, err)
+	}
+}
+
+func TestWindowsOperationFilesReadEditAndTree(t *testing.T) {
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	editable := filepath.Join(repo, "editable")
+	if err := os.Mkdir(editable, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := reviewtransaction.OpenRepositoryIdentityLease(t.Context(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := NewHandoff("windows-files", "windows-worker", []string{editable}, "operate files", []string{"handle relative"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := newOperationFiles(t.Context(), lease, handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer files.Close()
+	if err := os.WriteFile(filepath.Join(editable, "a"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read, err := files.Read(t.Context(), "editable/a", 1, 2)
+	if err != nil || read.TotalSize != 3 || read.ContentB64 != "bGQ=" {
+		t.Fatalf("read=%#v err=%v", read, err)
+	}
+	edit, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+	if err != nil || !edit.Changed || edit.Publication != "published" {
+		t.Fatalf("edit=%#v err=%v", edit, err)
+	}
+	tree, err := files.Tree(t.Context(), "editable")
+	if err != nil || tree.Encoding != "utf-8" || tree.ContentB64 != "ZiAvYQ==" {
+		t.Fatalf("tree=%#v err=%v", tree, err)
+	}
+}
+
+func TestWindowsLogicalPathsRejectWindowsAmbiguity(t *testing.T) {
+	for _, value := range []string{"a:b", `a\\b`, "a/ ", "a/COM1"} {
+		if windowsLogicalPath(value) {
+			t.Errorf("accepted %q", value)
+		}
 	}
 }
