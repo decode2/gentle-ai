@@ -57,6 +57,14 @@ type Sandbox struct {
 	// inherited PATH for this sandbox only. It is empty for every journey unless
 	// a fixture explicitly opts in.
 	PathPrepend string
+	// PathOverride is an optional closed PATH for one journey. It keeps a
+	// runtime fixture from resolving an operator-installed executable.
+	PathOverride string
+	// GoProxyOff prevents a fixture from turning a missing runtime prerequisite
+	// into a network-backed Go installation.
+	GoProxyOff bool
+	// Issue3026EngramFixture enables the private Engram fixture only for j100.
+	Issue3026EngramFixture bool
 
 	traceOffset int64
 }
@@ -83,8 +91,11 @@ func newSandbox(binary, root string) (*Sandbox, error) {
 // PATH is inherited because the product shells out to git; a journey may
 // prepend a sandbox-owned fixture directory without changing the default.
 func (s *Sandbox) env() []string {
-	path := os.Getenv("PATH")
-	if s.PathPrepend != "" {
+	path := s.PathOverride
+	if path == "" {
+		path = os.Getenv("PATH")
+	}
+	if s.PathPrepend != "" && s.PathOverride == "" {
 		path = s.PathPrepend + string(os.PathListSeparator) + path
 	}
 	env := []string{
@@ -104,6 +115,19 @@ func (s *Sandbox) env() []string {
 		"NO_COLOR=1",
 		"TERM=dumb",
 		"LANG=C",
+	}
+	if s.GoProxyOff {
+		env = append(env, "GOPROXY=off")
+	}
+	if s.Issue3026EngramFixture {
+		env = append(env, issue3026EngramFixtureMarkerEnv+"="+issue3026EngramFixtureMarkerValue)
+	}
+	if runtime.GOOS == "windows" {
+		for _, key := range []string{"SystemRoot", "ComSpec", "PATHEXT"} {
+			if value := os.Getenv(key); value != "" {
+				env = append(env, key+"="+value)
+			}
+		}
 	}
 	if s.BenchReceiptMutationPath != "" {
 		env = append(env, "GENTLE_AI_BENCH_MUTATE_RECEIPT="+s.BenchReceiptMutationPath)
