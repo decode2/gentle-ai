@@ -4,7 +4,10 @@ package reviewtransaction
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"io/fs"
 	"os"
 	"sync"
 
@@ -12,11 +15,14 @@ import (
 )
 
 var (
-	errRecordStorageAuthorityInvalid = errors.New("record storage authority is invalid") // refusal:by-design world-action: callers must retain an unchanged lease and hierarchy before opening a new authority
-	errRecordStorageAuthorityClosed  = errors.New("record storage authority is closed")  // refusal:by-design world-action: callers must open a new authority after closing the old one
-	errRecordStorageMissing          = errors.New("record storage record is missing")    // refusal:by-design world-action: callers must select an existing published record before reading it
-	errRecordStorageTooLarge         = errors.New("record storage record is too large")  // refusal:by-design world-action: callers must request a bounded record size before reading it
-	errRecordStorageChanged          = errors.New("record storage record changed")       // refusal:by-design world-action: callers must retry from a stable published record
+	errRecordStorageAuthorityInvalid   = errors.New("record storage authority is invalid")           // refusal:by-design world-action: callers must retain an unchanged lease and hierarchy before opening a new authority
+	errRecordStorageAuthorityClosed    = errors.New("record storage authority is closed")            // refusal:by-design world-action: callers must open a new authority after closing the old one
+	errRecordStorageMissing            = errors.New("record storage record is missing")              // refusal:by-design world-action: callers must select an existing published record before reading it
+	errRecordStorageTooLarge           = errors.New("record storage record is too large")            // refusal:by-design world-action: callers must request a bounded record size before reading it
+	errRecordStorageChanged            = errors.New("record storage record changed")                 // refusal:by-design world-action: callers must retry from a stable published record
+	errRecordStorageExists             = errors.New("record storage record already exists")          // refusal:by-design world-action: callers must retain the already-published record rather than overwrite it
+	errRecordStorageUnavailable        = errors.New("record storage is unavailable")                 // refusal:by-design world-action: callers must retry only after local secure storage is available
+	errRecordStoragePublicationUnknown = errors.New("record storage publication outcome is unknown") // refusal:by-design human-authority: the caller must reconcile the record before treating creation as complete
 )
 
 const (
@@ -38,6 +44,96 @@ type RecordStorageAuthority struct {
 	records          *secureWindowsChild
 	digest           *secureWindowsChild
 	readHook         func()
+	createHook       func()
+}
+
+// CreateRecord atomically publishes canonical bytes under their record identity.
+// recordDigest identifies the record; it is not a digest of canonical.
+func (a *RecordStorageAuthority) CreateRecord(ctx context.Context, recordDigest string, canonical []byte) error {
+	const hardMax = 1 << 20
+	if a == nil || !recordStorageDigest(recordDigest) {
+		return errRecordStorageAuthorityInvalid
+	}
+	if len(canonical) > hardMax {
+		return errRecordStorageTooLarge
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	bytes := append([]byte(nil), canonical...)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.validateLocked(ctx); err != nil {
+		return err
+	}
+	if a.createHook != nil {
+		a.createHook()
+	}
+	var (
+		data *secureWindowsData
+		err  error
+	)
+	for range 8 {
+		name, nameErr := recordStorageTempName()
+		if nameErr != nil {
+			return errRecordStorageUnavailable
+		}
+		data, err = createSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, name)
+		if !errors.Is(err, errSecureWindowsChildExists) {
+			break
+		}
+	}
+	if data == nil {
+		return recordStorageCreateError(ctx, err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			secureWindowsDeleteData(data)
+			return
+		}
+		_ = data.Close()
+	}()
+	for offset := 0; offset < len(bytes); {
+		var wrote uint32
+		if err := windows.WriteFile(data.handle, bytes[offset:], &wrote, nil); err != nil || wrote == 0 {
+			return errRecordStorageUnavailable
+		}
+		offset += int(wrote)
+	}
+	if err := windows.FlushFileBuffers(data.handle); err != nil || !data.valid() || !recordStorageDataSize(data.handle, len(bytes)) {
+		return errRecordStorageUnavailable
+	}
+	if err := a.validateLocked(ctx); err != nil {
+		return err
+	}
+	if err := publishWindowsNoReplaceRelative(data.handle, a.digest.handle, recordDigest); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errRecordStorageExists
+		}
+		if errors.Is(err, errWindowsRelativePublishUnknown) {
+			return errRecordStoragePublicationUnknown
+		}
+		return errRecordStorageUnavailable
+	}
+	published = true
+	if err := windows.FlushFileBuffers(a.digest.handle); err != nil {
+		return errRecordStoragePublicationUnknown
+	}
+	return nil
+}
+
+func recordStorageTempName() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "tmp-" + hex.EncodeToString(random[:]), nil
+}
+
+func recordStorageDataSize(handle windows.Handle, want int) bool {
+	info, _, ok := secureWindowsDataInfo(handle)
+	return ok && uint64(info.FileSizeHigh)<<32|uint64(info.FileSizeLow) == uint64(want)
 }
 
 // OpenRecordStorageAuthority opens the Git-common-directory-bound hierarchy.
@@ -227,6 +323,16 @@ func recordStorageReadError(ctx context.Context, err error) error {
 		return errRecordStorageMissing
 	}
 	return errRecordStorageAuthorityInvalid
+}
+
+func recordStorageCreateError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, errSecureWindowsChildExists) {
+		return errRecordStorageUnavailable
+	}
+	return errRecordStorageUnavailable
 }
 
 func (a *RecordStorageAuthority) validCommon() bool {
