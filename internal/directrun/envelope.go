@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 )
 
 const OperationSchema = "gentle-ai.direct-operation/v1"
@@ -157,6 +158,12 @@ func result(op string, b json.RawMessage) error {
 		if offset > total || int64(len(content)) > total-offset {
 			return errors.New("invalid read result")
 		}
+		var truncated bool
+		_ = json.Unmarshal(m["truncated"], &truncated)
+		wantTruncated := offset != 0 || int64(len(content)) != total
+		if truncated != wantTruncated || (!truncated && DigestSHA256(content) != string(mustDigest(m["data_sha256"]))) {
+			return errors.New("invalid read result")
+		}
 		return nil
 	case "direct_edit":
 		m, err := object(b, set("result_sha256", "changed", "publication"))
@@ -165,6 +172,11 @@ func result(op string, b json.RawMessage) error {
 		}
 		var publication string
 		if json.Unmarshal(m["publication"], &publication) != nil || (publication != "published" && publication != "unchanged") {
+			return errors.New("invalid edit result")
+		}
+		var changed bool
+		_ = json.Unmarshal(m["changed"], &changed)
+		if changed != (publication == "published") {
 			return errors.New("invalid edit result")
 		}
 		return nil
@@ -178,7 +190,9 @@ func result(op string, b json.RawMessage) error {
 			return errors.New("invalid inspect result")
 		}
 		content, err := b64(m["content_b64"])
-		if err != nil || len(content) > maxContent || !bytes.Equal([]byte(DigestSHA256(content)), mustDigest(m["evidence_sha256"])) {
+		var truncated bool
+		_ = json.Unmarshal(m["truncated"], &truncated)
+		if err != nil || len(content) > maxContent || !utf8.Valid(content) || truncated || !bytes.Equal([]byte(DigestSHA256(content)), mustDigest(m["evidence_sha256"])) {
 			return errors.New("invalid inspect result")
 		}
 		return nil

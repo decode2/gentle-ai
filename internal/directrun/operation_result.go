@@ -28,7 +28,7 @@ type InspectResult struct {
 }
 
 func NewReadResult(full, content []byte, offset, total int64, truncated bool) ReadResult {
-	return ReadResult{DataSHA256: DigestSHA256(full), ContentB64: base64.StdEncoding.EncodeToString(content), Offset: offset, TotalSize: total, Truncated: truncated}
+	return ReadResult{DataSHA256: DigestSHA256(full), ContentB64: base64.StdEncoding.EncodeToString(content), Offset: offset, TotalSize: total, Truncated: offset != 0 || int64(len(content)) != total}
 }
 
 func NewEditResult(final []byte, changed bool) EditResult {

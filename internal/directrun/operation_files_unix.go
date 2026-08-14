@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package directrun
 
@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/reviewtransaction"
 	"golang.org/x/sys/unix"
@@ -18,7 +19,7 @@ import (
 type operationFileIdentity struct {
 	dev, ino uint64
 	size     int64
-	mtime    unix.Timespec
+	mtime    uint64
 }
 
 type linuxOperationFiles struct {
@@ -150,10 +151,18 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 		return EditResult{}, ErrOperationUnavailable
 	}
 	defer unix.Close(fd)
-	before, err := operationStat(fd)
+	details, err := operationStatFull(fd)
+	before := details.operationFileIdentity
 	if err != nil || before.size > maxOperationFileBytes {
 		return EditResult{}, ErrOperationLimit
 	}
+	if details.uid != uint32(unix.Geteuid()) || details.mode&0o7000 != 0 {
+		return EditResult{}, ErrOperationUnavailable
+	}
+	if err := lockTarget(ctx, fd); err != nil {
+		return EditResult{}, err
+	}
+	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
 	old, err := readExact(fd, before.size)
 	if err != nil || DigestSHA256(old) != base {
 		return EditResult{}, ErrOperationConflict
@@ -165,7 +174,7 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if string(final) == string(old) {
 		return NewEditResult(old, false), nil
 	}
-	tmp, temp, err := operationTemp(parent, uint32(beforeMode(fd)))
+	tmp, temp, err := operationTemp(parent, details.mode&0o777, details.uid, details.gid)
 	if err != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
@@ -175,7 +184,7 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 			_ = unix.Unlinkat(parent, tmp, 0)
 		}
 	}()
-	if writeExact(temp, final) != nil || unix.Fsync(temp) != nil {
+	if unix.Fchown(temp, int(details.uid), int(details.gid)) != nil || unix.Fchmod(temp, details.mode&0o777) != nil || writeExact(temp, final) != nil || unix.Fsync(temp) != nil {
 		_ = unix.Close(temp)
 		return EditResult{}, ErrOperationUnavailable
 	}
@@ -298,7 +307,8 @@ func directoryNames(fd int) ([]string, error) {
 
 type operationStatResult struct {
 	operationFileIdentity
-	mode uint32
+	mode     uint32
+	uid, gid uint32
 }
 
 func operationStat(fd int) (operationFileIdentity, error) {
@@ -310,7 +320,7 @@ func operationStatFull(fd int) (operationStatResult, error) {
 	if unix.Fstat(fd, &st) != nil {
 		return operationStatResult{}, ErrOperationUnavailable
 	}
-	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, st.Mtim}, mode: st.Mode}, nil
+	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, operationMtime(&st)}, mode: uint32(st.Mode), uid: st.Uid, gid: st.Gid}, nil
 }
 func (f *linuxOperationFiles) statAt(parent int, name string) (operationFileIdentity, error) {
 	st, err := f.statAtFull(parent, name)
@@ -321,7 +331,7 @@ func (f *linuxOperationFiles) statAtFull(parent int, name string) (operationStat
 	if unix.Fstatat(parent, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
 		return operationStatResult{}, ErrOperationUnavailable
 	}
-	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, st.Mtim}, mode: st.Mode}, nil
+	return operationStatResult{operationFileIdentity: operationFileIdentity{uint64(st.Dev), st.Ino, st.Size, operationMtime(&st)}, mode: uint32(st.Mode), uid: st.Uid, gid: st.Gid}, nil
 }
 func isDirectory(fd int) bool {
 	st, err := operationStatFull(fd)
@@ -331,13 +341,6 @@ func sameOperationIdentity(a, b operationFileIdentity) bool {
 	return a.dev == b.dev && a.ino == b.ino && a.size == b.size && a.mtime == b.mtime
 }
 func sameAuthorityIdentity(a, b operationFileIdentity) bool { return a.dev == b.dev && a.ino == b.ino }
-func beforeMode(fd int) uint32 {
-	st, err := operationStatFull(fd)
-	if err != nil {
-		return 0o600
-	}
-	return st.mode & 0o777
-}
 
 func (f *linuxOperationFiles) walk(logical string, directory bool) (int, error) {
 	current, err := unix.Dup(f.root)
@@ -437,7 +440,7 @@ func writeExact(fd int, value []byte) error {
 	}
 	return nil
 }
-func operationTemp(parent int, mode uint32) (string, int, error) {
+func operationTemp(parent int, mode, uid, gid uint32) (string, int, error) {
 	for range 8 {
 		var random [12]byte
 		if _, err := rand.Read(random[:]); err != nil {
@@ -453,6 +456,24 @@ func operationTemp(parent int, mode uint32) (string, int, error) {
 		}
 	}
 	return "", -1, ErrOperationUnavailable
+}
+func lockTarget(ctx context.Context, fd int) error {
+	for {
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			return nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return ErrOperationUnavailable
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 func applyReplacements(old []byte, values []Replacement) ([]byte, error) {
 	var out []byte
