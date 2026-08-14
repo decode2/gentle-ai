@@ -106,6 +106,15 @@ func (child *secureWindowsChild) validLocked() bool {
 	return child.id == id && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
+func (child *secureWindowsChild) valid() bool {
+	if child == nil {
+		return false
+	}
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	return child.validLocked()
+}
+
 func secureWindowsDirectoryHandle(handle windows.Handle, want *secureWindowsChildID) bool {
 	_, id, ok := secureWindowsDirectoryInfo(handle)
 	return ok && (want == nil || *want == id)
