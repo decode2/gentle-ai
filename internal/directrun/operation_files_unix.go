@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/reviewtransaction"
 	"golang.org/x/sys/unix"
@@ -42,6 +43,8 @@ type unixOperationFileOps struct {
 	write    func(int, []byte) (int, error)
 	temp     func(int, uint32, uint32, uint32) (string, int, error)
 	unlinkAt func(int, string, int) error
+	seek     func(int, int64, int) (int64, error)
+	readDir  func(int, []byte) (int, error)
 	flock    func(int, int) error
 	fchown   func(int, int, int) error
 	fchmod   func(int, uint32) error
@@ -52,7 +55,7 @@ type unixOperationFileOps struct {
 }
 
 func newUnixOperationFileOps() unixOperationFileOps {
-	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, fstatAt: unix.Fstatat, read: unix.Read, write: unix.Write, temp: operationTemp, unlinkAt: unix.Unlinkat, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
+	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, fstatAt: unix.Fstatat, read: unix.Read, write: unix.Write, temp: operationTemp, unlinkAt: unix.Unlinkat, seek: unix.Seek, readDir: unix.ReadDirent, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
 }
 
 func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease, handoff Handoff) (operationFiles, error) {
@@ -293,6 +296,9 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 }
 
 func (f *linuxOperationFiles) Tree(ctx context.Context, logical string) (InspectResult, error) {
+	if f == nil {
+		return InspectResult{}, ErrOperationUnavailable
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.valid(ctx); err != nil {
@@ -308,24 +314,34 @@ func (f *linuxOperationFiles) Tree(ctx context.Context, logical string) (Inspect
 		if err != nil {
 			return InspectResult{}, err
 		}
-		defer unix.Close(fd)
+		defer f.ops.close(fd)
 	}
 	lines := []string{}
-	if err := f.tree(ctx, fd, "/", 0, &lines); err != nil {
+	evidenceBytes := 0
+	if err := f.tree(ctx, fd, "/", 0, &lines, &evidenceBytes); err != nil {
 		return InspectResult{}, err
 	}
 	evidence := []byte(strings.Join(lines, "\n"))
-	if len(evidence) > maxContent || f.valid(ctx) != nil {
+	if len(evidence) > maxContent {
 		return InspectResult{}, ErrOperationLimit
+	}
+	if f.valid(ctx) != nil {
+		return InspectResult{}, ErrOperationUnavailable
 	}
 	return NewInspectResult(evidence), nil
 }
 
-func (f *linuxOperationFiles) tree(ctx context.Context, fd int, prefix string, depth int, lines *[]string) error {
+// Tree evidence uses one unambiguous line per entry: "f /path", "d /path", or "l /path".
+// Symlinks are listed but never traversed; all other special entries are refused.
+func (f *linuxOperationFiles) tree(ctx context.Context, fd int, prefix string, depth int, lines *[]string, evidenceBytes *int) error {
 	if depth > maxTreeDepth || len(*lines) > maxTreeEntries {
 		return ErrOperationLimit
 	}
-	entries, err := directoryNames(fd)
+	before, err := f.operationStatFull(fd)
+	if err != nil || before.mode&unix.S_IFMT != unix.S_IFDIR {
+		return ErrOperationUnavailable
+	}
+	entries, err := f.directoryNames(fd)
 	if err != nil {
 		return ErrOperationUnavailable
 	}
@@ -334,25 +350,45 @@ func (f *linuxOperationFiles) tree(ctx context.Context, fd int, prefix string, d
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		st, err := f.statAtFull(fd, name)
-		if err != nil {
+		if len(name) == 0 || len(name) > maxTreeNameBytes || !utf8.ValidString(name) || strings.ContainsAny(name, "\n\r") {
 			return ErrOperationUnavailable
 		}
+		st, err := f.statAtFull(fd, name)
+		if err != nil {
+			return ErrOperationConflict
+		}
 		child := strings.TrimSuffix(prefix, "/") + "/" + name
+		if len(child) > maxTreePathBytes {
+			return ErrOperationLimit
+		}
 		switch st.mode & unix.S_IFMT {
 		case unix.S_IFREG:
-			*lines = append(*lines, "f "+child)
-		case unix.S_IFLNK:
-			*lines = append(*lines, "l "+child)
-		case unix.S_IFDIR:
-			*lines = append(*lines, "d "+child)
-			next, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			if err != nil {
-				return ErrOperationUnavailable
+			if err := appendTreeLine(lines, evidenceBytes, "f", child); err != nil {
+				return err
 			}
-			err = f.tree(ctx, next, child, depth+1, lines)
-			_ = unix.Close(next)
+		case unix.S_IFLNK:
+			if err := appendTreeLine(lines, evidenceBytes, "l", child); err != nil {
+				return err
+			}
+		case unix.S_IFDIR:
+			if err := appendTreeLine(lines, evidenceBytes, "d", child); err != nil {
+				return err
+			}
+			next, err := f.ops.openAt(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			if err != nil {
+				return ErrOperationConflict
+			}
+			nextStat, statErr := f.operationStat(next)
+			if statErr != nil || !sameOperationIdentity(st.operationFileIdentity, nextStat) {
+				_ = f.ops.close(next)
+				return ErrOperationConflict
+			}
+			err = f.tree(ctx, next, child, depth+1, lines, evidenceBytes)
+			closeErr := f.ops.close(next)
+			if err != nil || closeErr != nil {
+				if err == nil {
+					return ErrOperationUnavailable
+				}
 				return err
 			}
 		default:
@@ -362,17 +398,39 @@ func (f *linuxOperationFiles) tree(ctx context.Context, fd int, prefix string, d
 			return ErrOperationLimit
 		}
 	}
+	after, err := f.operationStat(fd)
+	if err != nil {
+		return ErrOperationUnavailable
+	}
+	if !sameOperationIdentity(before.operationFileIdentity, after) {
+		return ErrOperationConflict
+	}
 	return nil
 }
 
-func directoryNames(fd int) ([]string, error) {
-	if _, err := unix.Seek(fd, 0, 0); err != nil {
+const (
+	maxTreeNameBytes = 255
+	maxTreePathBytes = 1024
+)
+
+func appendTreeLine(lines *[]string, evidenceBytes *int, kind, path string) error {
+	lineBytes := len(kind) + 1 + len(path)
+	if len(*lines) >= maxTreeEntries || *evidenceBytes+lineBytes+map[bool]int{true: 1}[len(*lines) > 0] > maxContent {
+		return ErrOperationLimit
+	}
+	*evidenceBytes += lineBytes + map[bool]int{true: 1}[len(*lines) > 0]
+	*lines = append(*lines, kind+" "+path)
+	return nil
+}
+
+func (f *linuxOperationFiles) directoryNames(fd int) ([]string, error) {
+	if _, err := f.ops.seek(fd, 0, 0); err != nil {
 		return nil, err
 	}
 	var names []string
 	buffer := make([]byte, 8192)
 	for {
-		n, err := unix.ReadDirent(fd, buffer)
+		n, err := f.ops.readDir(fd, buffer)
 		if err != nil {
 			return nil, err
 		}

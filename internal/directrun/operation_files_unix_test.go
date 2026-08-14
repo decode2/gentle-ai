@@ -28,6 +28,12 @@ func testOperationFiles(t *testing.T) (*linuxOperationFiles, string) {
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return testOperationFilesAt(t, repo), repo
+}
+
+func testOperationFilesAt(t *testing.T, repo string) *linuxOperationFiles {
+	t.Helper()
+	root := filepath.Join(repo, "editable")
 	lease, err := reviewtransaction.OpenRepositoryIdentityLease(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +46,7 @@ func testOperationFiles(t *testing.T) (*linuxOperationFiles, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return files.(*linuxOperationFiles), repo
+	return files.(*linuxOperationFiles)
 }
 
 func TestOperationFilesReadEditAndTree(t *testing.T) {
@@ -496,5 +502,195 @@ func TestOperationFilesEditReportsUnknownAfterRenameAndUnlockFailures(t *testing
 				t.Fatalf("published bytes = %q, %v", bytes, readErr)
 			}
 		})
+	}
+}
+
+func TestOperationFilesTreeCanonicalEvidence(t *testing.T) {
+	files, repo := testOperationFiles(t)
+	defer files.Close()
+	root := filepath.Join(repo, "editable")
+	if err := os.WriteFile(filepath.Join(root, "z"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "a"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("dir", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := files.Tree(t.Context(), "editable")
+	want := []byte("d /dir\nf /dir/a\nl /link\nf /z")
+	if err != nil || got.Encoding != "utf-8" || got.Truncated || got.EvidenceSHA256 != DigestSHA256(want) || got.ContentB64 != base64.StdEncoding.EncodeToString(want) {
+		t.Fatalf("tree = %#v, %v", got, err)
+	}
+	again, err := files.Tree(t.Context(), "editable")
+	if err != nil || again != got {
+		t.Fatalf("unstable tree = %#v, %v", again, err)
+	}
+	subtree, err := files.Tree(t.Context(), "editable/dir")
+	if err != nil || subtree.ContentB64 != base64.StdEncoding.EncodeToString([]byte("f /a")) {
+		t.Fatalf("subtree = %#v, %v", subtree, err)
+	}
+	if _, err := files.Tree(t.Context(), "editable/link"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatalf("symlink component = %v", err)
+	}
+}
+
+func TestOperationFilesTreeRejectsSpecialAndMutation(t *testing.T) {
+	files, repo := testOperationFiles(t)
+	defer files.Close()
+	root := filepath.Join(repo, "editable")
+	if err := unix.Mkfifo(filepath.Join(root, "fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatalf("fifo = %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "fifo")); err != nil {
+		t.Fatal(err)
+	}
+	socket, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(socket)
+	if err := unix.Bind(socket, &unix.SockaddrUnix{Name: filepath.Join(root, "socket")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatalf("socket = %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "socket")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readDir := files.ops.readDir
+	mutated := false
+	files.ops.readDir = func(fd int, data []byte) (int, error) {
+		n, err := readDir(fd, data)
+		if n > 0 && !mutated {
+			mutated = true
+			if writeErr := os.WriteFile(filepath.Join(root, "b"), []byte("b"), 0o600); writeErr != nil {
+				return 0, writeErr
+			}
+		}
+		return n, err
+	}
+	got, err := files.Tree(t.Context(), "editable")
+	if !errors.Is(err, ErrOperationConflict) || got != (InspectResult{}) {
+		t.Fatalf("mutation = %#v, %v", got, err)
+	}
+}
+
+func TestOperationFilesTreeDepthCap(t *testing.T) {
+	files, repo := testOperationFiles(t)
+	defer files.Close()
+	path := filepath.Join(repo, "editable")
+	for range maxTreeDepth + 1 {
+		path = filepath.Join(path, "d")
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := files.Tree(t.Context(), "editable")
+	if !errors.Is(err, ErrOperationLimit) || got != (InspectResult{}) {
+		t.Fatalf("depth = %#v, %v", got, err)
+	}
+}
+
+func TestOperationFilesTreeLifecycleFaultsAndRedaction(t *testing.T) {
+	files, repo := testOperationFiles(t)
+	defer files.Close()
+	if err := os.WriteFile(filepath.Join(repo, "editable", "a"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		set  func(*linuxOperationFiles)
+	}{
+		{"seek", func(f *linuxOperationFiles) { f.ops.seek = func(int, int64, int) (int64, error) { return 0, unix.EIO } }},
+		{"read-dir", func(f *linuxOperationFiles) {
+			f.ops.readDir = func(int, []byte) (int, error) {
+				return 0, fmt.Errorf("root=/private HOME=/home path=editable errno=5 0x5")
+			}
+		}},
+		{"stat", func(f *linuxOperationFiles) { f.ops.fstat = func(int, *unix.Stat_t) error { return unix.EIO } }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, r := testOperationFiles(t)
+			defer f.Close()
+			if err := os.WriteFile(filepath.Join(r, "editable", "a"), []byte("a"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(f)
+			got, err := f.Tree(t.Context(), "editable")
+			if !errors.Is(err, ErrOperationUnavailable) || got != (InspectResult{}) {
+				t.Fatalf("result = %#v, %v", got, err)
+			}
+			if strings.Contains(err.Error(), "/private") || strings.Contains(err.Error(), "errno=5") {
+				t.Fatalf("leaked %v", err)
+			}
+		})
+	}
+	if _, err := (*linuxOperationFiles)(nil).Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
+	}
+	if _, err := (&linuxOperationFiles{}).Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Tree(t.Context(), "editable"); !errors.Is(err, ErrOperationUnavailable) {
+		t.Fatal(err)
+	}
+}
+
+func TestOperationFilesEditIndependentAuthoritiesConflict(t *testing.T) {
+	first, repo := testOperationFiles(t)
+	defer first.Close()
+	second := testOperationFilesAt(t, repo)
+	defer second.Close()
+	name := filepath.Join(repo, "editable", "a")
+	if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	flock := first.ops.flock
+	first.ops.flock = func(fd, operation int) error {
+		err := flock(fd, operation)
+		if err == nil && operation&unix.LOCK_UN == 0 {
+			locked <- struct{}{}
+			<-release
+		}
+		return err
+	}
+	type outcome struct {
+		result EditResult
+		err    error
+	}
+	firstResult, secondResult := make(chan outcome, 1), make(chan outcome, 1)
+	go func() {
+		result, err := first.Edit(context.Background(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("one")}})
+		firstResult <- outcome{result, err}
+	}()
+	<-locked
+	go func() {
+		result, err := second.Edit(context.Background(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("two")}})
+		secondResult <- outcome{result, err}
+	}()
+	close(release)
+	a, b := <-firstResult, <-secondResult
+	if a.err != nil || !a.result.Changed || !errors.Is(b.err, ErrOperationConflict) || b.result != (EditResult{}) {
+		t.Fatalf("outcomes = %#v %#v", a, b)
+	}
+	bytes, err := os.ReadFile(name)
+	if err != nil || string(bytes) != "one" {
+		t.Fatalf("winner bytes = %q, %v", bytes, err)
 	}
 }
