@@ -618,6 +618,172 @@ func TestWindowsOperationFilesTreeLimitsAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestWindowsOperationFilesEditPrepublishValidSwap(t *testing.T) {
+	files, repo := testWindowsOperationFiles(t)
+	defer files.Close()
+	name := filepath.Join(repo, "editable", "a")
+	if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name+".next", []byte("swap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := editProof(t, files, "editable/a")
+	candidate, cleanup, postverify := windows.Handle(0), 0, 0
+	create, cleanupHandle := files.ops.create, files.ops.cleanup
+	files.ops.create = func(parent windows.Handle, temp string) (windows.Handle, error) {
+		h, err := create(parent, temp)
+		candidate = h
+		return h, err
+	}
+	files.ops.cleanup = func(h windows.Handle) error {
+		if h == candidate {
+			cleanup++
+		}
+		return cleanupHandle(h)
+	}
+	files.ops.beforePublish = func() error { return os.Rename(name+".next", name) }
+	files.ops.afterPublish = func() error { postverify++; return nil }
+	got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+	if !errors.Is(err, ErrOperationUnavailable) || got != (EditResult{}) || cleanup != 1 || postverify != 0 {
+		t.Fatalf("result=%#v err=%v cleanup=%d postverify=%d", got, err, cleanup, postverify)
+	}
+	bytes, readErr := os.ReadFile(name)
+	after := editProof(t, files, "editable/a")
+	if readErr != nil || string(bytes) != "swap" || after.id == before.id {
+		t.Fatalf("swapped bytes=%q err=%v before=%#v after=%#v", bytes, readErr, before.id, after.id)
+	}
+}
+
+func TestWindowsOperationFilesEditPublicationBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*windowsOperationFiles, string)
+	}{
+		{"directory-flush", func(f *windowsOperationFiles, _ string) {
+			flush, calls := f.ops.flush, 0
+			f.ops.flush = func(h windows.Handle) error {
+				calls++
+				if calls == 2 {
+					return windows.ERROR_WRITE_FAULT
+				}
+				return flush(h)
+			}
+		}},
+		{"postverify-content", func(f *windowsOperationFiles, _ string) {
+			phase := false
+			f.ops.afterPublish = func() error { phase = true; return nil }
+			read := f.ops.read
+			f.ops.read = func(h windows.Handle, b []byte, n *uint32) error {
+				err := read(h, b, n)
+				if phase && err == nil && *n > 0 {
+					b[0] ^= 1
+				}
+				return err
+			}
+		}},
+		{"postverify-attributes", func(f *windowsOperationFiles, _ string) {
+			phase := false
+			f.ops.afterPublish = func() error { phase = true; return nil }
+			info := f.ops.info
+			f.ops.info = func(h windows.Handle) (windows.ByHandleFileInformation, error) {
+				got, err := info(h)
+				if phase {
+					got.FileAttributes |= windows.FILE_ATTRIBUTE_SYSTEM
+				}
+				return got, err
+			}
+		}},
+		{"unlock", func(f *windowsOperationFiles, _ string) {
+			f.ops.unlock = func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error {
+				return windows.ERROR_WRITE_FAULT
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testWindowsOperationFiles(t)
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tt.set(files, name)
+			got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, ErrOperationPublication) || got != (EditResult{}) {
+				t.Fatalf("result=%#v err=%v", got, err)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != "new" {
+				t.Fatalf("published bytes=%q err=%v", bytes, readErr)
+			}
+			if tt.name == "unlock" {
+				if _, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("new")), nil); !errors.Is(err, ErrOperationUnavailable) {
+					t.Fatalf("poisoned=%v", err)
+				}
+				if err := files.Close(); err != nil {
+					t.Fatal(err)
+				}
+				fresh := testWindowsOperationFilesAt(t, repo)
+				defer fresh.Close()
+				if got, err := fresh.Read(t.Context(), "editable/a", 0, 3); err != nil || got.DataSHA256 != DigestSHA256([]byte("new")) {
+					t.Fatalf("fresh=%#v err=%v", got, err)
+				}
+			} else {
+				defer files.Close()
+			}
+		})
+	}
+}
+
+func TestWindowsOperationFilesEditTwoAuthoritiesLockFileEx(t *testing.T) {
+	first, repo := testWindowsOperationFiles(t)
+	defer first.Close()
+	second := testWindowsOperationFilesAt(t, repo)
+	defer second.Close()
+	name := filepath.Join(repo, "editable", "a")
+	if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	locked, release := make(chan struct{}), make(chan struct{})
+	first.ops.beforePublish = func() error { close(locked); <-release; return nil }
+	type outcome struct {
+		result EditResult
+		err    error
+	}
+	one, two := make(chan outcome, 1), make(chan outcome, 1)
+	go func() {
+		result, err := first.Edit(context.Background(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("one")}})
+		one <- outcome{result, err}
+	}()
+	<-locked
+	go func() {
+		result, err := second.Edit(context.Background(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("two")}})
+		two <- outcome{result, err}
+	}()
+	close(release)
+	a, b := <-one, <-two
+	if a.err != nil || !a.result.Changed || !errors.Is(b.err, ErrOperationConflict) || b.result != (EditResult{}) {
+		t.Fatalf("outcomes=%#v %#v", a, b)
+	}
+	bytes, err := os.ReadFile(name)
+	if err != nil || string(bytes) != "one" {
+		t.Fatalf("winner=%q err=%v", bytes, err)
+	}
+	for _, entry := range mustReadDir(t, filepath.Join(repo, "editable")) {
+		if strings.HasPrefix(entry.Name(), ".direct-windows-") {
+			t.Fatalf("residue=%q", entry.Name())
+		}
+	}
+}
+
+func mustReadDir(t *testing.T, path string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
 func editProof(t *testing.T, f *windowsOperationFiles, logical string) windowsDestinationProof {
 	t.Helper()
 	h, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
@@ -646,6 +812,12 @@ func testWindowsOperationFiles(t *testing.T) (*windowsOperationFiles, string) {
 	if err := os.Mkdir(editable, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return testWindowsOperationFilesAt(t, repo), repo
+}
+
+func testWindowsOperationFilesAt(t *testing.T, repo string) *windowsOperationFiles {
+	t.Helper()
+	editable := filepath.Join(repo, "editable")
 	lease, err := reviewtransaction.OpenRepositoryIdentityLease(t.Context(), repo)
 	if err != nil {
 		t.Fatal(err)
@@ -658,7 +830,7 @@ func testWindowsOperationFiles(t *testing.T) (*windowsOperationFiles, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return files.(*windowsOperationFiles), repo
+	return files.(*windowsOperationFiles)
 }
 
 func TestWindowsOperationTempNamesArePrivateAndDistinct(t *testing.T) {

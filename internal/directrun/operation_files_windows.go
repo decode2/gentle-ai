@@ -21,13 +21,14 @@ import (
 // windowsOperationFiles retains a root handle. Paths are only ever resolved
 // from that handle; the configured spelling is not reused as authority.
 type windowsOperationFiles struct {
-	mu      sync.Mutex
-	lease   *reviewtransaction.RepositoryIdentityLease
-	root    windows.Handle
-	rootID  windowsFileID
-	allowed []windowsAllowedRoot
-	closed  bool
-	ops     windowsOperationFileOps
+	mu       sync.Mutex
+	lease    *reviewtransaction.RepositoryIdentityLease
+	root     windows.Handle
+	rootID   windowsFileID
+	allowed  []windowsAllowedRoot
+	closed   bool
+	poisoned bool
+	ops      windowsOperationFileOps
 }
 
 type windowsAllowedRoot struct {
@@ -50,27 +51,29 @@ type windowsDestinationProof struct {
 }
 
 type windowsOperationFileOps struct {
-	open        func(windows.Handle, string, bool, uint32) (windows.Handle, error)
-	create      func(windows.Handle, string) (windows.Handle, error)
-	tempName    func() (string, error)
-	info        func(windows.Handle) (windows.ByHandleFileInformation, error)
-	read        func(windows.Handle, []byte, *uint32) error
-	afterRead   func() error
-	write       func(windows.Handle, []byte, *uint32) error
-	flush       func(windows.Handle) error
-	security    func(windows.Handle, windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error)
-	setSecurity func(windows.Handle, windows.SECURITY_INFORMATION, *windows.SID, *windows.ACL) error
-	createEvent func() (windows.Handle, error)
-	closeEvent  func(windows.Handle) error
-	lock        func(windows.Handle, uint32, uint32, uint32, uint32, *windows.Overlapped) error
-	cancel      func(windows.Handle, *windows.Overlapped) error
-	wait        func(windows.Handle, uint32) (uint32, error)
-	result      func(windows.Handle, *windows.Overlapped, *uint32, bool) error
-	unlock      func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error
-	publish     func(windows.Handle, windows.Handle, string, windowsDestinationProof) error
-	cleanup     func(windows.Handle) error
-	enumerate   func(windows.Handle) ([]os.DirEntry, error)
-	close       func(windows.Handle) error
+	open          func(windows.Handle, string, bool, uint32) (windows.Handle, error)
+	create        func(windows.Handle, string) (windows.Handle, error)
+	tempName      func() (string, error)
+	info          func(windows.Handle) (windows.ByHandleFileInformation, error)
+	read          func(windows.Handle, []byte, *uint32) error
+	afterRead     func() error
+	write         func(windows.Handle, []byte, *uint32) error
+	flush         func(windows.Handle) error
+	security      func(windows.Handle, windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error)
+	setSecurity   func(windows.Handle, windows.SECURITY_INFORMATION, *windows.SID, *windows.ACL) error
+	createEvent   func() (windows.Handle, error)
+	closeEvent    func(windows.Handle) error
+	lock          func(windows.Handle, uint32, uint32, uint32, uint32, *windows.Overlapped) error
+	cancel        func(windows.Handle, *windows.Overlapped) error
+	wait          func(windows.Handle, uint32) (uint32, error)
+	result        func(windows.Handle, *windows.Overlapped, *uint32, bool) error
+	unlock        func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error
+	publish       func(windows.Handle, windows.Handle, string, windowsDestinationProof) error
+	beforePublish func() error
+	afterPublish  func() error
+	cleanup       func(windows.Handle) error
+	enumerate     func(windows.Handle) ([]os.DirEntry, error)
+	close         func(windows.Handle) error
 }
 
 func newWindowsOperationFileOps() windowsOperationFileOps {
@@ -95,7 +98,7 @@ func newWindowsOperationFileOps() windowsOperationFileOps {
 		createEvent: func() (windows.Handle, error) { return windows.CreateEvent(nil, 0, 0, nil) },
 		closeEvent:  windows.CloseHandle,
 		lock:        windows.LockFileEx, cancel: windows.CancelIoEx, wait: windows.WaitForSingleObject, result: windows.GetOverlappedResult, unlock: windows.UnlockFileEx,
-		publish: windowsRenameRelative, cleanup: windowsDelete,
+		publish: windowsRenameRelative, beforePublish: func() error { return nil }, afterPublish: func() error { return nil }, cleanup: windowsDelete,
 		enumerate: func(h windows.Handle) ([]os.DirEntry, error) {
 			var duplicate windows.Handle
 			if err := windows.DuplicateHandle(windows.CurrentProcess(), h, windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
@@ -172,7 +175,7 @@ func (f *windowsOperationFiles) Close() error {
 }
 
 func (f *windowsOperationFiles) valid(ctx context.Context) error {
-	if f == nil || f.closed || f.lease == nil || f.lease.Validate(ctx) != nil {
+	if f == nil || f.closed || f.poisoned || f.lease == nil || f.lease.Validate(ctx) != nil {
 		return ErrOperationUnavailable
 	}
 	info, err := f.ops.info(f.root)
@@ -333,6 +336,9 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 	if err != nil || windowsIdentity(current) != proof.id || current.FileSizeLow != info.FileSizeLow || !f.targetMatches(h, proof) {
 		return EditResult{}, ErrOperationConflict
 	}
+	if f.ops.beforePublish() != nil {
+		return EditResult{}, ErrOperationUnavailable
+	}
 	if err := f.ops.publish(candidate, parent, name, proof); err != nil {
 		if errors.Is(err, errWindowsPublicationUnknown) {
 			published = true
@@ -348,6 +354,9 @@ func (f *windowsOperationFiles) Edit(ctx context.Context, logical, base string, 
 		return EditResult{}, ErrOperationPublication
 	}
 	if f.ops.flush(parent) != nil {
+		return EditResult{}, ErrOperationPublication
+	}
+	if f.ops.afterPublish() != nil {
 		return EditResult{}, ErrOperationPublication
 	}
 	verify, err := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
@@ -605,7 +614,7 @@ func (f *windowsOperationFiles) lockTarget(ctx context.Context, handle windows.H
 		unlockErr := f.ops.unlock(handle, 0, 1, 0, &windows.Overlapped{})
 		closeErr := f.ops.closeEvent(event)
 		if unlockErr != nil || closeErr != nil {
-			f.closed = true
+			f.poisoned = true
 			return ErrOperationUnavailable
 		}
 		return nil
