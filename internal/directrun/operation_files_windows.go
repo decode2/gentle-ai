@@ -55,6 +55,7 @@ type windowsOperationFileOps struct {
 	tempName    func() (string, error)
 	info        func(windows.Handle) (windows.ByHandleFileInformation, error)
 	read        func(windows.Handle, []byte, *uint32) error
+	afterRead   func() error
 	write       func(windows.Handle, []byte, *uint32) error
 	flush       func(windows.Handle) error
 	security    func(windows.Handle, windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error)
@@ -81,9 +82,10 @@ func newWindowsOperationFileOps() windowsOperationFileOps {
 			var info windows.ByHandleFileInformation
 			return info, windows.GetFileInformationByHandle(h, &info)
 		},
-		read:  func(h windows.Handle, data []byte, done *uint32) error { return windows.ReadFile(h, data, done, nil) },
-		write: func(h windows.Handle, data []byte, done *uint32) error { return windows.WriteFile(h, data, done, nil) },
-		flush: windows.FlushFileBuffers,
+		read:      func(h windows.Handle, data []byte, done *uint32) error { return windows.ReadFile(h, data, done, nil) },
+		afterRead: func() error { return nil },
+		write:     func(h windows.Handle, data []byte, done *uint32) error { return windows.WriteFile(h, data, done, nil) },
+		flush:     windows.FlushFileBuffers,
 		security: func(h windows.Handle, mask windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error) {
 			return windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, mask)
 		},
@@ -205,8 +207,22 @@ func (f *windowsOperationFiles) Read(ctx context.Context, logical string, offset
 		return ReadResult{}, ErrOperationLimit
 	}
 	bytes, err := f.readExact(h, int(before.FileSizeLow))
+	if err == nil {
+		err = f.ops.afterRead()
+	}
 	after, statErr := f.ops.info(h)
-	if err != nil || statErr != nil || windowsIdentity(before) != windowsIdentity(after) || before.FileSizeLow != after.FileSizeLow || f.valid(ctx) != nil {
+	if err != nil || statErr != nil || !windowsReadMetadataMatches(before, after) || f.valid(ctx) != nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
+	// A retained file handle survives a pathname replacement. Reopen from the
+	// retained parent so the result cannot describe a file no longer at the name.
+	reopened, reopenErr := f.openFile(logical, windows.FILE_GENERIC_READ|windows.READ_CONTROL)
+	if reopenErr != nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
+	reopenedInfo, reopenedInfoErr := f.ops.info(reopened)
+	closeErr := f.ops.close(reopened)
+	if reopenedInfoErr != nil || closeErr != nil || windowsIdentity(before) != windowsIdentity(reopenedInfo) {
 		return ReadResult{}, ErrOperationUnavailable
 	}
 	if offset > int64(len(bytes)) {
@@ -658,6 +674,12 @@ func windowsRenameRelative(source, parent windows.Handle, name string, expected 
 }
 func windowsIdentity(info windows.ByHandleFileInformation) windowsFileID {
 	return windowsFileID{info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow}
+}
+func windowsReadMetadataMatches(before, after windows.ByHandleFileInformation) bool {
+	return windowsIdentity(before) == windowsIdentity(after) &&
+		before.FileAttributes == after.FileAttributes &&
+		before.FileSizeHigh == after.FileSizeHigh && before.FileSizeLow == after.FileSizeLow &&
+		before.CreationTime == after.CreationTime && before.LastAccessTime == after.LastAccessTime && before.LastWriteTime == after.LastWriteTime
 }
 func windowsDirectory(info windows.ByHandleFileInformation) bool {
 	return info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
