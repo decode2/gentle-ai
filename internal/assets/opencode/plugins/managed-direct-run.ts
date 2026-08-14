@@ -25,11 +25,11 @@ function native(cwd: string, args: string[], input: string): Promise<unknown> {
   })
 }
 
-function record(value: unknown): { identity: string; revision: string; handoff: { revision: string } } {
+function record(value: unknown): { identity: string; revision: string; repositoryIdentity?: string; handoff: { revision: string } } {
   if (!value || typeof value !== "object") throw new Error("managed direct operation returned an invalid response")
   const v = value as Record<string, unknown>, handoff = v.handoff as Record<string, unknown>
   if (typeof v.identity !== "string" || typeof v.revision !== "string" || !handoff || typeof handoff.revision !== "string") throw new Error("managed direct operation returned an invalid response")
-  return { identity: v.identity, revision: v.revision, handoff: { revision: handoff.revision } }
+	return { identity: v.identity, revision: v.revision, repositoryIdentity: typeof v.repository_identity === "string" ? v.repository_identity : undefined, handoff: { revision: handoff.revision } }
 }
 
 function response(value: unknown, operation: string, requestID: string): unknown {
@@ -64,11 +64,17 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
         const issued = record(await native(cwd, ["direct-run", "issue", "--cwd", cwd], args.handoff))
         const created = await client.session.create({ body: { parentID: context.sessionID } })
         if (!created.data || created.data.parentID !== context.sessionID) throw new Error("managed direct launch denied")
-        const registered = record(await native(cwd, ["direct-run", "register", "--cwd", cwd], JSON.stringify({ identity: issued.identity, revision: issued.revision, parent_session_id: context.sessionID, parent_call_id: launch.parentCallID, agent: expected })))
-        children.set(created.data.id, { parentSessionID: context.sessionID, parentCallID: launch.parentCallID, agent: expected, identity: registered.identity, handoffRevision: issued.handoff.revision, bindingRevision: registered.revision })
+        let registered: ReturnType<typeof record> | undefined
         try {
+          registered = record(await native(cwd, ["direct-run", "register", "--cwd", cwd], JSON.stringify({ identity: issued.identity, revision: issued.revision, parent_session_id: context.sessionID, parent_call_id: launch.parentCallID, agent: expected })))
+          children.set(created.data.id, { parentSessionID: context.sessionID, parentCallID: launch.parentCallID, agent: expected, identity: registered.identity, handoffRevision: issued.handoff.revision, bindingRevision: registered.revision })
           await client.session.prompt({ path: { id: created.data.id }, body: { agent: expected, parts: [{ type: "text", text: "Use only direct_read, direct_edit, and direct_inspect. Native tools and delegation are denied." }] } })
-        } catch { children.delete(created.data.id); throw new Error("managed direct launch denied") }
+        } catch {
+          children.delete(created.data.id)
+		  if (registered?.repositoryIdentity) await native(cwd, ["direct-run", "abort", "--cwd", cwd], JSON.stringify({ schema: "gentle-ai.direct-run-abort/v1", identity: registered.identity, revision: registered.revision, handoff_revision: issued.handoff.revision, parent_session_id: context.sessionID, parent_call_id: launch.parentCallID, agent: expected, repository_identity: registered.repositoryIdentity, child_session_id: "", reason: "cancelled" })).catch(() => undefined)
+          await client.session.delete({ path: { id: created.data.id } }).catch(() => undefined)
+          throw new Error("managed direct launch denied")
+        }
         return { title: "Managed direct child launched", output: created.data.id }
       } }),
       direct_read: tool({ description: "Read an admitted direct-run file", args: { path: tool.schema.string(), offset: tool.schema.number(), limit: tool.schema.number() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_read", args)) } }),
