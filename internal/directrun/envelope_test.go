@@ -90,19 +90,52 @@ func TestResponseWire(t *testing.T) {
 }
 
 func TestOperationResultBuilders(t *testing.T) {
-	read := NewReadResult([]byte{0, 1, 2}, []byte{1, 2}, 1, 3, false)
+	read, err := NewReadResult([]byte{0, 1, 2}, []byte{1, 2}, 1, 3, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if read.DataSHA256 != DigestSHA256([]byte{0, 1, 2}) || read.ContentB64 != base64.StdEncoding.EncodeToString([]byte{1, 2}) {
 		t.Fatalf("read result = %#v", read)
 	}
 	if _, err := read.CanonicalJSON(); err != nil {
 		t.Fatal(err)
 	}
-	inspect := NewInspectResult([]byte("a\nb\n"))
+	inspect, err := NewInspectResult([]byte("a\nb\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := inspect.CanonicalJSON(); err != nil {
 		t.Fatal(err)
 	}
-	if got := NewEditResult([]byte("x"), false).Publication; got != "unchanged" {
+	edit, err := NewEditResult([]byte("x"), false, "unchanged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := edit.Publication; got != "unchanged" {
 		t.Fatalf("publication = %q", got)
+	}
+}
+
+func TestOperationResultBuildersRejectMalformedInputs(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		call func() error
+	}{
+		{"negative offset", func() error { _, err := NewReadResult([]byte("a"), nil, -1, 1, true); return err }},
+		{"total mismatch", func() error { _, err := NewReadResult([]byte("a"), []byte("a"), 0, 2, true); return err }},
+		{"offset past total", func() error { _, err := NewReadResult([]byte("a"), nil, 2, 1, true); return err }},
+		{"content mismatch", func() error { _, err := NewReadResult([]byte("ab"), []byte("b"), 0, 2, true); return err }},
+		{"truncation mismatch", func() error { _, err := NewReadResult([]byte("a"), []byte("a"), 0, 1, true); return err }},
+		{"invalid inspect utf8", func() error { _, err := NewInspectResult([]byte{0xff}); return err }},
+		{"oversize inspect", func() error { _, err := NewInspectResult(make([]byte, maxContent+1)); return err }},
+		{"invalid edit combination", func() error { _, err := NewEditResult([]byte("x"), false, "published"); return err }},
+		{"unknown publication", func() error { _, err := NewEditResult([]byte("x"), true, "unknown"); return err }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.call() == nil {
+				t.Fatal("accepted malformed result")
+			}
+		})
 	}
 }
 

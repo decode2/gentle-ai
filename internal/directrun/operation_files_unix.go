@@ -41,6 +41,7 @@ type unixOperationFileOps struct {
 	fstatAt  func(int, string, *unix.Stat_t, int) error
 	read     func(int, []byte) (int, error)
 	write    func(int, []byte) (int, error)
+	dup      func(int) (int, error)
 	temp     func(int, uint32, uint32, uint32) (string, int, error)
 	unlinkAt func(int, string, int) error
 	seek     func(int, int64, int) (int64, error)
@@ -55,7 +56,7 @@ type unixOperationFileOps struct {
 }
 
 func newUnixOperationFileOps() unixOperationFileOps {
-	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, fstatAt: unix.Fstatat, read: unix.Read, write: unix.Write, temp: operationTemp, unlinkAt: unix.Unlinkat, seek: unix.Seek, readDir: unix.ReadDirent, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
+	return unixOperationFileOps{openAt: unix.Openat, fstat: unix.Fstat, fstatAt: unix.Fstatat, read: unix.Read, write: unix.Write, dup: unix.Dup, temp: operationTemp, unlinkAt: unix.Unlinkat, seek: unix.Seek, readDir: unix.ReadDirent, flock: unix.Flock, fchown: unix.Fchown, fchmod: unix.Fchmod, fsync: unix.Fsync, rename: unix.Renameat, close: unix.Close, postRead: func() error { return nil }}
 }
 
 func newPlatformOperationFiles(ctx context.Context, lease *reviewtransaction.RepositoryIdentityLease, handoff Handoff) (operationFiles, error) {
@@ -165,7 +166,11 @@ func (f *linuxOperationFiles) Read(ctx context.Context, logical string, offset, 
 	if offset > int64(len(contents)) {
 		offset = int64(len(contents))
 	}
-	return NewReadResult(contents, contents[offset:end], offset, int64(len(contents)), end < int64(len(contents))), nil
+	result, resultErr := NewReadResult(contents, contents[offset:end], offset, int64(len(contents)), offset != 0 || end != int64(len(contents)))
+	if resultErr != nil {
+		return ReadResult{}, ErrOperationUnavailable
+	}
+	return result, nil
 }
 
 func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, replacements []Replacement) (out EditResult, err error) {
@@ -199,8 +204,9 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if err != nil {
 		return EditResult{}, ErrOperationUnavailable
 	}
+	sourceClosed := false
 	defer func() {
-		if f.ops.close(fd) != nil && err == nil {
+		if !sourceClosed && f.ops.close(fd) != nil && err == nil {
 			out = EditResult{}
 			if published {
 				err = ErrOperationPublication
@@ -217,11 +223,25 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if details.uid != uint32(unix.Geteuid()) || details.mode&0o7000 != 0 {
 		return EditResult{}, ErrOperationUnavailable
 	}
-	if err := lockTarget(ctx, fd, f.ops.flock); err != nil {
+	lockFD, lockErr := f.ops.dup(fd)
+	if lockErr != nil {
+		return EditResult{}, ErrOperationUnavailable
+	}
+	defer func() {
+		if f.ops.close(lockFD) != nil && err == nil {
+			out = EditResult{}
+			if published {
+				err = ErrOperationPublication
+			} else {
+				err = ErrOperationUnavailable
+			}
+		}
+	}()
+	if err := lockTarget(ctx, lockFD, f.ops.flock); err != nil {
 		return EditResult{}, err
 	}
 	defer func() {
-		if f.ops.flock(fd, unix.LOCK_UN) != nil && err == nil {
+		if f.ops.flock(lockFD, unix.LOCK_UN) != nil && err == nil {
 			out = EditResult{}
 			if published {
 				err = ErrOperationPublication
@@ -239,7 +259,11 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 		return EditResult{}, ErrOperationLimit
 	}
 	if string(final) == string(old) {
-		return NewEditResult(old, false), nil
+		result, resultErr := NewEditResult(old, false, "unchanged")
+		if resultErr != nil {
+			return EditResult{}, ErrOperationUnavailable
+		}
+		return result, nil
 	}
 	tmp, temp, err := f.ops.temp(parent, details.mode&0o777, details.uid, details.gid)
 	if err != nil {
@@ -273,6 +297,10 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if currentStatErr != nil || currentReadErr != nil || currentAfterErr != nil || currentCloseErr != nil || !sameOperationIdentity(before, currentBefore) || !sameOperationIdentity(currentBefore, currentAfter) || DigestSHA256(current) != base {
 		return EditResult{}, ErrOperationConflict
 	}
+	sourceClosed = true
+	if f.ops.close(fd) != nil {
+		return EditResult{}, ErrOperationUnavailable
+	}
 	// A noncooperative external rename can still race in the interval before renameat.
 	if ops.rename(parent, tmp, parent, name) != nil {
 		return EditResult{}, ErrOperationUnavailable
@@ -292,7 +320,11 @@ func (f *linuxOperationFiles) Edit(ctx context.Context, logical, base string, re
 	if statErr != nil || readErr != nil || afterErr != nil || closeErr != nil || !sameOperationIdentity(verifyBefore, verifyAfter) || DigestSHA256(verifyBytes) != DigestSHA256(final) || f.valid(ctx) != nil {
 		return EditResult{}, ErrOperationPublication
 	}
-	return NewEditResult(final, true), nil
+	result, resultErr := NewEditResult(final, true, "published")
+	if resultErr != nil {
+		return EditResult{}, ErrOperationPublication
+	}
+	return result, nil
 }
 
 func (f *linuxOperationFiles) Tree(ctx context.Context, logical string) (InspectResult, error) {
@@ -328,7 +360,11 @@ func (f *linuxOperationFiles) Tree(ctx context.Context, logical string) (Inspect
 	if f.valid(ctx) != nil {
 		return InspectResult{}, ErrOperationUnavailable
 	}
-	return NewInspectResult(evidence), nil
+	result, resultErr := NewInspectResult(evidence)
+	if resultErr != nil {
+		return InspectResult{}, ErrOperationUnavailable
+	}
+	return result, nil
 }
 
 // Tree evidence uses one unambiguous line per entry: "f /path", "d /path", or "l /path".

@@ -505,6 +505,127 @@ func TestOperationFilesEditReportsUnknownAfterRenameAndUnlockFailures(t *testing
 	}
 }
 
+func TestOperationFilesEditPhaseFaultsHaveExactBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  func(*linuxOperationFiles, *int, *int)
+	}{
+		{"fchown", func(f *linuxOperationFiles, chmod, write *int) {
+			f.ops.fchown = func(int, int, int) error { return unix.EIO }
+			f.ops.fchmod = func(int, uint32) error { *chmod++; return nil }
+			f.ops.write = func(int, []byte) (int, error) { *write++; return 0, nil }
+		}},
+		{"fchmod", func(f *linuxOperationFiles, chmod, write *int) {
+			f.ops.fchmod = func(int, uint32) error { *chmod++; return unix.EIO }
+			f.ops.write = func(int, []byte) (int, error) { *write++; return 0, nil }
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			files, repo := testOperationFiles(t)
+			defer files.Close()
+			name := filepath.Join(repo, "editable", "a")
+			if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			candidateFD, closes, unlinks, chmod, writes := -1, 0, 0, 0, 0
+			files.ops.temp = func(parent int, mode, uid, gid uint32) (string, int, error) {
+				fd, err := unix.Openat(parent, ".direct-phase", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC, mode)
+				candidateFD = fd
+				return ".direct-phase", fd, err
+			}
+			closeFD, unlinkAt := files.ops.close, files.ops.unlinkAt
+			files.ops.close = func(fd int) error {
+				if fd == candidateFD {
+					closes++
+				}
+				return closeFD(fd)
+			}
+			files.ops.unlinkAt = func(parent int, path string, flags int) error {
+				if path == ".direct-phase" {
+					unlinks++
+				}
+				return unlinkAt(parent, path, flags)
+			}
+			tt.set(files, &chmod, &writes)
+			got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+			if !errors.Is(err, ErrOperationUnavailable) || got != (EditResult{}) || closes != 1 || unlinks != 1 || writes != 0 {
+				t.Fatalf("result=%#v err=%v close=%d unlink=%d chmod=%d write=%d", got, err, closes, unlinks, chmod, writes)
+			}
+			if tt.name == "fchown" && chmod != 0 {
+				t.Fatalf("fchmod after fchown failure = %d", chmod)
+			}
+			if tt.name == "fchmod" && chmod != 1 {
+				t.Fatalf("fchmod calls = %d", chmod)
+			}
+			bytes, readErr := os.ReadFile(name)
+			if readErr != nil || string(bytes) != "old" {
+				t.Fatalf("bytes=%q err=%v", bytes, readErr)
+			}
+		})
+	}
+}
+
+func TestOperationFilesEditSourceCloseAndPostpublishReadback(t *testing.T) {
+	t.Run("source close before rename", func(t *testing.T) {
+		files, repo := testOperationFiles(t)
+		defer files.Close()
+		name := filepath.Join(repo, "editable", "a")
+		if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		source := -1
+		dup := files.ops.dup
+		files.ops.dup = func(fd int) (int, error) { source = fd; return dup(fd) }
+		closeFD := files.ops.close
+		files.ops.close = func(fd int) error {
+			if fd == source {
+				_ = closeFD(fd)
+				return unix.EIO
+			}
+			return closeFD(fd)
+		}
+		got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+		if !errors.Is(err, ErrOperationUnavailable) || got != (EditResult{}) {
+			t.Fatalf("result=%#v err=%v", got, err)
+		}
+		bytes, readErr := os.ReadFile(name)
+		if readErr != nil || string(bytes) != "old" {
+			t.Fatalf("bytes=%q err=%v", bytes, readErr)
+		}
+	})
+	t.Run("postpublish digest mismatch", func(t *testing.T) {
+		files, repo := testOperationFiles(t)
+		defer files.Close()
+		name := filepath.Join(repo, "editable", "a")
+		if err := os.WriteFile(name, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		published := false
+		rename := files.ops.rename
+		files.ops.rename = func(oldFD int, oldName string, newFD int, newName string) error {
+			err := rename(oldFD, oldName, newFD, newName)
+			published = err == nil
+			return err
+		}
+		read := files.ops.read
+		files.ops.read = func(fd int, data []byte) (int, error) {
+			n, err := read(fd, data)
+			if published && n > 0 {
+				data[0] ^= 1
+			}
+			return n, err
+		}
+		got, err := files.Edit(t.Context(), "editable/a", DigestSHA256([]byte("old")), []Replacement{{Start: 0, End: 3, Text: []byte("new")}})
+		if !errors.Is(err, ErrOperationPublication) || got != (EditResult{}) {
+			t.Fatalf("result=%#v err=%v", got, err)
+		}
+		bytes, readErr := os.ReadFile(name)
+		if readErr != nil || string(bytes) != "new" {
+			t.Fatalf("bytes=%q err=%v", bytes, readErr)
+		}
+	})
+}
+
 func TestOperationFilesTreeCanonicalEvidence(t *testing.T) {
 	files, repo := testOperationFiles(t)
 	defer files.Close()
