@@ -21,7 +21,33 @@ type RecordStorageLock struct {
 	mu        sync.Mutex
 	authority *RecordStorageAuthority
 	data      *secureWindowsData
+	ops       recordStorageLockOps
+	closeData func(*secureWindowsData) error
 	closed    bool
+}
+
+// recordStorageLockOps stays per lock so one lock's native completion cannot
+// affect another lock's lifecycle.
+type recordStorageLockOps struct {
+	createEvent func() (windows.Handle, error)
+	closeEvent  func(windows.Handle) error
+	lock        func(windows.Handle, uint32, uint32, uint32, uint32, *windows.Overlapped) error
+	cancel      func(windows.Handle, *windows.Overlapped) error
+	wait        func(windows.Handle, uint32) (uint32, error)
+	result      func(windows.Handle, *windows.Overlapped, *uint32, bool) error
+	unlock      func(windows.Handle, uint32, uint32, uint32, *windows.Overlapped) error
+}
+
+func newRecordStorageLockOps() recordStorageLockOps {
+	return recordStorageLockOps{
+		createEvent: func() (windows.Handle, error) { return windows.CreateEvent(nil, 0, 0, nil) },
+		closeEvent:  windows.CloseHandle,
+		lock:        windows.LockFileEx,
+		cancel:      windows.CancelIoEx,
+		wait:        windows.WaitForSingleObject,
+		result:      windows.GetOverlappedResult,
+		unlock:      windows.UnlockFileEx,
+	}
 }
 
 // OpenRecordStorageLock opens the private, retained lock file for an authority.
@@ -47,7 +73,7 @@ func OpenRecordStorageLock(ctx context.Context, authority *RecordStorageAuthorit
 		}
 		return nil, recordStorageLockError(ctx)
 	}
-	return &RecordStorageLock{authority: authority, data: data}, nil
+	return &RecordStorageLock{authority: authority, data: data, ops: newRecordStorageLockOps(), closeData: func(data *secureWindowsData) error { return data.Close() }}, nil
 }
 
 // Lock retains the local mutex until its single-use release function runs.
@@ -67,12 +93,22 @@ func (l *RecordStorageLock) Lock(ctx context.Context) (func() error, error) {
 		l.mu.Unlock()
 		return nil, err
 	}
-	if err := lockRecordStorageRange(ctx, l.data.handle); err != nil {
+	ops := l.ops
+	result := lockRecordStorageRange(ctx, l.data.handle, ops)
+	if result.uncertain {
+		l.poisonLocked()
 		l.mu.Unlock()
-		return nil, err
+		return nil, result.err
+	}
+	if result.err != nil {
+		l.mu.Unlock()
+		return nil, result.err
 	}
 	if err := l.validate(ctx); err != nil {
-		_ = unlockRecordStorageRange(l.data.handle)
+		if unlockRecordStorageRange(l.data.handle, ops) != nil {
+			l.poisonLocked()
+			err = recordStorageLockError(ctx)
+		}
 		l.mu.Unlock()
 		return nil, err
 	}
@@ -85,7 +121,10 @@ func (l *RecordStorageLock) Lock(ctx context.Context) (func() error, error) {
 			return errRecordStorageUnavailable
 		}
 		used = true
-		err := unlockRecordStorageRange(l.data.handle)
+		err := unlockRecordStorageRange(l.data.handle, ops)
+		if err != nil {
+			l.poisonLocked()
+		}
 		l.mu.Unlock()
 		if err != nil {
 			return errRecordStorageUnavailable
@@ -116,7 +155,8 @@ func (l *RecordStorageLock) validate(ctx context.Context) error {
 	return nil
 }
 
-// Close waits for a lease before releasing the retained handle.
+// Close waits for a lease before releasing the retained handle. closed is
+// committed first because CloseHandle has an uncertain, non-retryable outcome.
 func (l *RecordStorageLock) Close() error {
 	if l == nil {
 		return nil
@@ -127,10 +167,25 @@ func (l *RecordStorageLock) Close() error {
 		return nil
 	}
 	l.closed = true
-	if l.data == nil || l.data.handle == 0 || l.data.Close() != nil {
+	if l.data == nil || l.data.handle == 0 || l.closeLocked() != nil {
 		return errRecordStorageUnavailable
 	}
 	return nil
+}
+
+func (l *RecordStorageLock) poisonLocked() {
+	l.closed = true
+	_ = l.closeLocked()
+}
+
+func (l *RecordStorageLock) closeLocked() error {
+	if l.data == nil || l.data.handle == 0 {
+		return nil
+	}
+	if l.closeData != nil {
+		return l.closeData(l.data)
+	}
+	return l.data.Close()
 }
 
 func createRecordStorageLock(ctx context.Context, parent windows.Handle, want *secureWindowsChildID) (*secureWindowsData, error) {
@@ -177,17 +232,26 @@ func validRecordStorageLock(data *secureWindowsData) bool {
 	return data != nil && data.valid() && localWindowsDiskHandle(data.handle)
 }
 
-func lockRecordStorageRange(ctx context.Context, handle windows.Handle) error {
-	event, err := windows.CreateEvent(nil, 0, 0, nil)
+type recordStorageLockRangeResult struct {
+	err       error
+	uncertain bool
+}
+
+func lockRecordStorageRange(ctx context.Context, handle windows.Handle, ops recordStorageLockOps) recordStorageLockRangeResult {
+	event, err := ops.createEvent()
 	if err != nil {
-		return errRecordStorageUnavailable
+		return recordStorageLockRangeResult{err: errRecordStorageUnavailable}
 	}
-	// Completion is consumed before close; an event-close error cannot revoke an acquired range.
-	defer windows.CloseHandle(event)
 	overlapped := &windows.Overlapped{HEvent: event}
-	err = windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped)
+	finish := func(primary error, acquired bool) recordStorageLockRangeResult {
+		if ops.closeEvent(event) != nil && acquired {
+			return clearRecordStorageLockRange(handle, ops, errRecordStorageUnavailable)
+		}
+		return recordStorageLockRangeResult{err: primary}
+	}
+	err = ops.lock(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped)
 	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) {
-		return recordStorageLockError(ctx)
+		return finish(recordStorageLockError(ctx), false)
 	}
 	if errors.Is(err, windows.ERROR_IO_PENDING) {
 		stop := make(chan struct{})
@@ -197,47 +261,68 @@ func lockRecordStorageRange(ctx context.Context, handle windows.Handle) error {
 			defer close(finished)
 			select {
 			case <-ctx.Done():
-				cancelErr = windows.CancelIoEx(handle, overlapped)
+				cancelErr = ops.cancel(handle, overlapped)
 			case <-stop:
 			}
 		}()
-		status, waitErr := windows.WaitForSingleObject(event, windows.INFINITE)
+		status, waitErr := ops.wait(event, windows.INFINITE)
 		close(stop)
 		<-finished
 		var bytes uint32
 		if waitErr != nil || status != windows.WAIT_OBJECT_0 {
 			if ctx.Err() == nil {
-				cancelErr = windows.CancelIoEx(handle, overlapped)
+				cancelErr = ops.cancel(handle, overlapped)
 			}
-			err = windows.GetOverlappedResult(handle, overlapped, &bytes, true)
-			if err == nil {
-				_ = unlockRecordStorageRange(handle)
-			}
+			err = ops.result(handle, overlapped, &bytes, true)
 			if ctx.Err() != nil {
-				return ctx.Err()
+				if err == nil || !errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
+					result := clearRecordStorageLockRange(handle, ops, ctx.Err())
+					return finish(result.err, false)
+				}
+				return finish(ctx.Err(), false)
 			}
-			if cancelErr != nil && !errors.Is(cancelErr, windows.ERROR_NOT_FOUND) {
-				return errRecordStorageUnavailable
+			if err == nil || !errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
+				result := clearRecordStorageLockRange(handle, ops, errRecordStorageUnavailable)
+				return finish(result.err, false)
 			}
-			return errRecordStorageUnavailable
+			_ = cancelErr // Completion, not cancellation, determines ownership.
+			return finish(errRecordStorageUnavailable, false)
 		}
-		err = windows.GetOverlappedResult(handle, overlapped, &bytes, false)
+		// Cancellation is authoritative only after the exact request's completion
+		// has been consumed. ERROR_NOT_FOUND only means completion won the race.
+		err = ops.result(handle, overlapped, &bytes, false)
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if err == nil {
-			_ = unlockRecordStorageRange(handle)
+			result := clearRecordStorageLockRange(handle, ops, ctxErr)
+			return finish(result.err, false)
+		} else if errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
+			return finish(ctxErr, false)
+		} else {
+			result := clearRecordStorageLockRange(handle, ops, ctxErr)
+			return finish(result.err, false)
 		}
-		return ctxErr
 	}
 	if err != nil {
-		return errRecordStorageUnavailable
+		if errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
+			return finish(errRecordStorageUnavailable, false)
+		}
+		result := clearRecordStorageLockRange(handle, ops, errRecordStorageUnavailable)
+		return finish(result.err, false)
 	}
-	return nil
+	return finish(nil, true)
 }
 
-func unlockRecordStorageRange(handle windows.Handle) error {
+func clearRecordStorageLockRange(handle windows.Handle, ops recordStorageLockOps, primary error) recordStorageLockRangeResult {
+	if unlockRecordStorageRange(handle, ops) != nil {
+		return recordStorageLockRangeResult{err: primary, uncertain: true}
+	}
+	return recordStorageLockRangeResult{err: primary}
+}
+
+func unlockRecordStorageRange(handle windows.Handle, ops recordStorageLockOps) error {
 	// UnlockFileEx matches the byte range and offset, not the acquisition OVERLAPPED.
-	return windows.UnlockFileEx(handle, 0, 1, 0, &windows.Overlapped{})
+	return ops.unlock(handle, 0, 1, 0, &windows.Overlapped{})
 }
 
 func recordStorageLockError(ctx context.Context) error {
