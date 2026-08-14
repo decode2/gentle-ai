@@ -17,11 +17,12 @@ type RecordOutcome string
 type AbortReason string
 
 const (
-	RecordIssued   RecordState = "issued"
-	RecordBound    RecordState = "bound"
-	RecordConsumed RecordState = "consumed"
-	RecordFinished RecordState = "finished"
-	RecordAborted  RecordState = "aborted"
+	RecordIssued     RecordState = "issued"
+	RecordRegistered RecordState = "registered"
+	RecordBound      RecordState = "bound"
+	RecordConsumed   RecordState = "consumed"
+	RecordFinished   RecordState = "finished"
+	RecordAborted    RecordState = "aborted"
 
 	OutcomeSucceeded RecordOutcome = "succeeded"
 	OutcomeFailed    RecordOutcome = "failed"
@@ -44,7 +45,11 @@ type Record struct {
 	Handoff            Handoff       `json:"handoff"`
 	State              RecordState   `json:"state"`
 	SessionID          string        `json:"session_id,omitempty"`
+	ParentSessionID    string        `json:"parent_session_id,omitempty"`
+	ParentCallID       string        `json:"parent_call_id,omitempty"`
+	Agent              string        `json:"agent,omitempty"`
 	RepositoryIdentity string        `json:"repository_identity,omitempty"`
+	ExpiresAt          int64         `json:"expires_at,omitempty"`
 	Outcome            RecordOutcome `json:"outcome,omitempty"`
 	AbortReason        AbortReason   `json:"abort_reason,omitempty"`
 	Output             *WorkerOutput `json:"output,omitempty"`
@@ -62,25 +67,36 @@ func IssueRecord(h Handoff) (Record, error) {
 	return sealRecord(Record{Schema: RecordSchema, Handoff: copy, State: RecordIssued})
 }
 
-func (r Record) Bind(expected Digest, sessionID, repositoryIdentity string) (Record, error) {
+func (r Record) Register(expected Digest, parentSessionID, parentCallID, agent, repositoryIdentity string, expiresAt, now int64) (Record, error) {
 	if err := r.expected(expected); err != nil {
 		return Record{}, err
 	}
 	if r.State != RecordIssued {
 		return Record{}, transitionError(r.State)
 	}
-	if !recordIdentifier(sessionID) || !recordIdentifier(repositoryIdentity) {
+	if !recordIdentifier(parentSessionID) || !recordIdentifier(parentCallID) || !recordAgent(agent) || !recordIdentifier(repositoryIdentity) || expiresAt <= now || expiresAt-now > 300 {
 		return Record{}, ErrInvalidTransition
 	}
-	r.State, r.SessionID, r.RepositoryIdentity = RecordBound, sessionID, repositoryIdentity
+	r.State, r.ParentSessionID, r.ParentCallID, r.Agent, r.RepositoryIdentity, r.ExpiresAt = RecordRegistered, parentSessionID, parentCallID, agent, repositoryIdentity, expiresAt
 	return sealRecord(r)
 }
 
-func (r Record) Consume(expected Digest) (Record, error) {
+func (r Record) Bind(expected Digest, parentSessionID, parentCallID, agent, sessionID, repositoryIdentity string, now int64) (Record, error) {
 	if err := r.expected(expected); err != nil {
 		return Record{}, err
 	}
-	if r.State != RecordBound {
+	if r.State != RecordRegistered || r.ExpiresAt <= now || !recordIdentifier(sessionID) || parentSessionID != r.ParentSessionID || parentCallID != r.ParentCallID || agent != r.Agent || repositoryIdentity != r.RepositoryIdentity {
+		return Record{}, transitionError(r.State)
+	}
+	r.State, r.SessionID = RecordBound, sessionID
+	return sealRecord(r)
+}
+
+func (r Record) Consume(expected Digest, sessionID, repositoryIdentity string) (Record, error) {
+	if err := r.expected(expected); err != nil {
+		return Record{}, err
+	}
+	if r.State != RecordBound || sessionID != r.SessionID || repositoryIdentity != r.RepositoryIdentity {
 		return Record{}, transitionError(r.State)
 	}
 	r.State = RecordConsumed
@@ -113,7 +129,7 @@ func (r Record) Abort(expected Digest, reason AbortReason) (Record, error) {
 	if err := r.expected(expected); err != nil {
 		return Record{}, err
 	}
-	if r.State != RecordIssued && r.State != RecordBound && r.State != RecordConsumed {
+	if r.State != RecordIssued && r.State != RecordRegistered && r.State != RecordBound && r.State != RecordConsumed {
 		return Record{}, transitionError(r.State)
 	}
 	if reason != AbortCancelled && reason != AbortRevoked && reason != AbortExpired {
@@ -180,10 +196,15 @@ func (r Record) validateContent() error {
 	if r.Schema != RecordSchema || r.Handoff.Validate() != nil {
 		return ErrCorruptRecord
 	}
-	bound := recordIdentifier(r.SessionID) && recordIdentifier(r.RepositoryIdentity)
+	registered := recordIdentifier(r.ParentSessionID) && recordIdentifier(r.ParentCallID) && recordAgent(r.Agent) && recordIdentifier(r.RepositoryIdentity) && r.ExpiresAt > 0
+	bound := registered && recordIdentifier(r.SessionID)
 	switch r.State {
 	case RecordIssued:
-		if bound || r.Outcome != "" || r.AbortReason != "" || r.Output != nil {
+		if r.SessionID != "" || r.ParentSessionID != "" || r.ParentCallID != "" || r.Agent != "" || r.RepositoryIdentity != "" || r.ExpiresAt != 0 || r.Outcome != "" || r.AbortReason != "" || r.Output != nil {
+			return ErrCorruptRecord
+		}
+	case RecordRegistered:
+		if !registered || r.SessionID != "" || r.Outcome != "" || r.AbortReason != "" || r.Output != nil {
 			return ErrCorruptRecord
 		}
 	case RecordBound, RecordConsumed:
@@ -195,7 +216,7 @@ func (r Record) validateContent() error {
 			return ErrCorruptRecord
 		}
 	case RecordAborted:
-		if r.Outcome != "" || r.Output != nil || (r.AbortReason != AbortCancelled && r.AbortReason != AbortRevoked && r.AbortReason != AbortExpired) {
+		if r.Outcome != "" || r.Output != nil || (r.AbortReason != AbortCancelled && r.AbortReason != AbortRevoked && r.AbortReason != AbortExpired) || (r.ParentSessionID != "" && !registered) {
 			return ErrCorruptRecord
 		}
 	default:
@@ -241,6 +262,13 @@ func recordRevision(r Record) (Digest, error) {
 }
 func recordIdentifier(value string) bool {
 	return len(value) > 0 && len(value) <= 128 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n/\\")
+}
+func recordAgent(value string) bool {
+	if value == WorkerRole {
+		return true
+	}
+	const prefix = WorkerRole + "-"
+	return strings.HasPrefix(value, prefix) && recordIdentifier(strings.TrimPrefix(value, prefix))
 }
 func copyHandoff(h Handoff) (Handoff, error) {
 	payload, err := h.CanonicalJSON()

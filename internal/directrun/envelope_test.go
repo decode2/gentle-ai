@@ -9,10 +9,10 @@ import (
 
 func TestRequestWire(t *testing.T) {
 	valid := map[string]string{
-		"read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a/b","offset":0,"limit":1}}`,
-		"edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[]}}`,
-		"exec":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"command_index":0,"timeout_ms":1}}`,
-		"inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"query":"tree","path":"a"}}`,
+		"read":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a/b","offset":0,"limit":1}}`,
+		"edit":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_edit","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a","base_sha256":"0000000000000000000000000000000000000000000000000000000000000000","replacements":[]}}`,
+		"exec":    `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_exec","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"command_index":0,"timeout_ms":1}}`,
+		"inspect": `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_inspect","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"query":"tree","path":"a"}}`,
 	}
 	for n, in := range valid {
 		t.Run(n, func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
 }
 
 func TestEnvelopeRejectsStructuralMalice(t *testing.T) {
-	valid := `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","payload":{"path":"a","offset":0,"limit":1}}`
+	valid := `{"schema":"gentle-ai.direct-operation/v1","identity":"i","operation":"direct_read","request_id":"r","session_id":"s","handoff_revision":"h","binding_revision":"b","parent_session_id":"p","parent_call_id":"c","agent":"gentle-worker","payload":{"path":"a","offset":0,"limit":1}}`
 	for _, in := range [][]byte{
 		[]byte(strings.Replace(valid, `"request_id":"r"`, `"request_id":null`, 1)),
 		[]byte(strings.Replace(valid, `"payload":{`, `"unknown":1,"payload":{`, 1)),

@@ -75,11 +75,18 @@ func (s *Store) Read(ctx context.Context, identity string) (Record, error) {
 	bytes, err := s.backend.Read(ctx, s.recordKey(identity))
 	return s.decode(identity, bytes, err)
 }
-func (s *Store) Bind(ctx context.Context, identity string, expected Digest, sessionID, repositoryIdentity string) (Record, error) {
-	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) { return r.Bind(expected, sessionID, repositoryIdentity) })
+func (s *Store) Register(ctx context.Context, identity string, expected Digest, parentSessionID, parentCallID, agent, repositoryIdentity string, expiresAt, now int64) (Record, error) {
+	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) {
+		return r.Register(expected, parentSessionID, parentCallID, agent, repositoryIdentity, expiresAt, now)
+	})
 }
-func (s *Store) Consume(ctx context.Context, identity string, expected Digest) (Record, error) {
-	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) { return r.Consume(expected) })
+func (s *Store) Bind(ctx context.Context, identity string, expected Digest, parentSessionID, parentCallID, agent, sessionID, repositoryIdentity string, now int64) (Record, error) {
+	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) {
+		return r.Bind(expected, parentSessionID, parentCallID, agent, sessionID, repositoryIdentity, now)
+	})
+}
+func (s *Store) Consume(ctx context.Context, identity string, expected Digest, sessionID, repositoryIdentity string) (Record, error) {
+	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) { return r.Consume(expected, sessionID, repositoryIdentity) })
 }
 func (s *Store) Finish(ctx context.Context, identity string, expected Digest, outcome RecordOutcome, output WorkerOutput) (Record, error) {
 	return s.mutate(ctx, identity, expected, func(r Record) (Record, error) { return r.Finish(expected, outcome, output) })

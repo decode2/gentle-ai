@@ -14,13 +14,15 @@ func recordFor(t *testing.T) Record {
 }
 func bindFor(t *testing.T, r Record) Record {
 	t.Helper()
-	next, err := r.Bind(r.Revision, "session-3026", "repo-3026")
+	registered, err := r.Register(r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
+	check(t, err)
+	next, err := registered.Bind(registered.Revision, "parent-3026", "call-3026", "gentle-worker", "session-3026", "repo-3026", 100)
 	check(t, err)
 	return next
 }
 func consumeFor(t *testing.T, r Record) Record {
 	t.Helper()
-	next, err := r.Consume(r.Revision)
+	next, err := r.Consume(r.Revision, "session-3026", "repo-3026")
 	check(t, err)
 	return next
 }
@@ -52,7 +54,7 @@ func TestRecordLifecycle(t *testing.T) {
 				t.Fatalf("Finish = %#v, %v", got, err)
 			}
 			unchanged(t, r, before)
-			if _, err := got.Consume(got.Revision); !errors.Is(err, ErrReplay) {
+			if _, err := got.Consume(got.Revision, "session-3026", "repo-3026"); !errors.Is(err, ErrReplay) {
 				t.Fatalf("replay = %v", err)
 			}
 		})
@@ -63,7 +65,12 @@ func TestRecordAbortAndTransitions(t *testing.T) {
 		name   string
 		record func(*testing.T) Record
 	}{
-		{"issued", recordFor}, {"bound", func(t *testing.T) Record { return bindFor(t, recordFor(t)) }}, {"consumed", func(t *testing.T) Record { return consumeFor(t, bindFor(t, recordFor(t))) }},
+		{"issued", recordFor}, {"registered", func(t *testing.T) Record {
+			r := recordFor(t)
+			x, err := r.Register(r.Revision, "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100)
+			check(t, err)
+			return x
+		}}, {"bound", func(t *testing.T) Record { return bindFor(t, recordFor(t)) }}, {"consumed", func(t *testing.T) Record { return consumeFor(t, bindFor(t, recordFor(t))) }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := tt.record(t)
@@ -79,10 +86,10 @@ func TestRecordAbortAndTransitions(t *testing.T) {
 		})
 	}
 	r := recordFor(t)
-	if _, err := r.Bind(Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), "session-3026", "repo-3026"); !errors.Is(err, ErrRevisionMismatch) {
+	if _, err := r.Register(Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), "parent-3026", "call-3026", "gentle-worker", "repo-3026", 101, 100); !errors.Is(err, ErrRevisionMismatch) {
 		t.Fatalf("stale bind = %v", err)
 	}
-	if _, err := bindFor(t, r).Consume(r.Revision); !errors.Is(err, ErrRevisionMismatch) {
+	if _, err := bindFor(t, r).Consume(r.Revision, "session-3026", "repo-3026"); !errors.Is(err, ErrRevisionMismatch) {
 		t.Fatalf("stale consume = %v", err)
 	}
 	if _, err := r.Abort(Digest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"), AbortCancelled); !errors.Is(err, ErrRevisionMismatch) {
@@ -91,9 +98,9 @@ func TestRecordAbortAndTransitions(t *testing.T) {
 	if _, err := r.Abort(r.Revision, "other"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("invalid abort = %v", err)
 	}
-	for _, err := range []error{func() error { _, err := r.Consume(r.Revision); return err }(), func() error { _, err := r.Finish(r.Revision, OutcomeSucceeded, testOutput(r.Handoff)); return err }(), func() error {
+	for _, err := range []error{func() error { _, err := r.Consume(r.Revision, "session-3026", "repo-3026"); return err }(), func() error { _, err := r.Finish(r.Revision, OutcomeSucceeded, testOutput(r.Handoff)); return err }(), func() error {
 		b := bindFor(t, r)
-		_, err := b.Bind(b.Revision, "session-3026", "repo-3026")
+		_, err := b.Bind(b.Revision, "parent-3026", "call-3026", "gentle-worker", "session-3026", "repo-3026", 100)
 		return err
 	}()} {
 		if !errors.Is(err, ErrInvalidTransition) {
@@ -111,7 +118,7 @@ func TestRecordRejectsMismatchedOutputAndIdentity(t *testing.T) {
 	if _, err := r.Finish(r.Revision, OutcomeSucceeded, output); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("foreign output = %v", err)
 	}
-	if _, err := recordFor(t).Bind(recordFor(t).Revision, "/session", "repo-3026"); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := recordFor(t).Register(recordFor(t).Revision, "/session", "call-3026", "gentle-worker", "repo-3026", 101, 100); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("path identity = %v", err)
 	}
 }

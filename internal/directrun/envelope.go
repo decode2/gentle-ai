@@ -25,10 +25,15 @@ const (
 
 type Request struct {
 	Schema          string          `json:"schema"`
+	Identity        string          `json:"identity"`
 	Operation       string          `json:"operation"`
 	RequestID       string          `json:"request_id"`
 	SessionID       string          `json:"session_id"`
 	HandoffRevision string          `json:"handoff_revision"`
+	BindingRevision string          `json:"binding_revision"`
+	ParentSessionID string          `json:"parent_session_id"`
+	ParentCallID    string          `json:"parent_call_id"`
+	Agent           string          `json:"agent"`
 	Payload         json.RawMessage `json:"payload"`
 }
 type Response struct {
@@ -48,7 +53,7 @@ var operations = set("direct_read", "direct_edit", "direct_exec", "direct_inspec
 var codes = set("malformed_request", "unsupported_operation", "unauthenticated", "unauthorized", "repository_unavailable", "invalid_path", "not_found", "conflict", "limit_exceeded", "timeout", "cancelled", "backend_failure")
 
 func (r Request) Validate() error {
-	if r.Schema != OperationSchema || !operations[r.Operation] || !opaque(r.RequestID) || !opaque(r.SessionID) || !opaque(r.HandoffRevision) {
+	if r.Schema != OperationSchema || !operations[r.Operation] || !opaque(r.Identity) || !opaque(r.RequestID) || !opaque(r.SessionID) || !opaque(r.HandoffRevision) || !opaque(r.BindingRevision) || !opaque(r.ParentSessionID) || !opaque(r.ParentCallID) || !recordAgent(r.Agent) {
 		return errors.New("invalid direct operation request")
 	}
 	return requestPayload(r.Operation, r.Payload)
@@ -56,7 +61,7 @@ func (r Request) Validate() error {
 func (r Request) CanonicalJSON() ([]byte, error) { return marshal(r, r.Validate) }
 func DecodeRequest(b []byte) (Request, error) {
 	var r Request
-	if err := decodeEnvelope(b, &r, set("schema", "operation", "request_id", "session_id", "handoff_revision", "payload")); err != nil {
+	if err := decodeEnvelope(b, &r, set("schema", "identity", "operation", "request_id", "session_id", "handoff_revision", "binding_revision", "parent_session_id", "parent_call_id", "agent", "payload")); err != nil {
 		return r, err
 	}
 	return r, r.Validate()
