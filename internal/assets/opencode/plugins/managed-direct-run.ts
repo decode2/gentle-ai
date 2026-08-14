@@ -6,7 +6,7 @@ const LAUNCH = "gentle_direct_launch"
 const DIRECT_TOOLS = new Set(["direct_read", "direct_edit", "direct_inspect"])
 const DENIED = new Set(["read", "edit", "bash", "task", "question"])
 const role = (value: unknown): string | undefined =>
-  typeof value === "string" && /^(gentle-worker|gentle-reviewer)(-[A-Za-z0-9_-]+)?$/.test(value) ? value : undefined
+  typeof value === "string" && /^(gentle-worker|gentle-reviewer)(-[A-Za-z0-9][A-Za-z0-9_-]*)?$/.test(value) ? value : undefined
 
 type PendingLaunch = { parentSessionID: string; parentCallID: string }
 type Child = { parentSessionID: string; parentCallID: string; agent: string; identity: string; handoffRevision: string; bindingRevision: string }
@@ -82,6 +82,8 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
       direct_inspect: tool({ description: "Inspect an admitted direct-run tree", args: { query: tool.schema.literal("tree"), path: tool.schema.string().optional() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_inspect", args)) } }),
     },
     "tool.execute.before": async (input, output) => {
+      const managed = children.get(input.sessionID)
+      if (managed && (DENIED.has(input.tool) || input.tool === LAUNCH || DIRECT_TOOLS.has(input.tool) === false)) throw new Error("managed direct tool denied")
       if (input.tool === LAUNCH) {
         const nonce = randomBytes(32).toString("hex")
         launches.set(nonce, { parentSessionID: input.sessionID, parentCallID: input.callID })
@@ -89,8 +91,6 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
         output.args._gentle_nonce = nonce
         return
       }
-      const managed = children.get(input.sessionID)
-      if (managed && (DENIED.has(input.tool) || input.tool === LAUNCH || DIRECT_TOOLS.has(input.tool) === false)) throw new Error("managed direct tool denied")
       if (input.tool === "task" && role(output.args?.subagent_type)) throw new Error("managed direct roles require gentle_direct_launch")
     },
     "permission.ask": async (input, output) => { if (children.has(input.sessionID)) output.status = "deny" },

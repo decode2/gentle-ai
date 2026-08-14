@@ -7140,6 +7140,51 @@ func TestRefreshInstalledOpenCodePluginsSkipsSymlinksAndDirectories(t *testing.T
 	}
 }
 
+// TestManagedDirectRunPluginInstallAndSyncProjection keeps install and sync
+// intentionally asymmetric: install projects the OpenCode-only launcher, while
+// sync refreshes only an existing regular projection and never creates one.
+func TestManagedDirectRunPluginInstallAndSyncProjection(t *testing.T) {
+	openCodeHome := t.TempDir()
+	installed, err := installOpenCodePlugins(openCodeHome, opencodeAdapter())
+	if err != nil {
+		t.Fatalf("installOpenCodePlugins(OpenCode) error = %v", err)
+	}
+	launcher := filepath.Join(openCodeHome, ".config", "opencode", "plugins", "managed-direct-run.ts")
+	if got, err := os.ReadFile(launcher); err != nil || string(got) != assets.MustRead("opencode/plugins/managed-direct-run.ts") {
+		t.Fatalf("OpenCode launcher projection = %q, %v", got, err)
+	}
+	if !installed.Changed || !containsString(installed.Files, launcher) {
+		t.Fatalf("OpenCode install did not report launcher projection: %#v", installed)
+	}
+
+	if err := os.WriteFile(launcher, []byte("// stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := RefreshInstalledOpenCodePlugins(openCodeHome, opencodeAdapter())
+	if err != nil {
+		t.Fatalf("RefreshInstalledOpenCodePlugins(OpenCode) error = %v", err)
+	}
+	if got, err := os.ReadFile(launcher); err != nil || string(got) != assets.MustRead("opencode/plugins/managed-direct-run.ts") || !refreshed.Changed {
+		t.Fatalf("OpenCode sync did not refresh installed launcher: %q, %v, %#v", got, err, refreshed)
+	}
+
+	absentHome := t.TempDir()
+	if result, err := RefreshInstalledOpenCodePlugins(absentHome, opencodeAdapter()); err != nil || result.Changed {
+		t.Fatalf("sync created an absent launcher: %#v, %v", result, err)
+	}
+	if _, err := os.Lstat(filepath.Join(absentHome, ".config", "opencode", "plugins", "managed-direct-run.ts")); !os.IsNotExist(err) {
+		t.Fatalf("sync created absent launcher: %v", err)
+	}
+
+	kiloHome := t.TempDir()
+	if _, err := installOpenCodePlugins(kiloHome, kilocodeAdapter()); err != nil {
+		t.Fatalf("installOpenCodePlugins(Kilo) error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(kiloHome, ".config", "kilo", "plugins", "managed-direct-run.ts")); !os.IsNotExist(err) {
+		t.Fatalf("Kilo received OpenCode-only launcher: %v", err)
+	}
+}
+
 // TestInjectRefreshesStaleArchiveSkillWithFinalStateAuthority proves the
 // freshness path for the sdd-archive instruction fix end to end: an installed
 // config carrying pre-Final-State-Authority skill text must actually receive
