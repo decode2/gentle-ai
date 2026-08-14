@@ -1720,7 +1720,7 @@ func ManagedOpenCodePluginNames() []string {
 func managedOpenCodePluginNames(agent model.AgentID) []string {
 	switch agent {
 	case model.AgentOpenCode:
-		return []string{"model-variants.ts", "review-result-artifacts.ts", "skill-registry.ts"}
+		return []string{"managed-direct-run.ts", "model-variants.ts", "review-result-artifacts.ts", "skill-registry.ts"}
 	case model.AgentKilocode:
 		return []string{"model-variants.ts", "skill-registry.ts"}
 	default:

@@ -264,11 +264,15 @@ func recordIdentifier(value string) bool {
 	return len(value) > 0 && len(value) <= 128 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n/\\")
 }
 func recordAgent(value string) bool {
-	if value == WorkerRole {
+	if value == WorkerRole || value == "gentle-reviewer" {
 		return true
 	}
-	const prefix = WorkerRole + "-"
-	return strings.HasPrefix(value, prefix) && recordIdentifier(strings.TrimPrefix(value, prefix))
+	for _, prefix := range []string{WorkerRole + "-", "gentle-reviewer-"} {
+		if strings.HasPrefix(value, prefix) && recordIdentifier(strings.TrimPrefix(value, prefix)) {
+			return true
+		}
+	}
+	return false
 }
 func copyHandoff(h Handoff) (Handoff, error) {
 	payload, err := h.CanonicalJSON()

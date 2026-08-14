@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -204,6 +205,9 @@ func (r *Runtime) Execute(ctx context.Context, request Request) (Response, error
 	return wire(request, "unauthorized", "request denied"), nil
 }
 func (r *Runtime) executeOperation(ctx context.Context, record Record, request Request) (Response, error) {
+	if strings.HasPrefix(record.Agent, "gentle-reviewer") && request.Operation == "direct_edit" {
+		return wire(request, "unauthorized", "request denied"), nil
+	}
 	if request.Operation == "direct_exec" || request.Operation == "direct_inspect" && !jsonContainsTree(request.Payload) {
 		return wire(request, "unsupported_operation", "operation unsupported"), nil
 	}
