@@ -19,7 +19,7 @@ func TestRuntimeAbortRequiresPersistedPrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	handoff, err := NewHandoff("run-3026", "worker-3026", []string{repo}, "change", []string{"criterion"}, []Command{{Argv: []string{"go", "version"}, CWD: repo}})
+	handoff, err := (Handoff{Schema: HandoffSchema, Identity: "run-3026", Worker: WorkerIdentity{Role: WorkerRole, ID: "worker-3026"}, AllowedEditRoots: []string{repo}, TargetBehavior: "change", AcceptanceCriteria: []string{"criterion"}, Verification: []Command{{Argv: []string{"go", "version"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}

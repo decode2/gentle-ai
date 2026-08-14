@@ -208,7 +208,7 @@ func directRunRepo(t *testing.T) string {
 }
 func directRunHandoff(t *testing.T, repo, identity string) directrun.Handoff {
 	t.Helper()
-	h, err := directrun.NewHandoff(identity, "worker-3026", []string{repo}, "update note", []string{"note updated"}, []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}})
+	h, err := (directrun.Handoff{Schema: directrun.HandoffSchema, Identity: identity, Worker: directrun.WorkerIdentity{Role: directrun.WorkerRole, ID: "worker-3026"}, AllowedEditRoots: []string{repo}, TargetBehavior: "update note", AcceptanceCriteria: []string{"note updated"}, Verification: []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -82,13 +82,6 @@ func (r Response) Validate() error {
 	return nil
 }
 func (r Response) CanonicalJSON() ([]byte, error) { return marshal(r, r.Validate) }
-func DecodeResponse(b []byte) (Response, error) {
-	var r Response
-	if err := decodeEnvelope(b, &r, set("schema", "operation", "request_id", "status", "result", "error")); err != nil {
-		return r, err
-	}
-	return r, r.Validate()
-}
 
 func requestPayload(op string, b json.RawMessage) error {
 	m, err := object(b, map[string]map[string]bool{

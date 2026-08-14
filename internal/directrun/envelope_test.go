@@ -2,6 +2,7 @@ package directrun
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -60,7 +61,7 @@ func TestLogicalPathDevices(t *testing.T) {
 		}
 	}
 }
-func TestResponseWire(t *testing.T) {
+func TestResponseValidation(t *testing.T) {
 	valid := map[string]string{
 		"direct_read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"ok","result":{"data_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","offset":0,"total_size":0,"truncated":false}}`,
 		"direct_edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"unchanged"}}`,
@@ -68,7 +69,7 @@ func TestResponseWire(t *testing.T) {
 		"direct_inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":false}}`,
 	}
 	for op, in := range valid {
-		if _, err := DecodeResponse([]byte(in)); err != nil {
+		if err := validateResponse([]byte(in)); err != nil {
 			t.Errorf("%s: %v", op, err)
 		}
 	}
@@ -83,7 +84,7 @@ func TestResponseWire(t *testing.T) {
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"published"}}`,
 		`{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":true}}`,
 	} {
-		if _, err := DecodeResponse([]byte(in)); err == nil {
+		if err := validateResponse([]byte(in)); err == nil {
 			t.Errorf("accepted %s", in)
 		}
 	}
@@ -139,7 +140,7 @@ func TestOperationResultBuildersRejectMalformedInputs(t *testing.T) {
 	}
 }
 
-func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
+func TestOperationResultValidationRejectsMaliciousRows(t *testing.T) {
 	response := func(operation, result string) []byte {
 		return []byte(fmt.Sprintf(`{"schema":"%s","operation":"%s","request_id":"r","status":"ok","result":%s}`, OperationSchema, operation, result))
 	}
@@ -156,7 +157,7 @@ func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
 		read(fullDigest, "YmM=", 1, 3, true),
 		read(fullDigest, "", 3, 3, true),
 	} {
-		if _, err := DecodeResponse(in); err != nil {
+		if err := validateResponse(in); err != nil {
 			t.Fatalf("rejected canonical result %s: %v", in, err)
 		}
 	}
@@ -180,10 +181,18 @@ func TestOperationResultWireRejectsMaliciousRows(t *testing.T) {
 	}
 	bad = bad[1:]
 	for _, in := range bad {
-		if _, err := DecodeResponse(in); err == nil {
+		if err := validateResponse(in); err == nil {
 			t.Errorf("accepted malicious result %s", in)
 		}
 	}
+}
+
+func validateResponse(payload []byte) error {
+	var response Response
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return err
+	}
+	return response.Validate()
 }
 
 func TestEnvelopeRejectsStructuralMalice(t *testing.T) {

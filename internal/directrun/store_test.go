@@ -166,7 +166,7 @@ func TestStoreRejectsBadReadsAndStableBackendErrors(t *testing.T) {
 	if _, err := s.Read(t.Context(), h.Identity); !errors.Is(err, ErrCorruptRecord) {
 		t.Fatalf("noncanonical = %v", err)
 	}
-	other, err := NewHandoff("other-run", "worker-3026-example", []string{"/workspace/repo"}, "other behavior", []string{"criterion"}, []Command{{[]string{"go", "test", "./internal/directrun"}, "/workspace/repo"}})
+	other, err := (Handoff{Schema: HandoffSchema, Identity: "other-run", Worker: WorkerIdentity{Role: WorkerRole, ID: "worker-3026-example"}, AllowedEditRoots: []string{"/workspace/repo"}, TargetBehavior: "other behavior", AcceptanceCriteria: []string{"criterion"}, Verification: []Command{{Argv: []string{"go", "test", "./internal/directrun"}, CWD: "/workspace/repo"}}}).Seal()
 	check(t, err)
 	otherRecord, err := IssueRecord(other)
 	check(t, err)

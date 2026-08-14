@@ -20,7 +20,7 @@ func TestRunDirectRunJSONLifecycleAndAbortAuthorization(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("before\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := directrun.NewHandoff("run-3026", "worker-3026", []string{repo}, "change note", []string{"note is updated"}, []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}})
+	handoff, err := (directrun.Handoff{Schema: directrun.HandoffSchema, Identity: "run-3026", Worker: directrun.WorkerIdentity{Role: directrun.WorkerRole, ID: "worker-3026"}, AllowedEditRoots: []string{repo}, TargetBehavior: "change note", AcceptanceCriteria: []string{"note is updated"}, Verification: []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}

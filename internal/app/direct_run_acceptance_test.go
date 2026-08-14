@@ -32,7 +32,7 @@ func TestMainBinaryDirectRunAdmissionBoundary(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("before\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := directrun.NewHandoff("binary-run", "worker-3026", []string{repo}, "update note", []string{"note updated"}, []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}})
+	handoff, err := (directrun.Handoff{Schema: directrun.HandoffSchema, Identity: "binary-run", Worker: directrun.WorkerIdentity{Role: directrun.WorkerRole, ID: "worker-3026"}, AllowedEditRoots: []string{repo}, TargetBehavior: "update note", AcceptanceCriteria: []string{"note updated"}, Verification: []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestMainBinaryDirectRunAdmissionBoundary(t *testing.T) {
 		t.Fatalf("stdout is not canonical record: %q", stdout)
 	}
 
-	omitted, err := directrun.NewHandoff("binary-omitted", "worker-3026", []string{repo}, "read note", []string{"note readable"}, []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}})
+	omitted, err := (directrun.Handoff{Schema: directrun.HandoffSchema, Identity: "binary-omitted", Worker: directrun.WorkerIdentity{Role: directrun.WorkerRole, ID: "worker-3026"}, AllowedEditRoots: []string{repo}, TargetBehavior: "read note", AcceptanceCriteria: []string{"note readable"}, Verification: []directrun.Command{{Argv: []string{"go", "version"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}

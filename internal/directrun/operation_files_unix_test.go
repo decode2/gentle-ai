@@ -38,7 +38,7 @@ func testOperationFilesAt(t *testing.T, repo string) *linuxOperationFiles {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := NewHandoff("run-3026-files", "worker-3026-files", []string{root}, "operate files", []string{"operate with retained authority"}, []Command{{Argv: []string{"go", "test", "./internal/directrun"}, CWD: repo}})
+	handoff, err := (Handoff{Schema: HandoffSchema, Identity: "run-3026-files", Worker: WorkerIdentity{Role: WorkerRole, ID: "worker-3026-files"}, AllowedEditRoots: []string{root}, TargetBehavior: "operate files", AcceptanceCriteria: []string{"operate with retained authority"}, Verification: []Command{{Argv: []string{"go", "test", "./internal/directrun"}, CWD: repo}}}).Seal()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,10 +38,7 @@ func TestWindowsOperationFilesReadEditAndTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := NewHandoff("windows-files", "windows-worker", []string{editable}, "operate files", []string{"handle relative"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	handoff := Handoff{Schema: HandoffSchema, Identity: "windows-files", Worker: WorkerIdentity{Role: WorkerRole, ID: "windows-worker"}, AllowedEditRoots: []string{editable}, TargetBehavior: "operate files", AcceptanceCriteria: []string{"handle relative"}}
 	files, err := newOperationFiles(t.Context(), lease, handoff)
 	if err != nil {
 		t.Fatal(err)
@@ -119,10 +116,7 @@ func TestWindowsOperationFilesReadBoundariesAndPathRefusals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := NewHandoff("windows-boundaries", "windows-worker", []string{editable}, "operate files", []string{"handle relative"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	handoff := Handoff{Schema: HandoffSchema, Identity: "windows-boundaries", Worker: WorkerIdentity{Role: WorkerRole, ID: "windows-worker"}, AllowedEditRoots: []string{editable}, TargetBehavior: "operate files", AcceptanceCriteria: []string{"handle relative"}}
 	value := []byte{0, 1, 2, 3}
 	if err := os.WriteFile(filepath.Join(editable, "bytes"), value, 0o600); err != nil {
 		t.Fatal(err)
@@ -822,10 +816,7 @@ func testWindowsOperationFilesAt(t *testing.T, repo string) *windowsOperationFil
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff, err := NewHandoff("windows-read", "windows-worker", []string{editable}, "operate files", []string{"handle relative"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	handoff := Handoff{Schema: HandoffSchema, Identity: "windows-read", Worker: WorkerIdentity{Role: WorkerRole, ID: "windows-worker"}, AllowedEditRoots: []string{editable}, TargetBehavior: "operate files", AcceptanceCriteria: []string{"handle relative"}}
 	files, err := newOperationFiles(t.Context(), lease, handoff)
 	if err != nil {
 		t.Fatal(err)
