@@ -14,6 +14,9 @@ import (
 var (
 	errRecordStorageAuthorityInvalid = errors.New("record storage authority is invalid") // refusal:by-design world-action: callers must retain an unchanged lease and hierarchy before opening a new authority
 	errRecordStorageAuthorityClosed  = errors.New("record storage authority is closed")  // refusal:by-design world-action: callers must open a new authority after closing the old one
+	errRecordStorageMissing          = errors.New("record storage record is missing")    // refusal:by-design world-action: callers must select an existing published record before reading it
+	errRecordStorageTooLarge         = errors.New("record storage record is too large")  // refusal:by-design world-action: callers must request a bounded record size before reading it
+	errRecordStorageChanged          = errors.New("record storage record changed")       // refusal:by-design world-action: callers must retry from a stable published record
 )
 
 const (
@@ -34,6 +37,7 @@ type RecordStorageAuthority struct {
 	gentleAI         *secureWindowsChild
 	records          *secureWindowsChild
 	digest           *secureWindowsChild
+	readHook         func()
 }
 
 // OpenRecordStorageAuthority opens the Git-common-directory-bound hierarchy.
@@ -113,6 +117,10 @@ func (a *RecordStorageAuthority) Validate(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.validateLocked(ctx)
+}
+
+func (a *RecordStorageAuthority) validateLocked(ctx context.Context) error {
 	if a.common == nil {
 		return errRecordStorageAuthorityClosed
 	}
@@ -138,6 +146,87 @@ func (a *RecordStorageAuthority) Validate(ctx context.Context) error {
 		parent, parentID = entry.child.handle, entry.child.id
 	}
 	return nil
+}
+
+// ReadRecord returns a stable, bounded snapshot of one record in the retained
+// digest directory. It intentionally exposes neither a path nor a handle.
+func (a *RecordStorageAuthority) ReadRecord(ctx context.Context, recordDigest string, maxBytes int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a == nil || !recordStorageDigest(recordDigest) {
+		return nil, errRecordStorageAuthorityInvalid
+	}
+	const hardMax = int64(1 << 20)
+	if maxBytes <= 0 || maxBytes > hardMax {
+		return nil, errRecordStorageTooLarge
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.validateLocked(ctx); err != nil {
+		return nil, err
+	}
+	data, err := openSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, recordDigest)
+	if err != nil {
+		return nil, recordStorageReadError(ctx, err)
+	}
+	defer data.Close()
+	first, _, ok := secureWindowsDataInfo(data.handle)
+	if !ok || !data.valid() {
+		return nil, errRecordStorageAuthorityInvalid
+	}
+	size := int64(first.FileSizeHigh)<<32 | int64(first.FileSizeLow)
+	if size < 0 || size > maxBytes {
+		return nil, errRecordStorageTooLarge
+	}
+	if a.readHook != nil {
+		a.readHook()
+	}
+	bytes := make([]byte, int(size))
+	for offset := 0; offset < len(bytes); {
+		var read uint32
+		if err := windows.ReadFile(data.handle, bytes[offset:], &read, nil); err != nil || read == 0 {
+			return nil, errRecordStorageChanged
+		}
+		offset += int(read)
+	}
+	var extra uint32
+	var probe [1]byte
+	if err := windows.ReadFile(data.handle, probe[:], &extra, nil); (err != nil && !errors.Is(err, windows.ERROR_HANDLE_EOF)) || extra != 0 {
+		return nil, errRecordStorageChanged
+	}
+	second, _, ok := secureWindowsDataInfo(data.handle)
+	if !ok || !data.valid() || !recordStorageSameInfo(first, second) {
+		return nil, errRecordStorageChanged
+	}
+	if err := a.validateLocked(ctx); err != nil {
+		return nil, err
+	}
+	current, err := openSecureWindowsChildData(ctx, a.digest.handle, &a.digest.id, recordDigest)
+	if err != nil {
+		return nil, recordStorageReadError(ctx, err)
+	}
+	defer current.Close()
+	if !current.valid() || current.id != data.id {
+		return nil, errRecordStorageChanged
+	}
+	return bytes, nil
+}
+
+func recordStorageSameInfo(a, b windows.ByHandleFileInformation) bool {
+	return a.VolumeSerialNumber == b.VolumeSerialNumber && a.FileIndexHigh == b.FileIndexHigh && a.FileIndexLow == b.FileIndexLow &&
+		a.FileSizeHigh == b.FileSizeHigh && a.FileSizeLow == b.FileSizeLow && a.FileAttributes == b.FileAttributes &&
+		a.CreationTime == b.CreationTime && a.LastAccessTime == b.LastAccessTime && a.LastWriteTime == b.LastWriteTime
+}
+
+func recordStorageReadError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, errSecureWindowsChildMissing) {
+		return errRecordStorageMissing
+	}
+	return errRecordStorageAuthorityInvalid
 }
 
 func (a *RecordStorageAuthority) validCommon() bool {
