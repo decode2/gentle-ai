@@ -28,12 +28,47 @@ type secureWindowsChild struct {
 	id     secureWindowsChildID
 }
 
+// secureWindowsData owns a regular private data-file handle. Like directory
+// children, its native handle and identity never leave this package.
+type secureWindowsData struct {
+	handle windows.Handle
+	id     secureWindowsChildID
+}
+
 func openSecureWindowsChildDirectory(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string) (*secureWindowsChild, error) {
 	return secureWindowsChildDirectory(ctx, parent, want, name, windows.FILE_OPEN)
 }
 
 func createSecureWindowsChildDirectory(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string) (*secureWindowsChild, error) {
 	return secureWindowsChildDirectory(ctx, parent, want, name, windows.FILE_CREATE)
+}
+
+func openSecureWindowsChildData(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string) (*secureWindowsData, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !secureWindowsChildName(name) || !secureWindowsDirectoryHandle(parent, want) {
+		return nil, errSecureWindowsChildInvalid
+	}
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return nil, errSecureWindowsChildInvalid
+	}
+	attributes := &windows.OBJECT_ATTRIBUTES{Length: uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})), RootDirectory: parent, ObjectName: objectName, Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_READ|windows.READ_CONTROL|windows.SYNCHRONIZE, attributes, &status, nil,
+		windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT, 0, 0)
+	if err != nil {
+		return nil, secureWindowsChildError(err)
+	}
+	data := &secureWindowsData{handle: handle}
+	if !secureWindowsDirectoryHandle(parent, want) || !data.valid() {
+		_ = data.Close()
+		return nil, errSecureWindowsChildInvalid
+	}
+	return data, nil
 }
 
 func secureWindowsChildDirectory(ctx context.Context, parent windows.Handle, want *secureWindowsChildID, name string, disposition uint32) (*secureWindowsChild, error) {
@@ -115,6 +150,26 @@ func (child *secureWindowsChild) valid() bool {
 	return child.validLocked()
 }
 
+func (data *secureWindowsData) Close() error {
+	if data == nil || data.handle == 0 {
+		return nil
+	}
+	err := windows.CloseHandle(data.handle)
+	data.handle = 0
+	return err
+}
+
+func (data *secureWindowsData) valid() bool {
+	info, id, ok := secureWindowsDataInfo(data.handle)
+	if !ok || !privateSecureWindowsData(data.handle) {
+		return false
+	}
+	if data.id == (secureWindowsChildID{}) {
+		data.id = id
+	}
+	return data.id == id && info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
 func secureWindowsDirectoryHandle(handle windows.Handle, want *secureWindowsChildID) bool {
 	_, id, ok := secureWindowsDirectoryInfo(handle)
 	return ok && (want == nil || *want == id)
@@ -132,9 +187,26 @@ func secureWindowsDirectoryInfo(handle windows.Handle) (windows.ByHandleFileInfo
 	return info, secureWindowsChildID{info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow}, true
 }
 
+func secureWindowsDataInfo(handle windows.Handle) (windows.ByHandleFileInformation, secureWindowsChildID, bool) {
+	var info windows.ByHandleFileInformation
+	if handle == 0 || windows.GetFileInformationByHandle(handle, &info) != nil {
+		return info, secureWindowsChildID{}, false
+	}
+	fileType, err := windows.GetFileType(handle)
+	if err != nil || fileType != windows.FILE_TYPE_DISK || info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+		return info, secureWindowsChildID{}, false
+	}
+	return info, secureWindowsChildID{info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow}, true
+}
+
 func privateSecureWindowsDirectory(handle windows.Handle) bool {
 	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	return err == nil && privateRARSecurityDescriptorSafe(descriptor, true)
+}
+
+func privateSecureWindowsData(handle windows.Handle) bool {
+	descriptor, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	return err == nil && privateRARSecurityDescriptorSafe(descriptor, false)
 }
 
 func secureWindowsChildError(err error) error {
