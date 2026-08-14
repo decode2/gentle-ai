@@ -190,16 +190,20 @@ func retainedCloseExtraFiles(files []*os.File) {
 }
 
 func retainedProgramFor(name string) (retainedProgram, error) {
+	return retainedProgramForWithKnownPath(name, retainedKnownPath)
+}
+
+func retainedProgramForWithKnownPath(name string, knownPath func(...string) string) (retainedProgram, error) {
 	path := ""
 	switch name {
 	case "go":
 		path = filepath.Join(runtime.GOROOT(), "bin", "go")
 	case "git":
-		path = retainedKnownPath("/usr/bin/git", "/bin/git")
+		path = knownPath("/usr/bin/git", "/bin/git")
 	case "npm":
-		path = retainedKnownPath("/usr/bin/npm", "/bin/npm")
+		path = knownPath("/usr/bin/npm", "/bin/npm")
 	case "pytest":
-		path = retainedKnownPath("/usr/bin/pytest", "/bin/pytest", "/usr/local/bin/pytest")
+		path = knownPath("/usr/bin/pytest", "/bin/pytest", "/usr/local/bin/pytest")
 	default:
 		return retainedProgram{}, errors.New("unsupported target")
 	}
@@ -218,7 +222,7 @@ func retainedProgramFor(name string) (retainedProgram, error) {
 	if stat.Mode&0o111 != 0 && retainedELF(fd) {
 		return retainedProgram{target: fd, script: -1, interpreter: -1, mode: "elf"}, nil
 	}
-	interpreter, err := retainedScriptInterpreter(name, fd)
+	interpreter, err := retainedScriptInterpreterWithKnownPath(name, fd, knownPath)
 	if err != nil {
 		unix.Close(fd)
 		return retainedProgram{}, err
@@ -247,7 +251,7 @@ func retainedELF(fd int) bool {
 	return err == nil && string(header[:]) == "\x7fELF"
 }
 
-func retainedScriptInterpreter(target string, fd int) (int, error) {
+func retainedScriptInterpreterWithKnownPath(target string, fd int, knownPath func(...string) string) (int, error) {
 	buf := make([]byte, retainedShebangLimit)
 	n, err := unix.Pread(fd, buf, 0)
 	if err != nil || !strings.HasPrefix(string(buf[:n]), "#!") {
@@ -260,14 +264,14 @@ func retainedScriptInterpreter(target string, fd int) (int, error) {
 	var interpreter string
 	switch {
 	case target == "npm" && line == "#!/usr/bin/env node":
-		interpreter = retainedKnownPath("/usr/bin/node", "/bin/node")
+		interpreter = knownPath("/usr/bin/node", "/bin/node")
 	case target == "pytest" && (line == "#!/usr/bin/python" || line == "#!/usr/bin/python3"):
-		interpreter = strings.TrimPrefix(line, "#!")
+		interpreter = knownPath(strings.TrimPrefix(line, "#!"))
 	case target == "pytest" && (line == "#!/usr/bin/env python" || line == "#!/usr/bin/env python3"):
 		if line == "#!/usr/bin/env python" {
-			interpreter = retainedKnownPath("/usr/bin/python", "/bin/python")
+			interpreter = knownPath("/usr/bin/python", "/bin/python")
 		} else {
-			interpreter = retainedKnownPath("/usr/bin/python3", "/bin/python3")
+			interpreter = knownPath("/usr/bin/python3", "/bin/python3")
 		}
 	default:
 		return -1, errors.New("unsupported script interpreter")
