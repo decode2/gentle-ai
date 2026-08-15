@@ -4,6 +4,7 @@ package directrun
 
 import (
 	"context"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"os"
@@ -492,16 +493,9 @@ func TestRetainedELFDescriptorsSurvivePathReplacement(t *testing.T) {
 
 func TestRetainedDynamicELFDescriptorsSurvivePathReplacement(t *testing.T) {
 	if testing.Short() {
-		t.Skip("uses a host dynamic ELF")
+		t.Skip("builds a native dynamic ELF fixture")
 	}
-	output := runRetainedReplacement(t, copyRetainedELF(t, t.TempDir(), "target"), "")
-	if output.exitCode != 0 {
-		t.Logf("copied dynamic ELF argv=%q exit=%d stdout=%q stderr=%q", []string{"go", "version"}, output.exitCode, output.stdout, output.stderr)
-		t.Skip("host echo is a multicall utility and requires its own argv[0]")
-	}
-	if got, want := output.stdout, "go version\n"; string(got) != want || len(output.stderr) != 0 {
-		t.Fatalf("copied dynamic ELF stdout=%q stderr=%q", got, output.stderr)
-	}
+	runRetainedReplacement(t, dynamicRetainedFixture(t, t.TempDir(), "target"), "dynamic-fixture\n")
 }
 
 type retainedFixtureOutput struct {
@@ -597,27 +591,44 @@ func main() {
 	return target
 }
 
-func copyRetainedELF(t *testing.T, directory, name string) string {
+func dynamicRetainedFixture(t *testing.T, directory, name string) string {
 	t.Helper()
-	var source string
-	for _, candidate := range []string{"/usr/bin/echo", "/bin/echo"} {
-		if retainedKnownPath(candidate) != "" {
-			source = candidate
-			break
-		}
-	}
-	if source == "" {
-		t.Skip("no system ELF fixture")
-	}
-	data, err := os.ReadFile(source)
+	compiler, err := exec.LookPath("cc")
 	if err != nil {
+		t.Skip("native C compiler unavailable")
+	}
+	source := filepath.Join(directory, "fixture.c")
+	code := `#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char **argv) {
+	if (argc == 2 && strcmp(argv[0], "go") == 0 && strcmp(argv[1], "version") == 0) {
+		fputs("dynamic-fixture\n", stdout);
+		return 0;
+	}
+	fprintf(stderr, "unexpected argv\n");
+	return 23;
+}
+`
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(directory, name)
-	if err := os.WriteFile(target, data, 0o700); err != nil {
-		t.Fatal(err)
+	if output, err := exec.Command(compiler, "-o", target, source).CombinedOutput(); err != nil {
+		t.Skipf("native dynamic ELF unavailable: %v: %s", err, output)
 	}
-	return target
+	file, err := elf.Open(target)
+	if err != nil {
+		t.Skipf("native dynamic ELF unavailable: %v", err)
+	}
+	defer file.Close()
+	for _, program := range file.Progs {
+		if program.Type == elf.PT_INTERP {
+			return target
+		}
+	}
+	t.Skip("native dynamic linking unavailable")
+	return ""
 }
 
 func buildRetainedProductionBinary(t *testing.T, directory, name string) string {
