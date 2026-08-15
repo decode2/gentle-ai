@@ -28,6 +28,14 @@ type retainedProgram struct {
 	mode        string
 }
 
+// retainedCapture is private process evidence. Public direct_exec deliberately
+// reduces it to a digest before crossing its operation boundary.
+type retainedCapture struct {
+	stdout   []byte
+	stderr   []byte
+	exitCode int
+}
+
 // retainedExecTestHook is available only inside this package. Keeping it on the
 // request context makes replacement tests deterministic without global state.
 type retainedExecTestHook struct {
@@ -70,11 +78,7 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	if err != nil {
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
-	defer unix.Close(program.target)
-	if program.script >= 0 {
-		defer unix.Close(program.script)
-		defer unix.Close(program.interpreter)
-	}
+	defer retainedCloseProgram(program)
 	cwd, err := unix.Open(command.CWD, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return ExecResult{}, ErrOperationUnavailable
@@ -84,43 +88,64 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	if relativeErr != nil || relative == ".." || len(relative) >= 3 && relative[:3] == "../" {
 		return ExecResult{}, ErrOperationUnavailable
 	}
+	capture, err := runRetainedProgram(ctx, hook, program, cwd, command.Argv, timeout)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	return NewExecResult(capture.exitCode, append(capture.stdout, capture.stderr...))
+}
+
+func retainedCloseProgram(program retainedProgram) {
+	_ = unix.Close(program.target)
+	if program.script >= 0 {
+		_ = unix.Close(program.script)
+		_ = unix.Close(program.interpreter)
+	}
+}
+
+// runRetainedProgram executes only a descriptor-backed, caller-owned program
+// and cwd. Its bytes never leave this package except to trusted internal users.
+func runRetainedProgram(ctx context.Context, hook retainedExecTestHook, program retainedProgram, cwd int, argv []string, timeout time.Duration) (retainedCapture, error) {
+	if len(argv) == 0 || !retainedAllowedArgv(argv) {
+		return retainedCapture{}, ErrCommandTargetUnsupported
+	}
 	selfPath, err := hook.executable()
 	if err != nil {
-		return ExecResult{}, ErrCommandTargetUnsupported
+		return retainedCapture{}, ErrCommandTargetUnsupported
 	}
 	self, err := unix.Open(selfPath, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return ExecResult{}, ErrCommandTargetUnsupported
+		return retainedCapture{}, ErrCommandTargetUnsupported
 	}
 	defer unix.Close(self)
 	hook.afterRetention()
 	if err := ctx.Err(); err != nil {
-		return ExecResult{}, err
+		return retainedCapture{}, err
 	}
 	// Do not inherit TMPDIR: it is worker-controllable process state.
 	home, err := hook.tempHome()
 	if err != nil {
-		return ExecResult{}, ErrOperationUnavailable
+		return retainedCapture{}, ErrOperationUnavailable
 	}
 
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	child := exec.Command(retainedProcFD(3), append([]string{"_direct-run-retained", program.mode}, command.Argv...)...)
-	child.Args = append([]string{"gentle-ai-retained", "_direct-run-retained", program.mode}, command.Argv...)
+	child := exec.Command(retainedProcFD(3), append([]string{"_direct-run-retained", program.mode}, argv...)...)
+	child.Args = append([]string{"gentle-ai-retained", "_direct-run-retained", program.mode}, argv...)
 	extra, err := hook.extraFiles(self, program, cwd)
 	if err != nil {
 		_ = os.RemoveAll(home)
-		return ExecResult{}, ErrOperationUnavailable
+		return retainedCapture{}, ErrOperationUnavailable
 	}
 	child.ExtraFiles = extra
-	child.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_OPTIONAL_LOCKS=0"}
+	child.Env = retainedEnvironment(home)
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, stderr := &retainedOutput{}, &retainedOutput{}
 	child.Stdout, child.Stderr = stdout, stderr
 	if err := hook.start(child); err != nil {
 		retainedCloseExtraFiles(extra)
 		_ = os.RemoveAll(home)
-		return ExecResult{}, ErrOperationUnavailable
+		return retainedCapture{}, ErrOperationUnavailable
 	}
 	retainedCloseExtraFiles(extra)
 	done := make(chan error, 1)
@@ -141,29 +166,56 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	// Reap the child above, then terminate any remaining in-group processes.
 	if err := syscall.Kill(-child.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		_ = os.RemoveAll(home)
-		return ExecResult{}, ErrOperationUnavailable
+		return retainedCapture{}, ErrOperationUnavailable
 	}
 	if err := os.RemoveAll(home); err != nil {
-		return ExecResult{}, ErrOperationUnavailable
+		return retainedCapture{}, ErrOperationUnavailable
 	}
 	if hook.observeOutput != nil {
 		hook.observeOutput(stdout.bytes(), stderr.bytes())
 	}
 	if stdout.overflow || stderr.overflow {
-		return ExecResult{}, ErrOperationLimit
+		return retainedCapture{}, ErrOperationLimit
 	}
 	if commandContext.Err() != nil {
-		return ExecResult{}, commandContext.Err()
+		return retainedCapture{}, commandContext.Err()
 	}
 	exitCode := 0
 	if waitErr != nil {
 		var exit *exec.ExitError
 		if !errors.As(waitErr, &exit) {
-			return ExecResult{}, ErrOperationUnavailable
+			return retainedCapture{}, ErrOperationUnavailable
 		}
 		exitCode = exit.ExitCode()
 	}
-	return NewExecResult(exitCode, append(stdout.bytes(), stderr.bytes()...))
+	return retainedCapture{stdout: stdout.bytes(), stderr: stderr.bytes(), exitCode: exitCode}, nil
+}
+
+func retainedEnvironment(home string) []string {
+	return []string{
+		"HOME=" + home, "PATH=/usr/bin:/bin", "LC_ALL=C", "XDG_CONFIG_HOME=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_ATTR_NOSYSTEM=1", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0",
+		"GIT_ASKPASS=/bin/false", "SSH_ASKPASS=/bin/false", "GCM_INTERACTIVE=Never",
+		"GIT_PAGER=cat", "PAGER=cat", "GIT_EXTERNAL_DIFF=", "GIT_DIFF_EXTERNAL=",
+		"GIT_NO_REPLACE_OBJECTS=1", "GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+		"GIT_TRACE=0", "GIT_TRACE_PERFORMANCE=0", "GIT_TRACE_PACKET=0", "GIT_TRACE_SETUP=0",
+	}
+}
+
+func retainedAllowedArgv(argv []string) bool {
+	return allowedCommand(argv) || retainedGitArgv(argv)
+}
+
+func retainedGitArgv(argv []string) bool {
+	if len(argv) < 2 || argv[0] != "git" {
+		return false
+	}
+	return strings.Join(argv[1:], "\x00") == "status\x00--porcelain=v2\x00-z\x00--branch" ||
+		strings.Join(argv[1:], "\x00") == "diff\x00--name-status\x00-z\x00--find-renames\x00--no-ext-diff\x00--no-textconv" ||
+		strings.Join(argv[1:], "\x00") == "diff\x00--cached\x00--name-status\x00-z\x00--find-renames\x00--no-ext-diff\x00--no-textconv" ||
+		strings.Join(argv[1:], "\x00") == "diff\x00--numstat\x00-z\x00--find-renames\x00--no-ext-diff\x00--no-textconv" ||
+		strings.Join(argv[1:], "\x00") == "diff\x00--cached\x00--numstat\x00-z\x00--find-renames\x00--no-ext-diff\x00--no-textconv"
 }
 
 func retainedExecHook(ctx context.Context) retainedExecTestHook {
@@ -348,7 +400,7 @@ func RunRetainedHelper() error {
 		return ErrCommandTargetUnsupported
 	}
 	args := os.Args
-	if len(args) < 4 || args[1] != "_direct-run-retained" || !allowedCommand(args[3:]) {
+	if len(args) < 4 || args[1] != "_direct-run-retained" || !retainedAllowedArgv(args[3:]) {
 		return ErrOperationUnsupported
 	}
 	if err := unix.Fchdir(5); err != nil {

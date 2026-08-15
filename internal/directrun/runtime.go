@@ -48,6 +48,7 @@ func DecodeAbortRequest(payload []byte) (AbortRequest, error) {
 // Runtime owns the repository lease, record backend, and file authority for one repository.
 type Runtime struct {
 	lease   *reviewtransaction.RepositoryIdentityLease
+	git     *retainedGitInspector
 	store   *Store
 	backend interface{ Close() error }
 	now     func() time.Time
@@ -69,7 +70,19 @@ func OpenRuntime(ctx context.Context, cwd string) (*Runtime, error) {
 		_ = backend.Close()
 		return nil, err
 	}
-	return &Runtime{lease: lease, store: store, backend: backend, now: time.Now}, nil
+	git, err := newRetainedGitInspector(lease)
+	if err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
+	// Prove the retained Git authority during runtime construction. The parsed
+	// value stays private until direct_inspect gains its explicit contract.
+	if _, err := git.inspect(ctx); err != nil {
+		git.Close()
+		_ = backend.Close()
+		return nil, err
+	}
+	return &Runtime{lease: lease, git: git, store: store, backend: backend, now: time.Now}, nil
 }
 
 func (r *Runtime) Close() error {
@@ -82,6 +95,9 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.git != nil {
+		r.git.Close()
+	}
 	return r.backend.Close()
 }
 func (r *Runtime) Issue(ctx context.Context, handoff Handoff) (Record, error) {
