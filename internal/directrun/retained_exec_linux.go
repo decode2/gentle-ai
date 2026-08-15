@@ -36,6 +36,9 @@ type retainedExecTestHook struct {
 	tempHome       func() (string, error)
 	afterRetention func()
 	observeOutput  func(stdout, stderr []byte)
+	procFS         func() bool
+	extraFiles     func(int, retainedProgram, int) ([]*os.File, error)
+	start          func(*exec.Cmd) error
 }
 
 type retainedExecTestHookKey struct{}
@@ -48,16 +51,19 @@ var defaultRetainedExecTestHook = retainedExecTestHook{
 	},
 	afterRetention: func() {
 	},
+	procFS:     retainedProcFSAvailable,
+	extraFiles: retainedExtraFiles,
+	start:      func(child *exec.Cmd) error { return child.Start() },
 }
 
 // runRetainedCommand never passes a mutable executable or cwd pathname to the
 // child. The helper fchdirs and execs the already-open descriptors.
 func runRetainedCommand(ctx context.Context, repo string, command Command, timeout time.Duration) (ExecResult, error) {
-	hook := defaultRetainedExecTestHook
-	if testHook, ok := ctx.Value(retainedExecTestHookKey{}).(retainedExecTestHook); ok {
-		hook = testHook
+	hook := retainedExecHook(ctx)
+	if err := ctx.Err(); err != nil {
+		return ExecResult{}, err
 	}
-	if command.validate(0) != nil || !retainedProcFSAvailable() {
+	if command.validate(0) != nil || !hook.procFS() {
 		return ExecResult{}, ErrCommandTargetUnsupported
 	}
 	program, err := hook.program(command.Argv[0])
@@ -88,6 +94,9 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	}
 	defer unix.Close(self)
 	hook.afterRetention()
+	if err := ctx.Err(); err != nil {
+		return ExecResult{}, err
+	}
 	// Do not inherit TMPDIR: it is worker-controllable process state.
 	home, err := hook.tempHome()
 	if err != nil {
@@ -98,7 +107,7 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	defer cancel()
 	child := exec.Command(retainedProcFD(3), append([]string{"_direct-run-retained", program.mode}, command.Argv...)...)
 	child.Args = append([]string{"gentle-ai-retained", "_direct-run-retained", program.mode}, command.Argv...)
-	extra, err := retainedExtraFiles(self, program, cwd)
+	extra, err := hook.extraFiles(self, program, cwd)
 	if err != nil {
 		_ = os.RemoveAll(home)
 		return ExecResult{}, ErrOperationUnavailable
@@ -108,7 +117,7 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, stderr := &retainedOutput{}, &retainedOutput{}
 	child.Stdout, child.Stderr = stdout, stderr
-	if err := child.Start(); err != nil {
+	if err := hook.start(child); err != nil {
 		retainedCloseExtraFiles(extra)
 		_ = os.RemoveAll(home)
 		return ExecResult{}, ErrOperationUnavailable
@@ -155,6 +164,39 @@ func runRetainedCommand(ctx context.Context, repo string, command Command, timeo
 		exitCode = exit.ExitCode()
 	}
 	return NewExecResult(exitCode, append(stdout.bytes(), stderr.bytes()...))
+}
+
+func retainedExecHook(ctx context.Context) retainedExecTestHook {
+	hook := defaultRetainedExecTestHook
+	testHook, ok := ctx.Value(retainedExecTestHookKey{}).(retainedExecTestHook)
+	if !ok {
+		return hook
+	}
+	if testHook.executable != nil {
+		hook.executable = testHook.executable
+	}
+	if testHook.program != nil {
+		hook.program = testHook.program
+	}
+	if testHook.tempHome != nil {
+		hook.tempHome = testHook.tempHome
+	}
+	if testHook.afterRetention != nil {
+		hook.afterRetention = testHook.afterRetention
+	}
+	if testHook.observeOutput != nil {
+		hook.observeOutput = testHook.observeOutput
+	}
+	if testHook.procFS != nil {
+		hook.procFS = testHook.procFS
+	}
+	if testHook.extraFiles != nil {
+		hook.extraFiles = testHook.extraFiles
+	}
+	if testHook.start != nil {
+		hook.start = testHook.start
+	}
+	return hook
 }
 
 func retainedExtraFiles(self int, program retainedProgram, cwd int) ([]*os.File, error) {

@@ -247,6 +247,171 @@ func TestRetainedOutputStopsAtBound(t *testing.T) {
 	}
 }
 
+func TestRetainedFaultsCleanPrivateHome(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		hook func(*retainedExecTestHook)
+		want error
+	}{
+		{"procfd", func(h *retainedExecTestHook) { h.procFS = func() bool { return false } }, ErrCommandTargetUnsupported},
+		{"extra-files", func(h *retainedExecTestHook) {
+			h.extraFiles = func(int, retainedProgram, int) ([]*os.File, error) { return nil, errors.New("fault") }
+		}, ErrOperationUnavailable},
+		{"start", func(h *retainedExecTestHook) { h.start = func(*exec.Cmd) error { return errors.New("fault") } }, ErrOperationUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, "home")
+			hook := retainedExecTestHook{tempHome: func() (string, error) { return home, os.Mkdir(home, 0o700) }}
+			test.hook(&hook)
+			ctx := context.WithValue(context.Background(), retainedExecTestHookKey{}, hook)
+			_, err := runRetainedCommand(ctx, root, Command{Argv: []string{"go", "version"}, CWD: root}, time.Second)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error=%v", err)
+			}
+			if _, err := os.Stat(home); !os.IsNotExist(err) {
+				t.Fatalf("HOME remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetainedCancellationBeforeAndDuringRetention(t *testing.T) {
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runRetainedCommand(ctx, root, Command{Argv: []string{"go", "version"}, CWD: root}, time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("before start: %v", err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	called := false
+	ctx = context.WithValue(ctx, retainedExecTestHookKey{}, retainedExecTestHook{
+		afterRetention: func() { cancel() },
+		tempHome:       func() (string, error) { called = true; return "", errors.New("must not run") },
+	})
+	_, err = runRetainedCommand(ctx, root, Command{Argv: []string{"go", "version"}, CWD: root}, time.Second)
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("during retention error=%v home=%v", err, called)
+	}
+}
+
+func TestRetainedOutputFailureIsSanitized(t *testing.T) {
+	root := t.TempDir()
+	target := staticRetainedFaultFixture(t, root, "target")
+	home := filepath.Join(root, "home")
+	var observed retainedFixtureOutput
+	hook := retainedExecTestHook{
+		executable: func() (string, error) { return buildRetainedProductionBinary(t, root, "helper"), nil },
+		program: func(string) (retainedProgram, error) {
+			fd, err := unix.Open(target, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+			return retainedProgram{target: fd, script: -1, interpreter: -1, mode: "elf"}, err
+		},
+		tempHome:      func() (string, error) { return home, os.Mkdir(home, 0o700) },
+		observeOutput: func(stdout, stderr []byte) { observed.stdout, observed.stderr = stdout, stderr },
+	}
+	ctx := context.WithValue(context.Background(), retainedExecTestHookKey{}, hook)
+	result, err := runRetainedCommand(ctx, root, Command{Argv: []string{"go", "version"}, CWD: root}, time.Second)
+	if !errors.Is(err, ErrOperationLimit) || result != (ExecResult{}) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if strings.Contains(err.Error(), "secret") || len(observed.stdout) != retainedOutputLimit || len(observed.stderr) != retainedOutputLimit {
+		t.Fatalf("err=%v stdout=%d stderr=%d", err, len(observed.stdout), len(observed.stderr))
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("HOME remains: %v", err)
+	}
+}
+
+func TestRetainedTimeoutAndCancellationKillProcessGroup(t *testing.T) {
+	for _, mode := range []string{"timeout", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			target := staticRetainedSleepFixture(t, root, "target")
+			helper := buildRetainedProductionBinary(t, root, "helper")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			hook := retainedExecTestHook{
+				executable: func() (string, error) { return helper, nil },
+				program: func(string) (retainedProgram, error) {
+					fd, err := unix.Open(target, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+					return retainedProgram{target: fd, script: -1, interpreter: -1, mode: "elf"}, err
+				},
+			}
+			ctx = context.WithValue(ctx, retainedExecTestHookKey{}, hook)
+			done := make(chan error, 1)
+			go func() {
+				_, err := runRetainedCommand(ctx, root, Command{Argv: []string{"go", "version"}, CWD: root}, 100*time.Millisecond)
+				done <- err
+			}()
+			pidPath := filepath.Join(root, "child-pid")
+			var pid int
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if data, err := os.ReadFile(pidPath); err == nil {
+					_, _ = fmt.Sscanf(string(data), "%d", &pid)
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if pid == 0 {
+				t.Fatal("descendant did not start")
+			}
+			if mode == "cancel" {
+				cancel()
+			}
+			err := <-done
+			if mode == "timeout" && !errors.Is(err, context.DeadlineExceeded) || mode == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v", err)
+			}
+			deadline = time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				if errors.Is(unix.Kill(pid, 0), unix.ESRCH) {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			t.Fatalf("descendant remains: %v", unix.Kill(pid, 0))
+		})
+	}
+}
+
+func staticRetainedSleepFixture(t *testing.T, directory, name string) string {
+	t.Helper()
+	source := filepath.Join(directory, "sleep.go")
+	code := `package main
+import ("os"; "os/exec"; "os/signal"; "strconv"; "syscall"; "time")
+func main() { if os.Getenv("RETAINED_CHILD") == "1" { for { time.Sleep(time.Second) } }; child := exec.Command("/proc/self/exe"); child.Env = append(os.Environ(), "RETAINED_CHILD=1"); if child.Start() != nil { os.Exit(2) }; _ = os.WriteFile("child-pid", []byte(strconv.Itoa(child.Process.Pid)), 0600); signal.Ignore(syscall.SIGTERM); for { time.Sleep(time.Second) } }`
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, name)
+	build := exec.Command("go", "build", "-o", target, source)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build sleep fixture: %v: %s", err, output)
+	}
+	return target
+}
+
+func staticRetainedFaultFixture(t *testing.T, directory, name string) string {
+	t.Helper()
+	source := filepath.Join(directory, "fault.go")
+	code := `package main
+import ("fmt"; "os"; "strings")
+func main() { fmt.Fprint(os.Stdout, strings.Repeat("secret-out", 1<<18)); fmt.Fprint(os.Stderr, strings.Repeat("secret-err", 1<<18)) }`
+	if err := os.WriteFile(source, []byte(code), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(directory, name)
+	build := exec.Command("go", "build", "-o", target, source)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fault fixture: %v: %s", err, output)
+	}
+	return target
+}
+
 func TestRetainedHelperRejectsInvalidDispatch(t *testing.T) {
 	if !retainedProcFSAvailable() {
 		t.Skip("procfd unavailable")
