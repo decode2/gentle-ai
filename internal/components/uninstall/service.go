@@ -1207,10 +1207,7 @@ func removeManagedDirectRunArtifact(settingsPath, pluginsDir string) operation {
 			manual = append(manual, "Preserved managed direct-run plugin: ownership fingerprint or file identity drifted")
 			return false, false, nil
 		}
-		if err := os.Remove(pluginPath); err != nil {
-			return false, false, err
-		}
-		if err := os.Remove(opencode.DirectRoleArtifactRecordPath(pluginsDir)); err != nil {
+		if err := opencode.RemoveManagedDirectRunArtifact(pluginsDir, pluginPath); err != nil {
 			return false, false, err
 		}
 		return true, true, nil

@@ -1,12 +1,15 @@
 package opencode
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/mutationjournal"
 )
 
 const directRoleArtifactRecord = ".gentle-ai-managed-direct-run.json"
@@ -24,13 +27,36 @@ func DirectRoleArtifactRecordPath(pluginsDir string) string {
 	return filepath.Join(pluginsDir, directRoleArtifactRecord)
 }
 
-func WriteDirectRoleArtifactRecord(pluginsDir, pluginPath string, content []byte) error {
+func WriteManagedDirectRunArtifact(pluginsDir, pluginPath string, content []byte) (bool, error) {
+	beforePlugin, pluginErr := os.ReadFile(pluginPath)
+	beforeRecord, recordErr := os.ReadFile(DirectRoleArtifactRecordPath(pluginsDir))
+	journal := mutationjournal.New(pluginsDir)
+	if _, err := journal.WriteWithMode(pluginPath, content, 0o644); err != nil {
+		return false, err
+	}
 	record := DirectRoleArtifactRecord{Schema: "gentle-ai.opencode-direct-role-artifact/v1", Owner: ManagedOwner, Kind: "managed-direct-run-plugin", Path: pluginPath, Mode: 0o644, Fingerprint: artifactFingerprint(content)}
 	data, err := json.Marshal(record)
 	if err != nil {
+		return false, err
+	}
+	recordData := append(data, '\n')
+	if _, err := journal.WriteWithMode(DirectRoleArtifactRecordPath(pluginsDir), recordData, 0o600); err != nil {
+		return false, fmt.Errorf("write direct-role artifact record: %w (rollback: %v)", err, journal.Restore())
+	}
+	return pluginErr != nil || recordErr != nil || !bytes.Equal(beforePlugin, content) || !bytes.Equal(beforeRecord, recordData), nil
+}
+
+// RemoveManagedDirectRunArtifact removes the verified launcher and its record
+// as one journaled unit, restoring the launcher if sidecar removal fails.
+func RemoveManagedDirectRunArtifact(pluginsDir, pluginPath string) error {
+	journal := mutationjournal.New(pluginsDir)
+	if _, err := journal.Remove(pluginPath); err != nil {
 		return err
 	}
-	return os.WriteFile(DirectRoleArtifactRecordPath(pluginsDir), append(data, '\n'), 0o600)
+	if _, err := journal.Remove(DirectRoleArtifactRecordPath(pluginsDir)); err != nil {
+		return fmt.Errorf("remove direct-role artifact record: %w (rollback: %v)", err, journal.Restore())
+	}
+	return nil
 }
 
 func ReadDirectRoleArtifactRecord(pluginsDir string) (DirectRoleArtifactRecord, error) {

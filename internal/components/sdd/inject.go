@@ -1802,6 +1802,26 @@ func RefreshInstalledOpenCodePlugins(homeDir string, adapter agents.Adapter) (In
 
 	for _, name := range managedOpenCodePluginNames(adapter.Agent()) {
 		pluginPath := filepath.Join(pluginsDir, name)
+		content := assets.MustRead("opencode/plugins/" + name)
+		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
+			info, err := os.Lstat(pluginPath)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return InjectionResult{}, fmt.Errorf("stat managed OpenCode plugin %s: %w", pluginPath, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			artifactChanged, err := opencode.WriteManagedDirectRunArtifact(pluginsDir, pluginPath, []byte(content))
+			if err != nil {
+				return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", err)
+			}
+			changed = changed || artifactChanged
+			files = append(files, pluginPath, opencode.DirectRoleArtifactRecordPath(pluginsDir))
+			continue
+		}
 		info, err := os.Lstat(pluginPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -1813,7 +1833,6 @@ func RefreshInstalledOpenCodePlugins(homeDir string, adapter agents.Adapter) (In
 			continue
 		}
 
-		content := assets.MustRead("opencode/plugins/" + name)
 		writeResult, err := filemerge.WriteFileAtomic(pluginPath, []byte(content), 0o644)
 		if err != nil {
 			return InjectionResult{}, fmt.Errorf("refresh managed OpenCode plugin %s: %w", name, err)
@@ -1821,11 +1840,6 @@ func RefreshInstalledOpenCodePlugins(homeDir string, adapter agents.Adapter) (In
 		if writeResult.Changed {
 			changed = true
 			files = append(files, pluginPath)
-		}
-		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
-			if err := opencode.WriteDirectRoleArtifactRecord(pluginsDir, pluginPath, []byte(content)); err != nil {
-				return InjectionResult{}, fmt.Errorf("record direct-run plugin ownership: %w", err)
-			}
 		}
 	}
 
@@ -1890,6 +1904,15 @@ func installOpenCodePlugins(homeDir string, adapter agents.Adapter) (InjectionRe
 	for _, name := range managedOpenCodePluginNames(adapter.Agent()) {
 		content := assets.MustRead("opencode/plugins/" + name)
 		pluginPath := filepath.Join(pluginsDir, name)
+		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
+			artifactChanged, err := opencode.WriteManagedDirectRunArtifact(pluginsDir, pluginPath, []byte(content))
+			if err != nil {
+				return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", err)
+			}
+			changed = changed || artifactChanged
+			files = append(files, pluginPath, opencode.DirectRoleArtifactRecordPath(pluginsDir))
+			continue
+		}
 
 		writeResult, err := filemerge.WriteFileAtomic(pluginPath, []byte(content), 0o644)
 		if err != nil {
@@ -1899,11 +1922,6 @@ func installOpenCodePlugins(homeDir string, adapter agents.Adapter) (InjectionRe
 		files = append(files, pluginPath)
 		if writeResult.Changed {
 			changed = true
-		}
-		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
-			if err := opencode.WriteDirectRoleArtifactRecord(pluginsDir, pluginPath, []byte(content)); err != nil {
-				return InjectionResult{}, fmt.Errorf("record direct-run plugin ownership: %w", err)
-			}
 		}
 	}
 

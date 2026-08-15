@@ -13,7 +13,7 @@ func TestDirectRoleArtifactRecordMatchesExactRegularFile(t *testing.T) {
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDirectRoleArtifactRecord(dir, path, content); err != nil {
+	if _, err := WriteManagedDirectRunArtifact(dir, path, content); err != nil {
 		t.Fatal(err)
 	}
 	record, err := ReadDirectRoleArtifactRecord(dir)
