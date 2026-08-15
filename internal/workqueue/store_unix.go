@@ -5,6 +5,7 @@ package workqueue
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -65,7 +66,7 @@ func (s *Store) Load(graph GraphSnapshot) (State, error) {
 	if err != nil || !safeState(info) {
 		return State{}, fmt.Errorf("load workqueue store: %w", ErrUnsafeStorePath)
 	}
-	data, err := os.ReadFile(s.state)
+	data, err := readState(s.state, info)
 	if err != nil {
 		return State{}, fmt.Errorf("read workqueue state: %w", err)
 	}
@@ -74,6 +75,26 @@ func (s *Store) Load(graph GraphSnapshot) (State, error) {
 		return State{}, fmt.Errorf("read workqueue state: %w", err)
 	}
 	return state, nil
+}
+
+func readState(path string, expected fs.FileInfo) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !os.SameFile(expected, info) || !safeState(info) {
+		return nil, ErrUnsafeStorePath
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func (s *Store) validate() error {

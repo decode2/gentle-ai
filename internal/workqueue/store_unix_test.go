@@ -64,6 +64,21 @@ func TestStoreLoadsCanonicalBoundState(t *testing.T) {
 	}
 }
 
+func TestReadStateRejectsPathReplacedAfterValidation(t *testing.T) {
+	store, graph, _ := storeFixture(t)
+	writeStoreState(t, store, graph)
+	validated, err := os.Lstat(store.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(store.state, filepath.Join(t.TempDir(), "original")); err != nil {
+		t.Fatal(err)
+	}
+	writeStoreState(t, store, graph)
+	_, err = readState(store.state, validated)
+	requireStoreError(t, err, ErrUnsafeStorePath)
+}
+
 func TestStoreRejectsUnsafePaths(t *testing.T) {
 	cases := []struct {
 		name   string
