@@ -54,6 +54,7 @@ func TestEnvelopeRejectsInvalidJSON(t *testing.T) {
 		{"missing item key", strings.Replace(string(valid), `,"status":"pending"`, "", 1), ErrInvalidEnvelope},
 		{"unsupported schema", strings.Replace(string(valid), QueueSchemaVersion, "future", 1), ErrUnsupportedSchema},
 		{"unknown key", strings.Replace(string(valid), `}`, `,"extra":1}`, 1), ErrInvalidEnvelope},
+		{"unknown top-level key", `{"schema":"` + QueueSchemaVersion + `","graph_revision":"` + graph.GraphRevision() + `","items":[{"id":"a","status":"pending"},{"id":"b","status":"pending"}],"revision":"` + state.Revision + `","extra":1}`, ErrInvalidEnvelope},
 		{"case variant key", strings.Replace(string(valid), `"schema"`, `"Schema"`, 1), ErrInvalidEnvelope},
 		{"duplicate key", strings.Replace(string(valid), `"schema":`, `"schema":"x","schema":`, 1), ErrInvalidEnvelope},
 		{"trailing input", string(valid) + `{}`, ErrInvalidEnvelope},
