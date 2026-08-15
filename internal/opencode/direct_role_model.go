@@ -48,8 +48,8 @@ func ResolveDirectRoleModels(request DirectRoleModelRequest) map[string]DirectRo
 func resolveDirectRoleModel(role string, request DirectRoleModelRequest) DirectRoleModelResolution {
 	result := DirectRoleModelResolution{Role: role, Source: DirectRoleModelRuntimeDefault, Reason: "runtime-default-no-eligible-model"}
 	if explicit, ok := request.Explicit[role]; ok {
-		if candidate, valid := validateDirectRoleCandidate(explicit, request); valid {
-			return directRoleResolved(role, DirectRoleModelExplicit, "explicit-complete-assignment", candidate)
+		if resolution, valid := resolveExplicitDirectRoleModel(role, explicit, request); valid {
+			return resolution
 		}
 	}
 	candidates := eligibleDirectRoleCandidates(role, request.SemanticCandidates[role], request)
@@ -69,6 +69,29 @@ func resolveDirectRoleModel(role string, request DirectRoleModelRequest) DirectR
 	}
 	sortDirectRoleCandidates(role, candidates)
 	return directRoleResolved(role, DirectRoleModelCatalogDefault, "catalog-ranked-eligible-model", candidates[0])
+}
+
+// resolveExplicitDirectRoleModel keeps a complete user assignment when local
+// discovery is unavailable. A catalog can reject it only when it conclusively
+// proves that its provider or model is invalid; auth availability is not such
+// proof because a hermetic sync does not carry operator credentials.
+func resolveExplicitDirectRoleModel(role string, assignment model.ModelAssignment, request DirectRoleModelRequest) (DirectRoleModelResolution, bool) {
+	if assignment.ProviderID == "" || assignment.ModelID == "" || strings.TrimSpace(assignment.ProviderID) != assignment.ProviderID || strings.TrimSpace(assignment.ModelID) != assignment.ModelID {
+		return DirectRoleModelResolution{}, false
+	}
+	provider, known := request.Catalog[assignment.ProviderID]
+	if !known {
+		candidate := directRoleCandidate{assignment: assignment}
+		return directRoleResolved(role, DirectRoleModelExplicit, "explicit-unverified-assignment", candidate), true
+	}
+	if provider.ID != "" && provider.ID != assignment.ProviderID {
+		return DirectRoleModelResolution{}, false
+	}
+	catalogModel, known := provider.Models[assignment.ModelID]
+	if !known || (catalogModel.ID != "" && catalogModel.ID != assignment.ModelID) || !catalogModel.ToolCall {
+		return DirectRoleModelResolution{}, false
+	}
+	return directRoleResolved(role, DirectRoleModelExplicit, "explicit-verified-catalog-assignment", directRoleCandidate{assignment: assignment, model: catalogModel}), true
 }
 
 func directRoleResolved(role string, source DirectRoleModelSource, reason string, candidate directRoleCandidate) DirectRoleModelResolution {

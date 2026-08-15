@@ -53,6 +53,35 @@ func TestReconcileDefaultOpenCodeRoles(t *testing.T) {
 	}
 }
 
+func TestWithResolvedProfileDirectRolesPreservesUnverifiedExplicitAssignments(t *testing.T) {
+	home := t.TempDir()
+	profile := model.Profile{Name: "lean", PhaseAssignments: map[string]model.ModelAssignment{
+		opencode.GentleReviewerAgent: {ProviderID: "openai", ModelID: "gpt-5-mini"},
+		opencode.GentleWorkerAgent:   {ProviderID: "openrouter", ModelID: "qwen/qwen3.6-plus:free"},
+	}}
+	resolved := withResolvedProfileDirectRoles(profile, opencode.DirectRoleModelRequest{})
+	for role, want := range profile.PhaseAssignments {
+		got, ok := resolved.PhaseAssignments[role]
+		if !ok || got != want {
+			t.Fatalf("profile role %q = %#v, want %#v", role, got, want)
+		}
+	}
+	overlay, err := GenerateProfileOverlay(resolved, home, "", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := map[string]any{}
+	if err := json.Unmarshal(overlay, &root); err != nil {
+		t.Fatal(err)
+	}
+	agents := root["agent"].(map[string]any)
+	for role, want := range profile.PhaseAssignments {
+		if got := agents[role+"-lean"].(map[string]any)["model"]; got != want.FullID() {
+			t.Fatalf("rendered profile role %q model = %#v, want %q", role, got, want.FullID())
+		}
+	}
+}
+
 func assignment(provider, modelID string) *model.ModelAssignment {
 	return &model.ModelAssignment{ProviderID: provider, ModelID: modelID}
 }

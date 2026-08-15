@@ -46,7 +46,7 @@ func attachProfileRoleOwnership(agentMap map[string]any, profileName string) err
 	}
 	return nil
 }
-func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName string, mode RoleReconciliationMode) ([]byte, ProfileOwnershipReport, error) {
+func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName string, _ RoleReconciliationMode) ([]byte, ProfileOwnershipReport, error) {
 	if normalized, err := migrateLegacyOpenCodeAgentsKey(baseJSON); err == nil {
 		baseJSON = normalized
 	}
@@ -72,10 +72,6 @@ func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName 
 			continue
 		}
 		existing, exists := baseAgents[key]
-		if mode == RoleReconciliationSync && !exists {
-			delete(overlayAgents, key)
-			continue
-		}
 		if exists {
 			classification := profileRoleClassification(existing, role, profileName)
 			if classification != opencode.OwnershipManaged {

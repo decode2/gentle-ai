@@ -19,13 +19,16 @@ func TestResolveDirectRoleModels(t *testing.T) {
 		name, role, wantSource, wantReason, wantModel string
 		request                                       DirectRoleModelRequest
 	}{
-		{"explicit wins", GentleReviewerAgent, "explicit", "explicit-complete-assignment", "a/plain", withExplicit(base, GentleReviewerAgent, model.ModelAssignment{ProviderID: "a", ModelID: "plain"})},
+		{"explicit known valid wins without auth", GentleReviewerAgent, "explicit", "explicit-verified-catalog-assignment", "a/plain", withExplicit(base, GentleReviewerAgent, model.ModelAssignment{ProviderID: "a", ModelID: "plain"})},
+		{"explicit unknown provider remains exact without discovery", GentleReviewerAgent, "explicit", "explicit-unverified-assignment", "openai/gpt-5-mini", withExplicit(DirectRoleModelRequest{}, GentleReviewerAgent, model.ModelAssignment{ProviderID: "openai", ModelID: "gpt-5-mini"})},
 		{"incomplete falls through", GentleReviewerAgent, "catalog-default", "catalog-ranked-eligible-model", "b/wide", withExplicit(base, GentleReviewerAgent, model.ModelAssignment{ProviderID: "a"})},
+		{"malformed falls through", GentleReviewerAgent, "catalog-default", "catalog-ranked-eligible-model", "b/wide", withExplicit(base, GentleReviewerAgent, model.ModelAssignment{ProviderID: " a", ModelID: "plain"})},
+		{"known invalid explicit falls through semantic policy", GentleReviewerAgent, "semantic-policy", "semantic-policy-ranked-candidate", "a/reason", withCandidates(withExplicit(base, GentleReviewerAgent, model.ModelAssignment{ProviderID: "a", ModelID: "missing"}), GentleReviewerAgent, "a/reason")},
 		{"reviewer requires reasoning", GentleReviewerAgent, "semantic-policy", "semantic-policy-ranked-candidate", "a/reason", withCandidates(base, GentleReviewerAgent, "a/plain", "a/reason")},
 		{"worker prefers mid", GentleWorkerAgent, "semantic-policy", "semantic-policy-ranked-candidate", "a/plain", withCandidates(base, GentleWorkerAgent, "a/reason", "a/plain")},
 		{"catalog ranking and tie breaks", GentleReviewerAgent, "catalog-default", "catalog-ranked-eligible-model", "b/wide", base},
 		{"unavailable and missing models omit", GentleReviewerAgent, "runtime-default", "runtime-default-no-eligible-model", "", DirectRoleModelRequest{Catalog: map[string]Provider{"a": {ID: "a", Models: map[string]Model{"reason": {ID: "reason", ToolCall: true, Reasoning: true}}}}, AvailableProviders: map[string]bool{}, Explicit: map[string]model.ModelAssignment{GentleReviewerAgent: {ProviderID: "a", ModelID: "missing"}}}},
-		{"ownership mismatch omits", GentleReviewerAgent, "runtime-default", "runtime-default-no-eligible-model", "", DirectRoleModelRequest{Catalog: map[string]Provider{"a": {ID: "other", Models: map[string]Model{"reason": {ID: "reason", ToolCall: true, Reasoning: true}}}}, AvailableProviders: map[string]bool{"a": true}}},
+		{"ownership mismatch omits", GentleReviewerAgent, "runtime-default", "runtime-default-no-eligible-model", "", withExplicit(DirectRoleModelRequest{Catalog: map[string]Provider{"a": {ID: "other", Models: map[string]Model{"reason": {ID: "reason", ToolCall: true, Reasoning: true}}}}}, GentleReviewerAgent, model.ModelAssignment{ProviderID: "a", ModelID: "reason"})},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
