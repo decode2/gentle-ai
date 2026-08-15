@@ -45,7 +45,7 @@ func attachProfileRoleOwnership(agentMap map[string]any, profileName string) err
 	}
 	return nil
 }
-func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName string) ([]byte, ProfileOwnershipReport, error) {
+func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName string, mode RoleReconciliationMode) ([]byte, ProfileOwnershipReport, error) {
 	if normalized, err := migrateLegacyOpenCodeAgentsKey(baseJSON); err == nil {
 		baseJSON = normalized
 	}
@@ -71,6 +71,10 @@ func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName 
 			continue
 		}
 		existing, exists := baseAgents[key]
+		if mode == RoleReconciliationSync && !exists {
+			delete(overlayAgents, key)
+			continue
+		}
 		if exists {
 			classification := profileRoleClassification(existing, role, profileName)
 			if classification != opencode.OwnershipManaged {
@@ -89,12 +93,16 @@ func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName 
 	}
 	return append(encoded, '\n'), report, nil
 }
-func mergeProfileJSONFile(path string, overlay []byte, profileName string) (mergeJSONResult, ProfileOwnershipReport, error) {
+func mergeProfileJSONFile(path string, overlay []byte, profileName string, modes ...RoleReconciliationMode) (mergeJSONResult, ProfileOwnershipReport, error) {
 	base, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return mergeJSONResult{}, ProfileOwnershipReport{}, fmt.Errorf("read json file %q: %w", path, err)
 	}
-	reconciled, report, err := reconcileProfileOverlayOwnership(base, overlay, profileName)
+	mode := RoleReconciliationInstall
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
+	reconciled, report, err := reconcileProfileOverlayOwnership(base, overlay, profileName, mode)
 	if err != nil {
 		return mergeJSONResult{}, ProfileOwnershipReport{}, err
 	}
