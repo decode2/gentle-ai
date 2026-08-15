@@ -1822,6 +1822,11 @@ func RefreshInstalledOpenCodePlugins(homeDir string, adapter agents.Adapter) (In
 			changed = true
 			files = append(files, pluginPath)
 		}
+		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
+			if err := opencode.WriteDirectRoleArtifactRecord(pluginsDir, pluginPath, []byte(content)); err != nil {
+				return InjectionResult{}, fmt.Errorf("record direct-run plugin ownership: %w", err)
+			}
+		}
 	}
 
 	return InjectionResult{Changed: changed, Files: files}, nil
@@ -1894,6 +1899,11 @@ func installOpenCodePlugins(homeDir string, adapter agents.Adapter) (InjectionRe
 		files = append(files, pluginPath)
 		if writeResult.Changed {
 			changed = true
+		}
+		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
+			if err := opencode.WriteDirectRoleArtifactRecord(pluginsDir, pluginPath, []byte(content)); err != nil {
+				return InjectionResult{}, fmt.Errorf("record direct-run plugin ownership: %w", err)
+			}
 		}
 	}
 

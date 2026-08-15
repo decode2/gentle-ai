@@ -793,25 +793,8 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 			ops = append(ops, rewriteOpenCodeSDDSettings(path, defaultPlan, s.profileNamesToRemove, s.profileSelectionScoped, paths...))
 
 			pluginDir := filepath.Join(homeDir, ".config", "opencode", "plugins")
-			for _, pluginPath := range []string{
-				filepath.Join(pluginDir, "background-agents.ts"),
-				filepath.Join(pluginDir, "model-variants.ts"),
-				filepath.Join(pluginDir, "skill-registry.ts"),
-			} {
-				targets = append(targets, pluginPath)
-				ops = append(ops, removeFile(pluginPath))
-			}
-			ops = append(ops, removeDirIfEmpty(pluginDir))
-
-			modelVariantsCacheDir := filepath.Join(homeDir, ".gentle-ai", "cache")
-			for _, cachePath := range modelVariantsCachePaths(modelVariantsCacheDir) {
-				targets = append(targets, cachePath)
-				ops = append(ops, removeFile(cachePath))
-			}
-
-			depDir := filepath.Join(homeDir, ".config", "opencode", "node_modules", "unique-names-generator")
-			targets = append(targets, depDir)
-			ops = append(ops, removeTree(depDir), removeDirIfEmpty(filepath.Dir(depDir)))
+			targets = append(targets, filepath.Join(pluginDir, "managed-direct-run.ts"), opencode.DirectRoleArtifactRecordPath(pluginDir))
+			ops = append(ops, removeManagedDirectRunArtifact(path, pluginDir))
 		}
 		if adapter.SupportsSkills() {
 			skillDir := adapter.SkillsDir(homeDir)
@@ -1203,6 +1186,55 @@ func directRoleIdentity(key string, selected map[string]struct{}, profileSelecti
 	return opencode.ManagedAgentIdentity{}, false
 }
 
+func removeManagedDirectRunArtifact(settingsPath, pluginsDir string) operation {
+	var manual []string
+	return operation{typeID: opRemoveFile, path: filepath.Join(pluginsDir, "managed-direct-run.ts"), manualActions: func() []string { return append([]string(nil), manual...) }, apply: func(pluginPath string) (bool, bool, error) {
+		manual = nil
+		if directRolesRemain(settingsPath) {
+			manual = append(manual, "Preserved managed direct-run plugin: a managed direct role still references it")
+			return false, false, nil
+		}
+		record, err := opencode.ReadDirectRoleArtifactRecord(pluginsDir)
+		if os.IsNotExist(err) {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership record missing")
+			return false, false, nil
+		}
+		if err != nil {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership record malformed")
+			return false, false, nil
+		}
+		if !opencode.DirectRoleArtifactMatches(record, pluginPath) {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership fingerprint or file identity drifted")
+			return false, false, nil
+		}
+		if err := os.Remove(pluginPath); err != nil {
+			return false, false, err
+		}
+		if err := os.Remove(opencode.DirectRoleArtifactRecordPath(pluginsDir)); err != nil {
+			return false, false, err
+		}
+		return true, true, nil
+	}}
+}
+
+func directRolesRemain(settingsPath string) bool {
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return false
+	}
+	root, err := unmarshalJSONObject(raw)
+	if err != nil {
+		return true
+	}
+	agents, _ := root["agent"].(map[string]any)
+	for key := range agents {
+		if isDirectRoleCandidate(key) {
+			return true
+		}
+	}
+	return false
+}
+
 func rewriteSkillRegistryHook(path string) operation {
 	return operation{
 		typeID: opRewriteFile,
@@ -1328,46 +1360,6 @@ func rewriteTOMLFile(path string, mutate func(content string) (string, bool)) op
 			return true, false, nil
 		},
 	}
-}
-
-func modelVariantsCachePaths(cacheDir string) []string {
-	paths := []string{
-		filepath.Join(cacheDir, "model-variants.json"),
-		filepath.Join(cacheDir, "model-variants.json.tmp"),
-	}
-	matches, err := filepath.Glob(filepath.Join(cacheDir, "model-variants.json.*.tmp"))
-	if err != nil {
-		return paths
-	}
-	for _, path := range matches {
-		if !isModelVariantsRandomTempName(filepath.Base(path)) {
-			continue
-		}
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	return paths
-}
-
-func isModelVariantsRandomTempName(name string) bool {
-	const prefix = "model-variants.json."
-	const suffix = ".tmp"
-	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
-		return false
-	}
-	token := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
-	if len(token) != 6 {
-		return false
-	}
-	for _, char := range token {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
-			return false
-		}
-	}
-	return true
 }
 
 func removeManagedContext7File(path string) operation {

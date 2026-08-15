@@ -834,8 +834,8 @@ func TestComponentOperationsSDD_OpenCodeRemovesManagedPluginSourcesAndModelVaria
 	applySDDOpenCodeOperations(t, svc, adapter)
 
 	for _, path := range []string{backgroundAgentsPath, modelVariantsPluginPath, skillRegistryPluginPath, modelVariantsCachePath, modelVariantsTempPath, modelVariantsRandomTempPath} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("managed file %q should be removed; stat err = %v", path, err)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("shared artifact %q should be preserved; stat err = %v", path, err)
 		}
 	}
 	if _, err := os.Stat(cacheDir); err != nil {
@@ -888,8 +888,8 @@ func TestComponentOperationsSDD_OpenCodePreservesEmptyModelVariantsCacheDirector
 	if err != nil {
 		t.Fatalf("ReadDir(cacheDir) error = %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("cache directory should be empty after managed cleanup, got %d entries", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("cache directory should preserve shared cache entries, got %d", len(entries))
 	}
 }
 
