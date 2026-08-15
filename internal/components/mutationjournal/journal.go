@@ -41,6 +41,7 @@ type journalEntry struct {
 type Journal struct {
 	before map[string]*journalEntry
 	roots  []string
+	write  func(string, []byte, os.FileMode) (filemerge.WriteResult, error)
 }
 
 var writeFileAtomic = filemerge.WriteFileAtomic
@@ -49,6 +50,15 @@ var writeFileAtomic = filemerge.WriteFileAtomic
 // Roots must be absolute or the path-traversal guard will reject every write.
 func New(roots ...string) *Journal {
 	return &Journal{before: map[string]*journalEntry{}, roots: append([]string(nil), roots...)}
+}
+
+// NewWithWriter is New with a transaction-local atomic writer. It exists for
+// deterministic failure testing without changing the process-wide writer hook.
+func NewWithWriter(writer func(string, []byte, os.FileMode) (filemerge.WriteResult, error), roots ...string) *Journal {
+	if writer == nil {
+		return New(roots...)
+	}
+	return &Journal{before: map[string]*journalEntry{}, roots: append([]string(nil), roots...), write: writer}
 }
 
 // Capture snapshots a file's current content + mode for later restoration.
@@ -98,7 +108,12 @@ func (j *Journal) WriteWithMode(path string, data []byte, mode os.FileMode) (Own
 	if err := j.Capture(path); err != nil {
 		return OwnedFile{}, err
 	}
-	if err := j.verifyCurrent(path, j.before[path].data); err != nil {
+	entry := j.before[path]
+	expected := entry.data
+	if entry.changed {
+		expected = entry.after
+	}
+	if err := j.verifyCurrent(path, expected); err != nil {
 		return OwnedFile{}, err
 	}
 	effective := mode
@@ -113,7 +128,11 @@ func (j *Journal) WriteWithMode(path string, data []byte, mode os.FileMode) (Own
 	// than from "the write returned nil", or a failure raised after the rename
 	// leaves the entry marked unchanged and Restore walks past a mutated file
 	// while reporting a successful rollback (#1676).
-	result, err := writeFileAtomic(path, data, effective)
+	writer := j.write
+	if writer == nil {
+		writer = writeFileAtomic
+	}
+	result, err := writer(path, data, effective)
 	if result.Changed {
 		after := append([]byte(nil), data...)
 		j.before[path].after = &after
@@ -135,7 +154,11 @@ func (j *Journal) Remove(path string) (bool, error) {
 	if entry.data == nil {
 		return false, nil
 	}
-	if err := j.verifyCurrent(path, entry.data); err != nil {
+	expected := entry.data
+	if entry.changed {
+		expected = entry.after
+	}
+	if err := j.verifyCurrent(path, expected); err != nil {
 		return false, err
 	}
 	if err := os.Remove(path); err != nil {
@@ -195,11 +218,21 @@ func (j *Journal) Restore() error {
 			}
 			continue
 		}
-		if _, err := writeFileAtomic(path, *entry.data, entry.mode); err != nil {
+		writer := j.write
+		if writer == nil {
+			writer = writeFileAtomic
+		}
+		if _, err := writer(path, *entry.data, entry.mode); err != nil {
 			restoreErrors = append(restoreErrors, fmt.Errorf("restore %q: %w", path, err))
 		}
 	}
 	return errors.Join(restoreErrors...)
+}
+
+// Changed reports whether this journal mutated path.
+func (j *Journal) Changed(path string) bool {
+	entry := j.before[path]
+	return entry != nil && entry.changed
 }
 
 func (j *Journal) validate(path string) error {

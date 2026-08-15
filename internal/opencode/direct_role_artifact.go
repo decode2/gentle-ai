@@ -28,11 +28,26 @@ func DirectRoleArtifactRecordPath(pluginsDir string) string {
 }
 
 func WriteManagedDirectRunArtifact(pluginsDir, pluginPath string, content []byte) (bool, error) {
+	journal := mutationjournal.New(pluginsDir)
+	changed, err := WriteManagedDirectRunArtifactWithJournal(journal, pluginsDir, pluginPath, content, nil)
+	if err != nil {
+		return false, fmt.Errorf("write managed direct-run artifact: %w (rollback: %v)", err, journal.Restore())
+	}
+	return changed, nil
+}
+
+// WriteManagedDirectRunArtifactWithJournal couples launcher and ownership
+// sidecar writes to the caller's wider direct-role transaction.
+func WriteManagedDirectRunArtifactWithJournal(journal *mutationjournal.Journal, pluginsDir, pluginPath string, content []byte, afterLauncher func() error) (bool, error) {
 	beforePlugin, pluginErr := os.ReadFile(pluginPath)
 	beforeRecord, recordErr := os.ReadFile(DirectRoleArtifactRecordPath(pluginsDir))
-	journal := mutationjournal.New(pluginsDir)
 	if _, err := journal.WriteWithMode(pluginPath, content, 0o644); err != nil {
 		return false, err
+	}
+	if afterLauncher != nil {
+		if err := afterLauncher(); err != nil {
+			return false, err
+		}
 	}
 	record := DirectRoleArtifactRecord{Schema: "gentle-ai.opencode-direct-role-artifact/v1", Owner: ManagedOwner, Kind: "managed-direct-run-plugin", Path: pluginPath, Mode: 0o644, Fingerprint: artifactFingerprint(content)}
 	data, err := json.Marshal(record)
@@ -41,20 +56,24 @@ func WriteManagedDirectRunArtifact(pluginsDir, pluginPath string, content []byte
 	}
 	recordData := append(data, '\n')
 	if _, err := journal.WriteWithMode(DirectRoleArtifactRecordPath(pluginsDir), recordData, 0o600); err != nil {
-		return false, fmt.Errorf("write direct-role artifact record: %w (rollback: %v)", err, journal.Restore())
+		return false, fmt.Errorf("write direct-role artifact record: %w", err)
 	}
 	return pluginErr != nil || recordErr != nil || !bytes.Equal(beforePlugin, content) || !bytes.Equal(beforeRecord, recordData), nil
 }
 
-// RemoveManagedDirectRunArtifact removes the verified launcher and its record
-// as one journaled unit, restoring the launcher if sidecar removal fails.
-func RemoveManagedDirectRunArtifact(pluginsDir, pluginPath string) error {
-	journal := mutationjournal.New(pluginsDir)
+// RemoveManagedDirectRunArtifactWithJournalAfterLauncher permits a caller's
+// transaction-local checkpoint between launcher and sidecar removal.
+func RemoveManagedDirectRunArtifactWithJournalAfterLauncher(journal *mutationjournal.Journal, pluginsDir, pluginPath string, afterLauncher func() error) error {
 	if _, err := journal.Remove(pluginPath); err != nil {
 		return err
 	}
+	if afterLauncher != nil {
+		if err := afterLauncher(); err != nil {
+			return err
+		}
+	}
 	if _, err := journal.Remove(DirectRoleArtifactRecordPath(pluginsDir)); err != nil {
-		return fmt.Errorf("remove direct-role artifact record: %w (rollback: %v)", err, journal.Restore())
+		return fmt.Errorf("remove direct-role artifact record: %w", err)
 	}
 	return nil
 }

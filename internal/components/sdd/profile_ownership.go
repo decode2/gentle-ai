@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/mutationjournal"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 )
 
@@ -94,6 +95,10 @@ func reconcileProfileOverlayOwnership(baseJSON, overlayJSON []byte, profileName 
 	return append(encoded, '\n'), report, nil
 }
 func mergeProfileJSONFile(path string, overlay []byte, profileName string, modes ...RoleReconciliationMode) (mergeJSONResult, ProfileOwnershipReport, error) {
+	return mergeProfileJSONFileWithJournal(path, overlay, profileName, nil, modes...)
+}
+
+func mergeProfileJSONFileWithJournal(path string, overlay []byte, profileName string, journal *mutationjournal.Journal, modes ...RoleReconciliationMode) (mergeJSONResult, ProfileOwnershipReport, error) {
 	base, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return mergeJSONResult{}, ProfileOwnershipReport{}, fmt.Errorf("read json file %q: %w", path, err)
@@ -106,7 +111,7 @@ func mergeProfileJSONFile(path string, overlay []byte, profileName string, modes
 	if err != nil {
 		return mergeJSONResult{}, ProfileOwnershipReport{}, err
 	}
-	merged, err := mergeJSONFile(path, reconciled)
+	merged, err := mergeJSONFileWithJournal(path, reconciled, journal)
 	return merged, report, err
 }
 func removeProfileRoleOwnership(agentMap map[string]any, profileName string) (int, ProfileOwnershipReport) {

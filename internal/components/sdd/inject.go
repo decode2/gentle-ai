@@ -12,6 +12,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/assets"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/agentguidance"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/mutationjournal"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/opencodedefault"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/skills"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
@@ -80,6 +81,28 @@ type InjectOptions struct {
 	// inject into SDD phase sub-agent prompts. Empty means disabled; normal SDD
 	// installs must leave it empty unless the Community Tool path enabled CodeGraph.
 	CodeGraphGuidanceMarkdown string
+
+	// Package-private, per-invocation test seams. They deliberately avoid
+	// mutable global hooks while allowing exact direct-role failure boundaries.
+	directRoleFailure       func(directRoleFailurePoint) error
+	directRoleJournalWriter func(string, []byte, os.FileMode) (filemerge.WriteResult, error)
+}
+
+type directRoleFailurePoint string
+
+const (
+	directRoleBeforeConfig   directRoleFailurePoint = "before-config"
+	directRoleAfterConfig    directRoleFailurePoint = "after-config"
+	directRoleBeforeLauncher directRoleFailurePoint = "before-launcher"
+	directRoleAfterLauncher  directRoleFailurePoint = "after-launcher"
+	directRoleAfterSidecar   directRoleFailurePoint = "after-sidecar"
+)
+
+func (o InjectOptions) directRoleCheckpoint(point directRoleFailurePoint) error {
+	if o.directRoleFailure == nil {
+		return nil
+	}
+	return o.directRoleFailure(point)
 }
 
 // workflowInjector is an optional adapter capability: if an adapter
@@ -340,7 +363,7 @@ func InjectSkillDirectoryWithWriter(skillDir, capability string, writeFile func(
 	return result, nil
 }
 
-func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, options ...InjectOptions) (InjectionResult, error) {
+func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, options ...InjectOptions) (result InjectionResult, err error) {
 	if !adapter.SupportsSystemPrompt() {
 		return InjectionResult{}, nil
 	}
@@ -365,6 +388,15 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 	warnings := make([]string, 0)
 	changed := false
 	var conflicts []string
+	var directJournal *mutationjournal.Journal
+	defer func() {
+		if err == nil || directJournal == nil {
+			return
+		}
+		if restoreErr := directJournal.Restore(); restoreErr != nil {
+			err = fmt.Errorf("%w (direct-role rollback: %w)", err, restoreErr)
+		}
+	}()
 
 	// 1. Inject SDD orchestrator into the global system prompt for agents that
 	// rely on prompt files. OpenCode and Kilocode are handled differently: their
@@ -573,9 +605,34 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				return InjectionResult{}, fmt.Errorf("default OpenCode share mode: %w", err)
 			}
 
+			if adapter.Agent() == model.AgentOpenCode {
+				if err := opts.directRoleCheckpoint(directRoleBeforeConfig); err != nil {
+					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+				}
+				directJournal = mutationjournal.NewWithWriter(opts.directRoleJournalWriter, filepath.Dir(settingsPath), filepath.Join(adapter.GlobalConfigDir(homeDir), "plugins"))
+			}
+			if defaultPlan != nil {
+				var defaultChanged bool
+				var defaultErr error
+				if directJournal == nil {
+					defaultChanged, defaultErr = defaultPlan.Apply()
+				} else {
+					defaultChanged, defaultErr = defaultPlan.ApplyWithJournal(directJournal)
+				}
+				if defaultErr != nil {
+					return InjectionResult{}, defaultErr
+				}
+				changed = changed || defaultChanged
+				files = append(files, opencodedefault.OwnershipPath(settingsPath))
+			}
 			mergeOptions := mergeJSONOptions{reconcileDirectRoles: adapter.Agent() == model.AgentOpenCode, roleResolutions: roleResolutions}
 			mergeOptions.roleMode = opts.RoleReconciliationMode
-			agentResult, err := mergeJSONFile(settingsPath, overlayBytes, mergeOptions)
+			var agentResult mergeJSONResult
+			if directJournal == nil {
+				agentResult, err = mergeJSONFile(settingsPath, overlayBytes, mergeOptions)
+			} else {
+				agentResult, err = mergeJSONFileWithJournal(settingsPath, overlayBytes, directJournal, mergeOptions)
+			}
 			if err != nil {
 				return InjectionResult{}, err
 			}
@@ -583,9 +640,19 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			files = append(files, settingsPath)
 			conflicts = append(conflicts, agentResult.conflicts...)
 			mergedSettingsBytes = agentResult.merged
+			if adapter.Agent() == model.AgentOpenCode {
+				if err := opts.directRoleCheckpoint(directRoleAfterConfig); err != nil {
+					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+				}
+			}
 
 			// Install OpenCode plugins (all SDD modes).
-			pluginResult, err := installOpenCodePlugins(homeDir, adapter)
+			var pluginResult InjectionResult
+			if directJournal == nil {
+				pluginResult, err = installOpenCodePlugins(homeDir, adapter)
+			} else {
+				pluginResult, err = installOpenCodePluginsWithoutDirectRoleArtifact(homeDir, adapter)
+			}
 			if err != nil {
 				return InjectionResult{}, err
 			}
@@ -600,7 +667,13 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				if profile.Name == "" || profile.Name == "default" {
 					continue
 				}
-				cleanupResult, cleanupErr := cleanupStaleProfileJDAgents(settingsPath, profile)
+				var cleanupResult filemerge.WriteResult
+				var cleanupErr error
+				if directJournal == nil {
+					cleanupResult, cleanupErr = cleanupStaleProfileJDAgents(settingsPath, profile)
+				} else {
+					cleanupResult, cleanupErr = cleanupStaleProfileJDAgentsWithJournal(settingsPath, profile, directJournal)
+				}
 				if cleanupErr != nil {
 					return InjectionResult{}, fmt.Errorf("clean stale profile JD agents %q: %w", profile.Name, cleanupErr)
 				}
@@ -616,7 +689,13 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("generate profile overlay %q: %w", profile.Name, profileErr)
 				}
-				profileResult, ownershipReport, profileErr := mergeProfileJSONFile(settingsPath, profileOverlay, profile.Name, opts.RoleReconciliationMode)
+				var profileResult mergeJSONResult
+				var ownershipReport ProfileOwnershipReport
+				if directJournal == nil {
+					profileResult, ownershipReport, profileErr = mergeProfileJSONFile(settingsPath, profileOverlay, profile.Name, opts.RoleReconciliationMode)
+				} else {
+					profileResult, ownershipReport, profileErr = mergeProfileJSONFileWithJournal(settingsPath, profileOverlay, profile.Name, directJournal, opts.RoleReconciliationMode)
+				}
 				if profileErr != nil {
 					return InjectionResult{}, fmt.Errorf("merge profile overlay %q: %w", profile.Name, profileErr)
 				}
@@ -625,13 +704,23 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 				changed = changed || profileResult.writeResult.Changed
 				mergedSettingsBytes = profileResult.merged
 			}
-			if defaultPlan != nil {
-				defaultChanged, defaultErr := defaultPlan.Apply()
-				if defaultErr != nil {
-					return InjectionResult{}, defaultErr
+			if adapter.Agent() == model.AgentOpenCode {
+				pluginsDir := filepath.Join(adapter.GlobalConfigDir(homeDir), "plugins")
+				pluginPath := filepath.Join(pluginsDir, "managed-direct-run.ts")
+				if err := opts.directRoleCheckpoint(directRoleBeforeLauncher); err != nil {
+					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
 				}
-				changed = changed || defaultChanged
-				files = append(files, opencodedefault.OwnershipPath(settingsPath))
+				artifactChanged, artifactErr := opencode.WriteManagedDirectRunArtifactWithJournal(directJournal, pluginsDir, pluginPath, []byte(assets.MustRead("opencode/plugins/managed-direct-run.ts")), func() error {
+					return opts.directRoleCheckpoint(directRoleAfterLauncher)
+				})
+				if artifactErr != nil {
+					return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", artifactErr)
+				}
+				changed = changed || artifactChanged
+				files = append(files, pluginPath, opencode.DirectRoleArtifactRecordPath(pluginsDir))
+				if err := opts.directRoleCheckpoint(directRoleAfterSidecar); err != nil {
+					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+				}
 			}
 		}
 	}
@@ -1868,6 +1957,14 @@ func removeOpenCodeOnlyReviewPlugin(pluginsDir string) (string, bool, error) {
 // still manages by default. Native OpenCode subagents replace the legacy
 // background-agents plugin, so that legacy cleanup is scoped to OpenCode only.
 func installOpenCodePlugins(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
+	return installOpenCodePluginsWithOptions(homeDir, adapter, false)
+}
+
+func installOpenCodePluginsWithoutDirectRoleArtifact(homeDir string, adapter agents.Adapter) (InjectionResult, error) {
+	return installOpenCodePluginsWithOptions(homeDir, adapter, true)
+}
+
+func installOpenCodePluginsWithOptions(homeDir string, adapter agents.Adapter, skipDirectRoleArtifact bool) (InjectionResult, error) {
 	opencodeDir := adapter.GlobalConfigDir(homeDir)
 	pluginsDir := filepath.Join(opencodeDir, "plugins")
 
@@ -1905,6 +2002,9 @@ func installOpenCodePlugins(homeDir string, adapter agents.Adapter) (InjectionRe
 		content := assets.MustRead("opencode/plugins/" + name)
 		pluginPath := filepath.Join(pluginsDir, name)
 		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
+			if skipDirectRoleArtifact {
+				continue
+			}
 			artifactChanged, err := opencode.WriteManagedDirectRunArtifact(pluginsDir, pluginPath, []byte(content))
 			if err != nil {
 				return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", err)
@@ -1946,6 +2046,10 @@ type mergeJSONOptions struct {
 }
 
 func mergeJSONFile(path string, overlay []byte, options ...mergeJSONOptions) (mergeJSONResult, error) {
+	return mergeJSONFileWithJournal(path, overlay, nil, options...)
+}
+
+func mergeJSONFileWithJournal(path string, overlay []byte, journal *mutationjournal.Journal, options ...mergeJSONOptions) (mergeJSONResult, error) {
 	baseJSON, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -1980,7 +2084,13 @@ func mergeJSONFile(path string, overlay []byte, options ...mergeJSONOptions) (me
 		return mergeJSONResult{}, err
 	}
 
-	writeResult, err := filemerge.WriteFileAtomic(path, merged, 0o644)
+	var writeResult filemerge.WriteResult
+	if journal != nil {
+		_, err = journal.WriteWithMode(path, merged, 0o644)
+		writeResult.Changed = journal.Changed(path)
+	} else {
+		writeResult, err = filemerge.WriteFileAtomic(path, merged, 0o644)
+	}
 	if err != nil {
 		return mergeJSONResult{}, err
 	}

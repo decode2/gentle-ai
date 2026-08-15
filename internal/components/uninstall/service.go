@@ -19,6 +19,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/engram"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/gga"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/mutationjournal"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/opencodedefault"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/sdd"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
@@ -67,7 +68,26 @@ type Service struct {
 
 	// engramUninstallScope controls whether Engram cleanup removes global
 	// integration files/config (global) or project-local .engram data only.
-	engramUninstallScope model.EngramUninstallScope
+	engramUninstallScope    model.EngramUninstallScope
+	directRoleFailure       func(directRoleUninstallFailurePoint) error
+	directRoleJournalWriter func(string, []byte, os.FileMode) (filemerge.WriteResult, error)
+}
+
+type directRoleUninstallFailurePoint string
+
+const (
+	directRoleUninstallBeforeSettings directRoleUninstallFailurePoint = "before-settings"
+	directRoleUninstallAfterSettings  directRoleUninstallFailurePoint = "after-settings"
+	directRoleUninstallBeforeLauncher directRoleUninstallFailurePoint = "before-launcher"
+	directRoleUninstallAfterLauncher  directRoleUninstallFailurePoint = "after-launcher"
+	directRoleUninstallAfterSidecar   directRoleUninstallFailurePoint = "after-sidecar"
+)
+
+func (s *Service) directRoleCheckpoint(point directRoleUninstallFailurePoint) error {
+	if s.directRoleFailure == nil {
+		return nil
+	}
+	return s.directRoleFailure(point)
 }
 
 type workflowCapability interface {
@@ -790,11 +810,9 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 				}
 			}
 
-			ops = append(ops, rewriteOpenCodeSDDSettings(path, defaultPlan, s.profileNamesToRemove, s.profileSelectionScoped, paths...))
-
 			pluginDir := filepath.Join(homeDir, ".config", "opencode", "plugins")
 			targets = append(targets, filepath.Join(pluginDir, "managed-direct-run.ts"), opencode.DirectRoleArtifactRecordPath(pluginDir))
-			ops = append(ops, removeManagedDirectRunArtifact(path, pluginDir))
+			ops = append(ops, rewriteOpenCodeSDDSettingsAndDirectArtifact(path, pluginDir, defaultPlan, s.profileNamesToRemove, s.profileSelectionScoped, s, paths...))
 		}
 		if adapter.SupportsSkills() {
 			skillDir := adapter.SkillsDir(homeDir)
@@ -1061,49 +1079,77 @@ func rewriteClaudeUserConfig(homeDir string, jsonPaths ...jsonPath) operation {
 	}
 }
 
-func rewriteOpenCodeSDDSettings(path string, plan *opencodedefault.UninstallPlan, selectedProfiles []string, profileSelectionScoped bool, jsonPaths ...jsonPath) operation {
-	var manualActions []string
-	return operation{typeID: opRewriteFile, path: path, manualActions: func() []string { return append([]string(nil), manualActions...) }, apply: func(path string) (bool, bool, error) {
-		manualActions = nil
+// rewriteOpenCodeSDDSettingsAndDirectArtifact commits the role projection,
+// default ownership pair, launcher, and sidecar as one journaled operation.
+func rewriteOpenCodeSDDSettingsAndDirectArtifact(path, pluginsDir string, plan *opencodedefault.UninstallPlan, selectedProfiles []string, profileSelectionScoped bool, service *Service, jsonPaths ...jsonPath) operation {
+	var manual []string
+	return operation{typeID: opRewriteFile, path: path, manualActions: func() []string { return append([]string(nil), manual...) }, apply: func(path string) (bool, bool, error) {
+		manual = nil
+		if err := service.directRoleCheckpoint(directRoleUninstallBeforeSettings); err != nil {
+			return false, false, fmt.Errorf("direct-role transaction: %w", err)
+		}
+		journal := mutationjournal.NewWithWriter(service.directRoleJournalWriter, filepath.Dir(path), pluginsDir)
 		raw, err := readManagedFile(path)
 		exists := err == nil
 		if err != nil && !os.IsNotExist(err) {
 			return false, false, err
 		}
-		updated := raw
-		changed := false
+		updated, changed := raw, false
 		if exists {
 			updated, changed, err = removeJSONPaths(raw, jsonPaths...)
 			if err != nil {
 				return false, false, err
 			}
 			var directChanged bool
-			updated, directChanged, manualActions, err = removeManagedDirectRoles(updated, selectedProfiles, profileSelectionScoped)
+			updated, directChanged, manual, err = removeManagedDirectRoles(updated, selectedProfiles, profileSelectionScoped)
 			if err != nil {
 				return false, false, err
 			}
 			changed = changed || directChanged
 		}
 		if plan != nil {
-			return plan.Apply(updated, exists)
-		}
-		if !changed {
-			return false, false, nil
-		}
-		if jsonIsEmptyObject(updated) {
-			if err := removeFileIfExists(path); err != nil {
-				return false, false, err
+			changed, _, err = plan.ApplyWithJournal(journal, updated, exists)
+		} else if changed {
+			if jsonIsEmptyObject(updated) {
+				_, err = journal.Remove(path)
+			} else {
+				_, err = journal.WriteWithMode(path, updated, 0o644)
 			}
-			return true, true, nil
 		}
-		perm := os.FileMode(0o644)
-		if info, statErr := os.Lstat(path); statErr == nil {
-			perm = info.Mode().Perm()
+		if err != nil {
+			return false, false, fmt.Errorf("rewrite OpenCode direct roles: %w (rollback: %v)", err, journal.Restore())
 		}
-		if _, err := filemerge.WriteFileAtomic(path, updated, perm); err != nil {
-			return false, false, err
+		if err := service.directRoleCheckpoint(directRoleUninstallAfterSettings); err != nil {
+			return false, false, fmt.Errorf("direct-role transaction: %w (rollback: %v)", err, journal.Restore())
 		}
-		return true, false, nil
+		if directRolesRemain(path) {
+			manual = append(manual, "Preserved managed direct-run plugin: a managed direct role still references it")
+			return changed, false, nil
+		}
+		pluginPath := filepath.Join(pluginsDir, "managed-direct-run.ts")
+		if err := service.directRoleCheckpoint(directRoleUninstallBeforeLauncher); err != nil {
+			return false, false, fmt.Errorf("direct-role transaction: %w (rollback: %v)", err, journal.Restore())
+		}
+		record, err := opencode.ReadDirectRoleArtifactRecord(pluginsDir)
+		if os.IsNotExist(err) {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership record missing")
+			return changed, false, nil
+		}
+		if err != nil {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership record malformed")
+			return changed, false, nil
+		}
+		if !opencode.DirectRoleArtifactMatches(record, pluginPath) {
+			manual = append(manual, "Preserved managed direct-run plugin: ownership fingerprint or file identity drifted")
+			return changed, false, nil
+		}
+		if err := opencode.RemoveManagedDirectRunArtifactWithJournalAfterLauncher(journal, pluginsDir, pluginPath, func() error { return service.directRoleCheckpoint(directRoleUninstallAfterLauncher) }); err != nil {
+			return false, false, fmt.Errorf("remove managed direct-run artifact: %w (rollback: %v)", err, journal.Restore())
+		}
+		if err := service.directRoleCheckpoint(directRoleUninstallAfterSidecar); err != nil {
+			return false, false, fmt.Errorf("direct-role transaction: %w (rollback: %v)", err, journal.Restore())
+		}
+		return true, true, nil
 	}}
 }
 
@@ -1184,34 +1230,6 @@ func directRoleIdentity(key string, selected map[string]struct{}, profileSelecti
 		return opencode.ManagedAgentIdentity{Owner: opencode.ManagedOwner, Component: opencode.ManagedComponent, Role: role + "@" + profile}, true
 	}
 	return opencode.ManagedAgentIdentity{}, false
-}
-
-func removeManagedDirectRunArtifact(settingsPath, pluginsDir string) operation {
-	var manual []string
-	return operation{typeID: opRemoveFile, path: filepath.Join(pluginsDir, "managed-direct-run.ts"), manualActions: func() []string { return append([]string(nil), manual...) }, apply: func(pluginPath string) (bool, bool, error) {
-		manual = nil
-		if directRolesRemain(settingsPath) {
-			manual = append(manual, "Preserved managed direct-run plugin: a managed direct role still references it")
-			return false, false, nil
-		}
-		record, err := opencode.ReadDirectRoleArtifactRecord(pluginsDir)
-		if os.IsNotExist(err) {
-			manual = append(manual, "Preserved managed direct-run plugin: ownership record missing")
-			return false, false, nil
-		}
-		if err != nil {
-			manual = append(manual, "Preserved managed direct-run plugin: ownership record malformed")
-			return false, false, nil
-		}
-		if !opencode.DirectRoleArtifactMatches(record, pluginPath) {
-			manual = append(manual, "Preserved managed direct-run plugin: ownership fingerprint or file identity drifted")
-			return false, false, nil
-		}
-		if err := opencode.RemoveManagedDirectRunArtifact(pluginsDir, pluginPath); err != nil {
-			return false, false, err
-		}
-		return true, true, nil
-	}}
 }
 
 func directRolesRemain(settingsPath string) bool {
