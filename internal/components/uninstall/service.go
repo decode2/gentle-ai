@@ -22,6 +22,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/opencodedefault"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/sdd"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/state"
 )
 
@@ -148,8 +149,9 @@ type operation struct {
 	// operation that fails only blocks the agents that own it. An operation
 	// nobody owns blocks the whole batch, because nothing distinguishes whose
 	// cleanup it was.
-	agents []model.AgentID
-	apply  func(path string) (changed bool, removed bool, err error)
+	agents        []model.AgentID
+	apply         func(path string) (changed bool, removed bool, err error)
+	manualActions func() []string
 }
 
 // operationFailure records one operation that did not complete, so the run can
@@ -465,6 +467,9 @@ func (s *Service) executePlan(p plan, agentsToRemove []model.AgentID) (Result, e
 			failures = append(failures, operationFailure{path: op.path, agents: op.agents, err: err})
 			continue
 		}
+		if op.manualActions != nil {
+			result.ManualActions = append(result.ManualActions, op.manualActions()...)
+		}
 		if op.typeID == opRemoveIfEmpty && !removed {
 			if note, ok := manualActionForNonEmptyDirectory(op.path); ok {
 				result.ManualActions = append(result.ManualActions, note)
@@ -768,18 +773,24 @@ func (s *Service) componentOperations(adapter agents.Adapter, componentID model.
 			if s.profileSelectionScoped {
 				for _, profileName := range s.profileNamesToRemove {
 					for _, agentKey := range sdd.ProfileAgentKeys(profileName) {
+						if isDirectRoleCandidate(agentKey) {
+							continue
+						}
 						paths = append(paths, jsonPath{"agent", agentKey})
 					}
 				}
 			} else if profiles, err := sdd.DetectProfiles(path); err == nil {
 				for _, profile := range profiles {
 					for _, agentKey := range sdd.ProfileAgentKeys(profile.Name) {
+						if isDirectRoleCandidate(agentKey) {
+							continue
+						}
 						paths = append(paths, jsonPath{"agent", agentKey})
 					}
 				}
 			}
 
-			ops = append(ops, rewriteOpenCodeSDDSettings(path, defaultPlan, paths...))
+			ops = append(ops, rewriteOpenCodeSDDSettings(path, defaultPlan, s.profileNamesToRemove, s.profileSelectionScoped, paths...))
 
 			pluginDir := filepath.Join(homeDir, ".config", "opencode", "plugins")
 			for _, pluginPath := range []string{
@@ -1067,22 +1078,129 @@ func rewriteClaudeUserConfig(homeDir string, jsonPaths ...jsonPath) operation {
 	}
 }
 
-func rewriteOpenCodeSDDSettings(path string, plan *opencodedefault.UninstallPlan, jsonPaths ...jsonPath) operation {
-	return operation{typeID: opRewriteFile, path: path, apply: func(path string) (bool, bool, error) {
+func rewriteOpenCodeSDDSettings(path string, plan *opencodedefault.UninstallPlan, selectedProfiles []string, profileSelectionScoped bool, jsonPaths ...jsonPath) operation {
+	var manualActions []string
+	return operation{typeID: opRewriteFile, path: path, manualActions: func() []string { return append([]string(nil), manualActions...) }, apply: func(path string) (bool, bool, error) {
+		manualActions = nil
 		raw, err := readManagedFile(path)
 		exists := err == nil
 		if err != nil && !os.IsNotExist(err) {
 			return false, false, err
 		}
 		updated := raw
+		changed := false
 		if exists {
-			updated, _, err = removeJSONPaths(raw, jsonPaths...)
+			updated, changed, err = removeJSONPaths(raw, jsonPaths...)
 			if err != nil {
 				return false, false, err
 			}
+			var directChanged bool
+			updated, directChanged, manualActions, err = removeManagedDirectRoles(updated, selectedProfiles, profileSelectionScoped)
+			if err != nil {
+				return false, false, err
+			}
+			changed = changed || directChanged
 		}
-		return plan.Apply(updated, exists)
+		if plan != nil {
+			return plan.Apply(updated, exists)
+		}
+		if !changed {
+			return false, false, nil
+		}
+		if jsonIsEmptyObject(updated) {
+			if err := removeFileIfExists(path); err != nil {
+				return false, false, err
+			}
+			return true, true, nil
+		}
+		perm := os.FileMode(0o644)
+		if info, statErr := os.Lstat(path); statErr == nil {
+			perm = info.Mode().Perm()
+		}
+		if _, err := filemerge.WriteFileAtomic(path, updated, perm); err != nil {
+			return false, false, err
+		}
+		return true, false, nil
 	}}
+}
+
+func isDirectRoleCandidate(key string) bool {
+	for _, role := range opencode.DirectRoles() {
+		if key == role || (strings.HasPrefix(key, role+"-") && len(key) > len(role)+1) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeManagedDirectRoles(raw []byte, selectedProfiles []string, profileSelectionScoped bool) ([]byte, bool, []string, error) {
+	root, err := unmarshalJSONObject(raw)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	agents, ok := root["agent"].(map[string]any)
+	if !ok {
+		return raw, false, nil, nil
+	}
+	selected := make(map[string]struct{}, len(selectedProfiles))
+	for _, profile := range selectedProfiles {
+		selected[profile] = struct{}{}
+	}
+	keys := make([]string, 0)
+	for key := range agents {
+		if _, ok := directRoleIdentity(key, selected, profileSelectionScoped); ok {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	manual := make([]string, 0)
+	changed := false
+	for _, key := range keys {
+		identity, _ := directRoleIdentity(key, selected, profileSelectionScoped)
+		entry, ok := agents[key].(map[string]any)
+		classification := opencode.OwnershipMalformedMetadata
+		if ok {
+			classification = opencode.ClassifyOwnership(entry, identity)
+		}
+		if classification == opencode.OwnershipManaged {
+			delete(agents, key)
+			changed = true
+			continue
+		}
+		manual = append(manual, fmt.Sprintf("Preserved direct role %q: ownership %s", key, classification))
+	}
+	if !changed {
+		return raw, false, manual, nil
+	}
+	if len(agents) == 0 {
+		delete(root, "agent")
+	}
+	encoded, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return nil, false, manual, err
+	}
+	eol := detectEOL(string(raw))
+	return append([]byte(strings.ReplaceAll(string(encoded), "\n", eol)), []byte(eol)...), true, manual, nil
+}
+
+func directRoleIdentity(key string, selected map[string]struct{}, profileSelectionScoped bool) (opencode.ManagedAgentIdentity, bool) {
+	for _, role := range opencode.DirectRoles() {
+		if key == role {
+			return opencode.ManagedAgentIdentity{Owner: opencode.ManagedOwner, Component: opencode.ManagedComponent, Role: role}, true
+		}
+		prefix := role + "-"
+		if !strings.HasPrefix(key, prefix) || len(key) == len(prefix) {
+			continue
+		}
+		profile := strings.TrimPrefix(key, prefix)
+		if profileSelectionScoped {
+			if _, ok := selected[profile]; !ok {
+				return opencode.ManagedAgentIdentity{}, false
+			}
+		}
+		return opencode.ManagedAgentIdentity{Owner: opencode.ManagedOwner, Component: opencode.ManagedComponent, Role: role + "@" + profile}, true
+	}
+	return opencode.ManagedAgentIdentity{}, false
 }
 
 func rewriteSkillRegistryHook(path string) operation {
