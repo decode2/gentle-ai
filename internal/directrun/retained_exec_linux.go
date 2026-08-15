@@ -347,12 +347,12 @@ func RunRetainedHelper() error {
 	if !retainedProcFSAvailable() {
 		return ErrCommandTargetUnsupported
 	}
-	if err := unix.Fchdir(5); err != nil {
-		return ErrCommandTargetUnsupported
-	}
 	args := os.Args
 	if len(args) < 4 || args[1] != "_direct-run-retained" || !allowedCommand(args[3:]) {
 		return ErrOperationUnsupported
+	}
+	if err := unix.Fchdir(5); err != nil {
+		return ErrCommandTargetUnsupported
 	}
 	if args[2] == "elf" {
 		if err := syscall.Exec(retainedProcFD(4), args[3:], os.Environ()); err != nil {

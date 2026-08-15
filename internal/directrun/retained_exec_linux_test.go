@@ -18,6 +18,13 @@ import (
 
 func TestMain(m *testing.M) {
 	args := os.Args
+	if len(args) >= 3 && args[1] == "_direct-run-helper-test" {
+		os.Args = append(args[:1], args[2:]...)
+		if err := RunRetainedHelper(); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(args) >= 2 && args[1] == "_direct-run-retained" {
 		if err := RunRetainedHelper(); err != nil {
 			os.Exit(1)
@@ -418,6 +425,60 @@ func TestRetainedHelperRejectsInvalidDispatch(t *testing.T) {
 	}
 	if _, err := retainedProgramFor("pnpm"); !errors.Is(err, ErrCommandTargetUnsupported) && err == nil {
 		t.Fatal("pnpm target accepted")
+	}
+}
+
+func TestRetainedHelperInternalFaultsFailClosed(t *testing.T) {
+	if !retainedProcFSAvailable() {
+		t.Skip("procfd unavailable")
+	}
+	root := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func(path string) *os.File {
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return file
+	}
+	cwd := open(root)
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("not executable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "script")
+	if err := os.WriteFile(script, []byte("script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, mode string
+		argv       []string
+		files      []*os.File
+	}{
+		{"malformed-dispatch", "elf", []string{"go", "version"}, nil},
+		{"fchdir", "elf", []string{"go", "version"}, []*os.File{open(self), open(target), open(target)}},
+		{"target-exec", "elf", []string{"go", "version"}, []*os.File{open(self), open(target), cwd}},
+		{"interpreter-exec", "script", []string{"npm", "test"}, []*os.File{open(self), open(script), open(root), open(script), open(target)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"_direct-run-helper-test", "_direct-run-retained", test.mode}
+			if test.name == "malformed-dispatch" {
+				args[1] = "not-retained"
+			}
+			args = append(args, test.argv...)
+			command := exec.Command(self, args...)
+			command.ExtraFiles = test.files
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatal("helper succeeded")
+			}
+			if len(output) != 0 {
+				t.Fatalf("helper leaked output: %q", output)
+			}
+		})
 	}
 }
 
