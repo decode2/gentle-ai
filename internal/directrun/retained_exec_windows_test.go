@@ -15,3 +15,13 @@ func TestRetainedExecIsUnsupportedBeforeLaunch(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRetainedGitInspectIsUnsupportedBeforeLaunch(t *testing.T) {
+	inspector, err := newRetainedGitInspector(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspector.inspect(context.Background()); !errors.Is(err, ErrCommandTargetUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+}

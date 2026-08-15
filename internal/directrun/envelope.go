@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -238,6 +239,11 @@ func structuredGitInspectResult(raw []byte, status bool) error {
 			return errors.New("invalid git branch")
 		}
 	}
+	for _, entry := range entries {
+		if err := validateGitInspectEntry(entry, status); err != nil {
+			return err
+		}
+	}
 	var value map[string]json.RawMessage
 	if json.Unmarshal(raw, &value) != nil {
 		return errors.New("invalid git inspect result")
@@ -249,6 +255,77 @@ func structuredGitInspectResult(raw []byte, status bool) error {
 		return errors.New("invalid git inspect digest")
 	}
 	return nil
+}
+
+func validateGitInspectEntry(raw json.RawMessage, status bool) error {
+	if status {
+		m, err := object(raw, set("path", "rename_from", "index", "worktree", "unmerged", "untracked"))
+		if err != nil || path(m["path"]) != nil || boolean(m["unmerged"]) != nil || boolean(m["untracked"]) != nil {
+			return errors.New("invalid git status entry")
+		}
+		var index, worktree string
+		var unmerged, untracked bool
+		_ = json.Unmarshal(m["index"], &index)
+		_ = json.Unmarshal(m["worktree"], &worktree)
+		_ = json.Unmarshal(m["unmerged"], &unmerged)
+		_ = json.Unmarshal(m["untracked"], &untracked)
+		if rename, ok := m["rename_from"]; ok && path(rename) != nil {
+			return errors.New("invalid git status entry")
+		}
+		if untracked {
+			if index != "?" || worktree != "?" || unmerged || m["rename_from"] != nil {
+				return errors.New("invalid git status entry")
+			}
+			return nil
+		}
+		if len(index) != 1 || len(worktree) != 1 || !strings.ContainsRune(".MADRCUT", rune(index[0])) || !strings.ContainsRune(".MADRCUT", rune(worktree[0])) || unmerged != gitUnmergedStatus(index+worktree) {
+			return errors.New("invalid git status entry")
+		}
+		return nil
+	}
+	m, err := object(raw, set("scope", "path", "rename_from", "status", "additions", "deletions", "binary", "untracked"))
+	if err != nil || path(m["path"]) != nil || integer(m["additions"], 0, -1) != nil || integer(m["deletions"], 0, -1) != nil || boolean(m["binary"]) != nil || boolean(m["untracked"]) != nil {
+		return errors.New("invalid git diff entry")
+	}
+	var scope, change string
+	var binary, untracked bool
+	_ = json.Unmarshal(m["scope"], &scope)
+	_ = json.Unmarshal(m["status"], &change)
+	_ = json.Unmarshal(m["binary"], &binary)
+	_ = json.Unmarshal(m["untracked"], &untracked)
+	if rename, ok := m["rename_from"]; ok && path(rename) != nil {
+		return errors.New("invalid git diff entry")
+	}
+	if scope == "untracked" {
+		if change != "?" || !untracked || binary || m["rename_from"] != nil {
+			return errors.New("invalid git diff entry")
+		}
+		return nil
+	}
+	if (scope != "staged" && scope != "unstaged") || untracked || !gitDiffStatus(change) {
+		return errors.New("invalid git diff entry")
+	}
+	return nil
+}
+
+func gitDiffStatus(status string) bool {
+	if len(status) == 1 {
+		return strings.ContainsRune("AMDTUXB", rune(status[0]))
+	}
+	if len(status) < 2 || len(status) > 4 || (status[0] != 'R' && status[0] != 'C') {
+		return false
+	}
+	for _, value := range status[1:] {
+		if value < '0' || value > '9' {
+			return false
+		}
+	}
+	score, err := strconv.ParseInt(status[1:], 10, 64)
+	return err == nil && score <= 100
+}
+
+func gitUnmergedStatus(status string) bool {
+	return status == "DD" || status == "AU" || status == "UD" || status == "UA" || status == "DU" || status == "AA" || status == "UU"
 }
 
 // DigestSHA256 returns the lower-case SHA-256 representation used by operation envelopes.
@@ -290,7 +367,7 @@ func object(b []byte, allowed map[string]bool) (map[string]json.RawMessage, erro
 		}
 	}
 	for k := range allowed {
-		if _, ok := m[k]; !ok && !(k == "timeout_ms" || k == "path") {
+		if _, ok := m[k]; !ok && !(k == "timeout_ms" || k == "path" || k == "rename_from") {
 			return nil, errors.New("missing field")
 		}
 	}

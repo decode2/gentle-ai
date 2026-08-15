@@ -24,6 +24,11 @@ type retainedGitInspector struct {
 	cwd     int
 }
 
+// retainedGitTestHook coordinates adversarial tests through the request context.
+// It is deliberately private and never changes process-wide runtime behavior.
+type retainedGitTestHook struct{ beforeFinalValidation func() }
+type retainedGitTestHookKey struct{}
+
 type gitChange struct {
 	Path      string `json:"path"`
 	OldPath   string `json:"old_path,omitempty"`
@@ -147,6 +152,12 @@ func (g *retainedGitInspector) inspect(ctx context.Context) (gitInspection, erro
 	if err != nil {
 		return gitInspection{}, err
 	}
+	if hook, ok := ctx.Value(retainedGitTestHookKey{}).(retainedGitTestHook); ok && hook.beforeFinalValidation != nil {
+		hook.beforeFinalValidation()
+	}
+	if err := g.lease.Validate(ctx); err != nil {
+		return gitInspection{}, ErrOperationUnavailable
+	}
 	result := gitInspection{Status: status, Staged: staged, Unstaged: unstaged}
 	payload, err := json.Marshal(struct {
 		Status           gitStatus `json:"status"`
@@ -163,7 +174,7 @@ func (v gitInspection) statusResult() (gitStatusResult, error) {
 	result := gitStatusResult{Branch: gitBranchResult{Head: v.Status.Head, Upstream: v.Status.Upstream, Ahead: v.Status.Ahead, Behind: v.Status.Behind}}
 	for _, change := range v.Status.Changes {
 		entry := gitStatusEntryResult{Path: change.Path, RenameFrom: change.OldPath, Index: string(change.Status[0]), Worktree: string(change.Status[1])}
-		entry.Unmerged = entry.Index != "." && entry.Worktree != "." && strings.Contains(change.Status, "U")
+		entry.Unmerged = gitUnmergedStatus(change.Status)
 		result.Entries = append(result.Entries, entry)
 	}
 	for _, path := range v.Status.Untracked {
@@ -248,7 +259,7 @@ func parseGitStatus(raw []byte) (gitStatus, error) {
 				return result, err
 			}
 		case strings.HasPrefix(r, "1 "):
-			change, err := parseGitStatusTracked(r, 8)
+			change, err := parseGitStatusTracked(r, 8, false)
 			if err != nil {
 				return result, err
 			}
@@ -257,7 +268,7 @@ func parseGitStatus(raw []byte) (gitStatus, error) {
 			if i+1 >= len(records) {
 				return result, errors.New("missing rename source")
 			}
-			change, err := parseGitStatusTracked(r, 9)
+			change, err := parseGitStatusTracked(r, 9, false)
 			if err != nil {
 				return result, err
 			}
@@ -268,7 +279,7 @@ func parseGitStatus(raw []byte) (gitStatus, error) {
 			result.Changes = append(result.Changes, change)
 			i++
 		case strings.HasPrefix(r, "u "):
-			change, err := parseGitStatusTracked(r, 10)
+			change, err := parseGitStatusTracked(r, 10, true)
 			if err != nil {
 				return result, err
 			}
@@ -291,7 +302,7 @@ func parseGitStatus(raw []byte) (gitStatus, error) {
 	return result, nil
 }
 
-func parseGitStatusTracked(record string, fields int) (gitChange, error) {
+func parseGitStatusTracked(record string, fields int, unmerged bool) (gitChange, error) {
 	parts := strings.SplitN(record, " ", fields+1)
 	if len(parts) != fields+1 || len(parts[1]) != 2 {
 		return gitChange{}, errors.New("invalid tracked status record")
@@ -301,7 +312,9 @@ func parseGitStatusTracked(record string, fields int) (gitChange, error) {
 		return gitChange{}, err
 	}
 	status := parts[1]
-	if status == "??" || status == "!!" || !strings.ContainsRune(".MADRCUT", rune(status[0])) || !strings.ContainsRune(".MADRCUT", rune(status[1])) {
+	if status == "??" || status == "!!" ||
+		unmerged && !gitUnmergedStatus(status) ||
+		!unmerged && (!strings.ContainsRune(".MADRCUT", rune(status[0])) || !strings.ContainsRune(".MADRCUT", rune(status[1]))) {
 		return gitChange{}, errors.New("invalid tracked status")
 	}
 	return gitChange{Path: path, Status: status}, nil
