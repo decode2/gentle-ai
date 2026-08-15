@@ -11,6 +11,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/agentguidance"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/filemerge"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/components/mutationjournal"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 )
@@ -484,6 +485,10 @@ func hasProfileAssignment(profile model.Profile, phase string) bool {
 }
 
 func cleanupStaleProfileJDAgents(settingsPath string, profile model.Profile) (filemerge.WriteResult, error) {
+	return cleanupStaleProfileJDAgentsWithJournal(settingsPath, profile, nil)
+}
+
+func cleanupStaleProfileJDAgentsWithJournal(settingsPath string, profile model.Profile, journal *mutationjournal.Journal) (filemerge.WriteResult, error) {
 	if profile.Name == "" || profile.Name == "default" {
 		return filemerge.WriteResult{}, nil
 	}
@@ -536,6 +541,10 @@ func cleanupStaleProfileJDAgents(settingsPath string, profile model.Profile) (fi
 	}
 	out = append(out, '\n')
 
+	if journal != nil {
+		_, err := journal.WriteWithMode(settingsPath, out, 0o644)
+		return filemerge.WriteResult{Changed: journal.Changed(settingsPath)}, err
+	}
 	return filemerge.WriteFileAtomic(settingsPath, out, 0o644)
 }
 

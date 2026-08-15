@@ -116,6 +116,25 @@ func TestProfileRoleMergeIsIdempotentForManagedEntries(t *testing.T) {
 		t.Fatalf("managed profile merge is not byte-idempotent")
 	}
 }
+
+func TestProfileRoleSyncCreatesRequestedRoles(t *testing.T) {
+	home := t.TempDir()
+	settingsPath := filepath.Join(home, "opencode.json")
+	writeJSONSettings(t, settingsPath, map[string]any{"agent": map[string]any{}})
+	overlay, err := GenerateProfileOverlay(model.Profile{Name: "cheap"}, home, settingsPath, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, report, err := mergeProfileJSONFile(settingsPath, overlay, "cheap", RoleReconciliationSync); err != nil || len(report.Preserved) != 0 {
+		t.Fatalf("sync merge report=%#v err=%v", report, err)
+	}
+	agents := readJSONSettings(t, settingsPath)["agent"].(map[string]any)
+	for _, role := range opencode.DirectRoles() {
+		if _, ok := agents[role+"-cheap"]; !ok {
+			t.Fatalf("sync did not create requested profile role %q", role)
+		}
+	}
+}
 func TestRemoveProfileAgentsWithReportPreservesRoleReplacement(t *testing.T) {
 	home := t.TempDir()
 	settingsPath := filepath.Join(home, "opencode.json")

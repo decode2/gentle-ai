@@ -193,7 +193,15 @@ var authPath = DefaultAuthPath
 //
 // Results are sorted alphabetically.
 func DetectAvailableProviders(providers map[string]Provider, customProviderIDs ...string) []string {
-	authProviders := loadAuthProviders(authPath())
+	return detectAvailableProviders(providers, authPath(), customProviderIDs...)
+}
+
+func DetectAvailableProvidersWithAuthPath(providers map[string]Provider, credentialsPath string, customProviderIDs ...string) []string {
+	return detectAvailableProviders(providers, credentialsPath, customProviderIDs...)
+}
+
+func detectAvailableProviders(providers map[string]Provider, credentialsPath string, customProviderIDs ...string) []string {
+	authProviders := loadAuthProviders(credentialsPath)
 
 	customSet := make(map[string]bool, len(customProviderIDs))
 	for _, id := range customProviderIDs {

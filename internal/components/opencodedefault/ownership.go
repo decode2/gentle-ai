@@ -58,6 +58,16 @@ func PrepareInstall(settingsPath string) (*InstallPlan, error) {
 	return &InstallPlan{settingsPath: settingsPath, owned: owned, recapture: !exists || !managedAgentPresent}, nil
 }
 func (p *InstallPlan) Apply() (bool, error) {
+	return p.apply(nil)
+}
+
+// ApplyWithJournal writes the default-agent pair through the supplied outer
+// transaction so callers can include it in a larger OpenCode mutation.
+func (p *InstallPlan) ApplyWithJournal(journal *mutationjournal.Journal) (bool, error) {
+	return p.apply(journal)
+}
+
+func (p *InstallPlan) apply(journal *mutationjournal.Journal) (bool, error) {
 	root, raw, _, current, err := readSettings(p.settingsPath)
 	if err != nil {
 		return false, err
@@ -72,8 +82,14 @@ func (p *InstallPlan) Apply() (bool, error) {
 	ownerPath := OwnershipPath(p.settingsPath)
 	ownerRaw, _ := os.ReadFile(ownerPath)
 	changed := !bytes.Equal(raw, settings) || !bytes.Equal(ownerRaw, metadata)
-	if err := writePair(p.settingsPath, settings, true, ownerPath, metadata, true); err != nil {
-		return false, err
+	var writeErr error
+	if journal == nil {
+		writeErr = writePair(p.settingsPath, settings, true, ownerPath, metadata, true)
+	} else {
+		writeErr = writePairWithJournal(journal, p.settingsPath, settings, true, ownerPath, metadata, true)
+	}
+	if writeErr != nil {
+		return false, writeErr
 	}
 	return changed, nil
 }
@@ -89,6 +105,19 @@ func PrepareUninstall(settingsPath string) (*UninstallPlan, error) {
 	return &UninstallPlan{settingsPath: settingsPath, settingsExist: exists, current: current, owned: owned}, nil
 }
 func (p *UninstallPlan) Apply(cleaned []byte, settingsExist bool) (changed, removed bool, err error) {
+	return p.apply(nil, cleaned, settingsExist)
+}
+
+// ApplyWithJournal removes the default-agent pair through the supplied outer
+// transaction so callers can include it in a larger OpenCode mutation.
+func (p *UninstallPlan) ApplyWithJournal(journal *mutationjournal.Journal, cleaned []byte, settingsExist bool) (changed, removed bool, err error) {
+	if journal == nil {
+		return p.Apply(cleaned, settingsExist)
+	}
+	return p.apply(journal, cleaned, settingsExist)
+}
+
+func (p *UninstallPlan) apply(journal *mutationjournal.Journal, cleaned []byte, settingsExist bool) (changed, removed bool, err error) {
 	root := map[string]any{}
 	if settingsExist {
 		if root, err = filemerge.UnmarshalJSONObject(cleaned); err != nil {
@@ -113,8 +142,14 @@ func (p *UninstallPlan) Apply(cleaned []byte, settingsExist bool) (changed, remo
 		return false, false, readErr
 	}
 	changed = currentExists != settingsExist || (settingsExist && !bytes.Equal(currentRaw, settings)) || p.owned != nil
-	if err := writePair(p.settingsPath, settings, settingsExist, OwnershipPath(p.settingsPath), nil, false); err != nil {
-		return false, false, err
+	var writeErr error
+	if journal == nil {
+		writeErr = writePair(p.settingsPath, settings, settingsExist, OwnershipPath(p.settingsPath), nil, false)
+	} else {
+		writeErr = writePairWithJournal(journal, p.settingsPath, settings, settingsExist, OwnershipPath(p.settingsPath), nil, false)
+	}
+	if writeErr != nil {
+		return false, false, writeErr
 	}
 	return changed, currentExists && !settingsExist, nil
 }
@@ -196,7 +231,13 @@ func encode(value any) []byte {
 	return append(raw, '\n')
 }
 func writePair(settingsPath string, settings []byte, keepSettings bool, ownerPath string, owner []byte, keepOwner bool) error {
-	journal := mutationjournal.New(filepath.Dir(settingsPath))
+	return writePairWithJournal(nil, settingsPath, settings, keepSettings, ownerPath, owner, keepOwner)
+}
+
+func writePairWithJournal(journal *mutationjournal.Journal, settingsPath string, settings []byte, keepSettings bool, ownerPath string, owner []byte, keepOwner bool) error {
+	if journal == nil {
+		journal = mutationjournal.New(filepath.Dir(settingsPath))
+	}
 	if err := journal.Capture(settingsPath); err != nil {
 		return err
 	}
