@@ -7142,7 +7142,7 @@ func TestRefreshInstalledOpenCodePluginsSkipsSymlinksAndDirectories(t *testing.T
 
 // TestManagedDirectRunPluginInstallAndSyncProjection keeps install and sync
 // intentionally asymmetric: install projects the OpenCode-only launcher, while
-// sync refreshes only an existing regular projection and never creates one.
+// sync refreshes only a complete ownership-valid projection and never creates one.
 func TestManagedDirectRunPluginInstallAndSyncProjection(t *testing.T) {
 	openCodeHome := t.TempDir()
 	installed, err := installOpenCodePlugins(openCodeHome, opencodeAdapter())
@@ -7164,8 +7164,8 @@ func TestManagedDirectRunPluginInstallAndSyncProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshInstalledOpenCodePlugins(OpenCode) error = %v", err)
 	}
-	if got, err := os.ReadFile(launcher); err != nil || string(got) != assets.MustRead("opencode/plugins/managed-direct-run.ts") || !refreshed.Changed {
-		t.Fatalf("OpenCode sync did not refresh installed launcher: %q, %v, %#v", got, err, refreshed)
+	if got, err := os.ReadFile(launcher); err != nil || string(got) != "// stale" || refreshed.Changed {
+		t.Fatalf("OpenCode sync rewrote launcher without a matching ownership sidecar: %q, %v, %#v", got, err, refreshed)
 	}
 
 	absentHome := t.TempDir()

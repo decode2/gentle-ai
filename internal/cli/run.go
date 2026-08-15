@@ -36,6 +36,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/theme"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/installcmd"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/opencode"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/planner"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/state"
@@ -2400,6 +2401,11 @@ func runPostApplyVerification(input postApplyVerificationInput) verify.Report {
 
 	for _, currentPath := range uniqueFilePaths {
 		path := currentPath
+		if !shouldVerifyManagedDirectRunArtifact(input.HomeDir, path) {
+			// Sync intentionally preserves an absent or ambiguous pair instead
+			// of creating/adopting it, so it is not a required output artifact.
+			continue
+		}
 		if isLegacyOpenCodeBackgroundAgentsPlugin(path) {
 			checks = append(checks, verify.Check{
 				ID:          "verify:file:" + path,
@@ -2434,6 +2440,15 @@ func runPostApplyVerification(input postApplyVerificationInput) verify.Report {
 	checks = append(checks, antigravityCollisionCheck(input.Resolved.Agents)...)
 
 	return verify.BuildReport(verify.RunChecks(context.Background(), checks))
+}
+
+func shouldVerifyManagedDirectRunArtifact(homeDir, path string) bool {
+	expected := filepath.Join(homeDir, ".config", "opencode", "plugins", "managed-direct-run.ts")
+	if path != expected {
+		return true
+	}
+	refreshable, _ := opencode.ManagedDirectRunArtifactRefreshable(filepath.Dir(path), path)
+	return refreshable
 }
 
 func isLegacyOpenCodeBackgroundAgentsPlugin(path string) bool {

@@ -707,19 +707,31 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 			if adapter.Agent() == model.AgentOpenCode {
 				pluginsDir := filepath.Join(adapter.GlobalConfigDir(homeDir), "plugins")
 				pluginPath := filepath.Join(pluginsDir, "managed-direct-run.ts")
-				if err := opts.directRoleCheckpoint(directRoleBeforeLauncher); err != nil {
-					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+				refreshArtifact := opts.RoleReconciliationMode == RoleReconciliationInstall
+				if !refreshArtifact {
+					if !hasManagedDirectRole(mergedSettingsBytes) {
+						warnings = append(warnings, "preserved managed direct-run artifact: no ownership-valid direct roles remain")
+					} else if refreshable, reason := opencode.ManagedDirectRunArtifactRefreshable(pluginsDir, pluginPath); refreshable {
+						refreshArtifact = true
+					} else {
+						warnings = append(warnings, "preserved managed direct-run artifact: "+reason)
+					}
 				}
-				artifactChanged, artifactErr := opencode.WriteManagedDirectRunArtifactWithJournal(directJournal, pluginsDir, pluginPath, []byte(assets.MustRead("opencode/plugins/managed-direct-run.ts")), func() error {
-					return opts.directRoleCheckpoint(directRoleAfterLauncher)
-				})
-				if artifactErr != nil {
-					return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", artifactErr)
-				}
-				changed = changed || artifactChanged
-				files = append(files, pluginPath, opencode.DirectRoleArtifactRecordPath(pluginsDir))
-				if err := opts.directRoleCheckpoint(directRoleAfterSidecar); err != nil {
-					return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+				if refreshArtifact {
+					if err := opts.directRoleCheckpoint(directRoleBeforeLauncher); err != nil {
+						return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+					}
+					artifactChanged, artifactErr := opencode.WriteManagedDirectRunArtifactWithJournal(directJournal, pluginsDir, pluginPath, []byte(assets.MustRead("opencode/plugins/managed-direct-run.ts")), func() error {
+						return opts.directRoleCheckpoint(directRoleAfterLauncher)
+					})
+					if artifactErr != nil {
+						return InjectionResult{}, fmt.Errorf("write managed direct-run artifact: %w", artifactErr)
+					}
+					changed = changed || artifactChanged
+					files = append(files, pluginPath, opencode.DirectRoleArtifactRecordPath(pluginsDir))
+					if err := opts.directRoleCheckpoint(directRoleAfterSidecar); err != nil {
+						return InjectionResult{}, fmt.Errorf("direct-role transaction: %w", err)
+					}
 				}
 			}
 		}
@@ -1893,14 +1905,7 @@ func RefreshInstalledOpenCodePlugins(homeDir string, adapter agents.Adapter) (In
 		pluginPath := filepath.Join(pluginsDir, name)
 		content := assets.MustRead("opencode/plugins/" + name)
 		if adapter.Agent() == model.AgentOpenCode && name == "managed-direct-run.ts" {
-			info, err := os.Lstat(pluginPath)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return InjectionResult{}, fmt.Errorf("stat managed OpenCode plugin %s: %w", pluginPath, err)
-			}
-			if !info.Mode().IsRegular() {
+			if refreshable, _ := opencode.ManagedDirectRunArtifactRefreshable(pluginsDir, pluginPath); !refreshable {
 				continue
 			}
 			artifactChanged, err := opencode.WriteManagedDirectRunArtifact(pluginsDir, pluginPath, []byte(content))
@@ -2184,6 +2189,33 @@ func reconcileDefaultOpenCodeRoles(baseJSON, overlay []byte, mode RoleReconcilia
 		return nil, nil, fmt.Errorf("encode OpenCode role overlay: %w", err)
 	}
 	return append(encoded, '\n'), conflicts, nil
+}
+
+// hasManagedDirectRole accepts only the exact default or profile-scoped role
+// identities. A matching key alone must never grant artifact ownership.
+func hasManagedDirectRole(settings []byte) bool {
+	root := map[string]any{}
+	if err := json.Unmarshal(settings, &root); err != nil {
+		return false
+	}
+	agents, _ := root["agent"].(map[string]any)
+	for _, role := range opencode.DirectRoles() {
+		if entry, ok := agents[role].(map[string]any); ok && opencode.ClassifyOwnership(entry, opencode.ManagedAgentIdentity{Owner: opencode.ManagedOwner, Component: opencode.ManagedComponent, Role: role}) == opencode.OwnershipManaged {
+			return true
+		}
+		prefix := role + "-"
+		for key, raw := range agents {
+			profile, found := strings.CutPrefix(key, prefix)
+			if !found || profile == "" {
+				continue
+			}
+			entry, ok := raw.(map[string]any)
+			if ok && opencode.ClassifyOwnership(entry, profileRoleIdentity(role, profile)) == opencode.OwnershipManaged {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // defaultOpenCodeShareDisabled adds a defensive OpenCode default for SDD

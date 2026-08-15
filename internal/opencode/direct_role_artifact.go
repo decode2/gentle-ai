@@ -102,6 +102,71 @@ func DirectRoleArtifactMatches(record DirectRoleArtifactRecord, path string) boo
 	return err == nil && artifactFingerprint(data) == record.Fingerprint
 }
 
+// ManagedDirectRunArtifactRefreshable proves both files are the exact managed
+// artifact pair before sync is allowed to rewrite either one.
+func ManagedDirectRunArtifactRefreshable(pluginsDir, pluginPath string) (bool, string) {
+	recordPath := DirectRoleArtifactRecordPath(pluginsDir)
+	launcherInfo, launcherErr := os.Lstat(pluginPath)
+	recordInfo, recordErr := os.Lstat(recordPath)
+	if os.IsNotExist(launcherErr) && os.IsNotExist(recordErr) {
+		return false, "both launcher and sidecar are absent"
+	}
+	if launcherErr == nil && os.IsNotExist(recordErr) {
+		return false, "launcher exists without ownership sidecar"
+	}
+	if os.IsNotExist(launcherErr) && recordErr == nil {
+		return false, "sidecar exists without launcher"
+	}
+	if launcherErr != nil {
+		return false, "launcher state is unreadable"
+	}
+	if recordErr != nil {
+		return false, "sidecar state is unreadable"
+	}
+	if !launcherInfo.Mode().IsRegular() {
+		return false, "launcher is not a regular file"
+	}
+	if launcherInfo.Mode().Perm() != 0o644 {
+		return false, "launcher mode drift"
+	}
+	if !recordInfo.Mode().IsRegular() {
+		return false, "sidecar is not a regular file"
+	}
+	if recordInfo.Mode().Perm() != 0o600 {
+		return false, "sidecar mode drift"
+	}
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		return false, "sidecar is unreadable"
+	}
+	var record DirectRoleArtifactRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return false, "sidecar is malformed"
+	}
+	if record.Schema != "gentle-ai.opencode-direct-role-artifact/v1" {
+		return false, "sidecar schema is invalid"
+	}
+	if record.Owner != ManagedOwner {
+		return false, "sidecar owner does not match"
+	}
+	if record.Kind != "managed-direct-run-plugin" {
+		return false, "sidecar kind does not match"
+	}
+	if record.Mode != 0o644 {
+		return false, "sidecar declares an unexpected launcher mode"
+	}
+	if record.Path != pluginPath {
+		return false, "sidecar path does not match launcher"
+	}
+	if record.Fingerprint == "" {
+		return false, "sidecar fingerprint is missing"
+	}
+	if !DirectRoleArtifactMatches(record, pluginPath) {
+		return false, "launcher fingerprint drift"
+	}
+	return true, ""
+}
+
 func artifactFingerprint(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
