@@ -11,7 +11,7 @@ import (
 type retainedGitInspector struct{}
 
 func newRetainedGitInspector(*reviewtransaction.RepositoryIdentityLease) (*retainedGitInspector, error) {
-	return nil, ErrCommandTargetUnsupported
+	return &retainedGitInspector{}, nil
 }
 
 func (*retainedGitInspector) Close() {}
@@ -22,3 +22,13 @@ func (*retainedGitInspector) inspect(context.Context) (gitInspection, error) {
 type gitChange struct{}
 type gitStatus struct{}
 type gitInspection struct{}
+
+func (gitInspection) statusResult() (gitStatusResult, error) {
+	return gitStatusResult{}, ErrCommandTargetUnsupported
+}
+func (gitInspection) diffResult() (gitDiffResult, error) {
+	return gitDiffResult{}, ErrCommandTargetUnsupported
+}
+
+type gitStatusResult struct{}
+type gitDiffResult struct{}

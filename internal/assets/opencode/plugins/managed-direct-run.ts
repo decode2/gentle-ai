@@ -79,7 +79,7 @@ const ManagedDirectRun: Plugin = async ({ client, directory, worktree }) => {
       } }),
       direct_read: tool({ description: "Read an admitted direct-run file", args: { path: tool.schema.string(), offset: tool.schema.number(), limit: tool.schema.number() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_read", args)) } }),
       direct_edit: tool({ description: "Edit an admitted direct-run file", args: { path: tool.schema.string(), base_sha256: tool.schema.string(), replacements: tool.schema.array(tool.schema.object({ start: tool.schema.number(), end: tool.schema.number(), text: tool.schema.string() })) }, async execute(args, context) { return JSON.stringify(await child(context, "direct_edit", args)) } }),
-      direct_inspect: tool({ description: "Inspect an admitted direct-run tree", args: { query: tool.schema.literal("tree"), path: tool.schema.string().optional() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_inspect", args)) } }),
+      direct_inspect: tool({ description: "Inspect an admitted tree or structured Git state", args: { query: tool.schema.enum(["tree", "git_status", "git_diff"]), path: tool.schema.string().optional() }, async execute(args, context) { if (args.query !== "tree" && args.path !== undefined) throw new Error("managed direct operation denied"); return JSON.stringify(await child(context, "direct_inspect", args)) } }),
       direct_exec: tool({ description: "Run one sealed verification command", args: { command_index: tool.schema.number(), timeout_ms: tool.schema.number().optional() }, async execute(args, context) { return JSON.stringify(await child(context, "direct_exec", args)) } }),
     },
     "tool.execute.before": async (input, output) => {

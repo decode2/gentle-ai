@@ -3,7 +3,9 @@
 package directrun
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,6 +67,62 @@ func TestRetainedGitInspectorCapturesStructuredWorktreeEvidence(t *testing.T) {
 	if rename := gitChangeFor(result.Staged, "renamed café.txt"); rename.OldPath != "unicode-café.txt" {
 		t.Fatalf("rename=%#v", rename)
 	}
+	for _, public := range []any{mustGitStatusResult(t, result), mustGitDiffResult(t, result)} {
+		payload, err := json.Marshal(public)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := Response{Schema: OperationSchema, Operation: "direct_inspect", RequestID: "request-3026", Status: "ok", Result: payload}
+		if err := response.Validate(); err != nil {
+			t.Fatalf("public result rejected: %v: %s", err, payload)
+		}
+		canonical, err := response.CanonicalJSON()
+		if err != nil || !bytes.Equal(canonical, mustJSON(t, response)) {
+			t.Fatalf("noncanonical response: %v", err)
+		}
+	}
+}
+
+func TestGitInspectPayloadsAreStrict(t *testing.T) {
+	for _, test := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{"status", `{"query":"git_status"}`, true}, {"diff", `{"query":"git_diff"}`, true}, {"tree", `{"query":"tree"}`, true},
+		{"raw-patch", `{"query":"patch"}`, false}, {"arguments", `{"query":"git_diff","argv":["status"]}`, false}, {"path-override", `{"query":"git_status","path":"x"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := Request{Schema: OperationSchema, Identity: "identity-3026", Operation: "direct_inspect", RequestID: "request-3026", SessionID: "session-3026", HandoffRevision: "handoff-3026", BindingRevision: "binding-3026", ParentSessionID: "parent-3026", ParentCallID: "call-3026", Agent: WorkerRole, Payload: []byte(test.payload)}
+			if (request.Validate() == nil) != test.want {
+				t.Fatalf("payload %s accepted=%v", test.payload, !test.want)
+			}
+		})
+	}
+}
+
+func mustGitStatusResult(t *testing.T, value gitInspection) gitStatusResult {
+	t.Helper()
+	result, err := value.statusResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+func mustGitDiffResult(t *testing.T, value gitInspection) gitDiffResult {
+	t.Helper()
+	result, err := value.diffResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	result, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestGitParsersRejectMalformedRecords(t *testing.T) {

@@ -130,8 +130,14 @@ func requestPayload(op string, b json.RawMessage) error {
 		return nil
 	default:
 		q := ""
-		if err := json.Unmarshal(m["query"], &q); err != nil || q != "tree" {
+		if err := json.Unmarshal(m["query"], &q); err != nil || (q != "tree" && q != "git_status" && q != "git_diff") {
 			return errors.New("invalid inspect query")
+		}
+		if q != "tree" {
+			if _, ok := m["path"]; ok {
+				return errors.New("invalid inspect payload")
+			}
+			return nil
 		}
 		if v, ok := m["path"]; ok {
 			return path(v)
@@ -179,6 +185,11 @@ func result(op string, b json.RawMessage) error {
 		}
 		return nil
 	case "direct_inspect":
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(b, &raw) == nil && raw["entries"] != nil {
+			_, status := raw["branch"]
+			return structuredGitInspectResult(b, status)
+		}
 		m, err := object(b, set("evidence_sha256", "content_b64", "encoding", "truncated"))
 		if err != nil || sha(m["evidence_sha256"]) != nil || boolean(m["truncated"]) != nil {
 			return errors.New("invalid inspect result")
@@ -201,6 +212,43 @@ func result(op string, b json.RawMessage) error {
 		}
 		return nil
 	}
+}
+
+func structuredGitInspectResult(raw []byte, status bool) error {
+	allowed := set("evidence_sha256", "entries")
+	if status {
+		allowed["branch"] = true
+	}
+	m, err := object(raw, allowed)
+	if err != nil || sha(m["evidence_sha256"]) != nil {
+		return errors.New("invalid git inspect result")
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(m["entries"], &entries) != nil || entries == nil || len(entries) > 4096 {
+		return errors.New("invalid git inspect entries")
+	}
+	if status {
+		var branch struct {
+			Head     string `json:"head"`
+			Upstream string `json:"upstream"`
+			Ahead    int64  `json:"ahead"`
+			Behind   int64  `json:"behind"`
+		}
+		if json.Unmarshal(m["branch"], &branch) != nil || branch.Head == "" || branch.Ahead < 0 || branch.Behind < 0 {
+			return errors.New("invalid git branch")
+		}
+	}
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil {
+		return errors.New("invalid git inspect result")
+	}
+	evidence := value["evidence_sha256"]
+	value["evidence_sha256"] = []byte(`""`)
+	payload, err := json.Marshal(value)
+	if err != nil || !bytes.Equal([]byte(DigestSHA256(payload)), mustDigest(evidence)) {
+		return errors.New("invalid git inspect digest")
+	}
+	return nil
 }
 
 // DigestSHA256 returns the lower-case SHA-256 representation used by operation envelopes.

@@ -49,6 +49,44 @@ type gitInspection struct {
 	Evidence Digest      `json:"evidence_sha256"`
 }
 
+type gitBranchResult struct {
+	Head     string `json:"head"`
+	Upstream string `json:"upstream,omitempty"`
+	Ahead    int64  `json:"ahead"`
+	Behind   int64  `json:"behind"`
+}
+
+type gitStatusEntryResult struct {
+	Path       string `json:"path"`
+	RenameFrom string `json:"rename_from,omitempty"`
+	Index      string `json:"index"`
+	Worktree   string `json:"worktree"`
+	Unmerged   bool   `json:"unmerged"`
+	Untracked  bool   `json:"untracked"`
+}
+
+type gitStatusResult struct {
+	EvidenceSHA256 Digest                 `json:"evidence_sha256"`
+	Branch         gitBranchResult        `json:"branch"`
+	Entries        []gitStatusEntryResult `json:"entries"`
+}
+
+type gitDiffEntryResult struct {
+	Scope      string `json:"scope"`
+	Path       string `json:"path"`
+	RenameFrom string `json:"rename_from,omitempty"`
+	Status     string `json:"status"`
+	Additions  int64  `json:"additions"`
+	Deletions  int64  `json:"deletions"`
+	Binary     bool   `json:"binary"`
+	Untracked  bool   `json:"untracked"`
+}
+
+type gitDiffResult struct {
+	EvidenceSHA256 Digest               `json:"evidence_sha256"`
+	Entries        []gitDiffEntryResult `json:"entries"`
+}
+
 func newRetainedGitInspector(lease *reviewtransaction.RepositoryIdentityLease) (*retainedGitInspector, error) {
 	if lease == nil {
 		return nil, ErrOperationUnavailable
@@ -73,7 +111,6 @@ func (g *retainedGitInspector) Close() {
 	_ = unix.Close(g.cwd)
 }
 
-// inspect is intentionally private until the operation contract is wired.
 func (g *retainedGitInspector) inspect(ctx context.Context) (gitInspection, error) {
 	if g == nil || g.lease.Validate(ctx) != nil {
 		return gitInspection{}, ErrOperationUnavailable
@@ -119,6 +156,45 @@ func (g *retainedGitInspector) inspect(ctx context.Context) (gitInspection, erro
 		return gitInspection{}, ErrOperationUnavailable
 	}
 	result.Evidence = Digest(DigestSHA256(payload))
+	return result, nil
+}
+
+func (v gitInspection) statusResult() (gitStatusResult, error) {
+	result := gitStatusResult{Branch: gitBranchResult{Head: v.Status.Head, Upstream: v.Status.Upstream, Ahead: v.Status.Ahead, Behind: v.Status.Behind}}
+	for _, change := range v.Status.Changes {
+		entry := gitStatusEntryResult{Path: change.Path, RenameFrom: change.OldPath, Index: string(change.Status[0]), Worktree: string(change.Status[1])}
+		entry.Unmerged = entry.Index != "." && entry.Worktree != "." && strings.Contains(change.Status, "U")
+		result.Entries = append(result.Entries, entry)
+	}
+	for _, path := range v.Status.Untracked {
+		result.Entries = append(result.Entries, gitStatusEntryResult{Path: path, Index: "?", Worktree: "?", Untracked: true})
+	}
+	payload, err := json.Marshal(map[string]any{"evidence_sha256": "", "branch": result.Branch, "entries": result.Entries})
+	if err != nil {
+		return gitStatusResult{}, ErrOperationUnavailable
+	}
+	result.EvidenceSHA256 = Digest(DigestSHA256(payload))
+	return result, nil
+}
+
+func (v gitInspection) diffResult() (gitDiffResult, error) {
+	result := gitDiffResult{}
+	for _, scoped := range []struct {
+		scope   string
+		changes []gitChange
+	}{{"staged", v.Staged}, {"unstaged", v.Unstaged}} {
+		for _, change := range scoped.changes {
+			result.Entries = append(result.Entries, gitDiffEntryResult{Scope: scoped.scope, Path: change.Path, RenameFrom: change.OldPath, Status: change.Status, Additions: change.Additions, Deletions: change.Deletions, Binary: change.Binary})
+		}
+	}
+	for _, path := range v.Status.Untracked {
+		result.Entries = append(result.Entries, gitDiffEntryResult{Scope: "untracked", Path: path, Status: "?", Untracked: true})
+	}
+	payload, err := json.Marshal(map[string]any{"evidence_sha256": "", "entries": result.Entries})
+	if err != nil {
+		return gitDiffResult{}, ErrOperationUnavailable
+	}
+	result.EvidenceSHA256 = Digest(DigestSHA256(payload))
 	return result, nil
 }
 
