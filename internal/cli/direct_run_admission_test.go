@@ -90,10 +90,6 @@ func TestRunDirectRunAdmissionRaceAndWireRefusals(t *testing.T) {
 		t.Fatalf("race record = %#v", consumed)
 	}
 
-	response := directRunExecute(t, repo, directRunRequest(t, consumed, consumed.SessionID, "direct_exec", `{"command_index":0}`))
-	if response.Status != "error" || response.Error.Code != "unsupported_operation" || response.Error.Message != "operation unsupported" {
-		t.Fatalf("direct_exec = %#v", response)
-	}
 	for _, child := range []string{"wrong-child"} {
 		response := directRunExecute(t, repo, directRunRequest(t, consumed, child, "direct_read", `{"path":"note.txt","offset":0,"limit":1}`))
 		if response.Status != "error" || response.Error.Code != "unauthorized" || response.Error.Message != "request denied" {

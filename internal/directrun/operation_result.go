@@ -30,6 +30,20 @@ type InspectResult struct {
 	Truncated      bool   `json:"truncated"`
 }
 
+// ExecResult deliberately exposes evidence, not process output. Output remains
+// bounded inside the authority so a worker cannot use this boundary as a read.
+type ExecResult struct {
+	ExitCode     int    `json:"exit_code"`
+	OutputSHA256 string `json:"output_sha256"`
+}
+
+func NewExecResult(exitCode int, output []byte) (ExecResult, error) {
+	if exitCode < 0 {
+		return ExecResult{}, errors.New("invalid exec exit code")
+	}
+	return ExecResult{ExitCode: exitCode, OutputSHA256: DigestSHA256(output)}, nil
+}
+
 func NewReadResult(full, content []byte, offset, total int64, truncated bool) (ReadResult, error) {
 	if offset < 0 || total < 0 || total != int64(len(full)) || offset > total || int64(len(content)) > total-offset {
 		return ReadResult{}, errors.New("invalid read result metadata")
@@ -63,4 +77,7 @@ func (r EditResult) CanonicalJSON() ([]byte, error) {
 }
 func (r InspectResult) CanonicalJSON() ([]byte, error) {
 	return marshal(r, func() error { b, _ := json.Marshal(r); return result("direct_inspect", b) })
+}
+func (r ExecResult) CanonicalJSON() ([]byte, error) {
+	return marshal(r, func() error { b, _ := json.Marshal(r); return result("direct_exec", b) })
 }

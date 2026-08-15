@@ -65,7 +65,7 @@ func TestResponseValidation(t *testing.T) {
 	valid := map[string]string{
 		"direct_read":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_read","request_id":"r","status":"ok","result":{"data_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","offset":0,"total_size":0,"truncated":false}}`,
 		"direct_edit":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_edit","request_id":"r","status":"ok","result":{"result_sha256":"0000000000000000000000000000000000000000000000000000000000000000","changed":false,"publication":"unchanged"}}`,
-		"direct_exec":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","status":"ok","result":{"output_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}`,
+		"direct_exec":    `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_exec","request_id":"r","status":"ok","result":{"exit_code":0,"output_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}}`,
 		"direct_inspect": `{"schema":"gentle-ai.direct-operation/v1","operation":"direct_inspect","request_id":"r","status":"ok","result":{"evidence_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","content_b64":"","encoding":"utf-8","truncated":false}}`,
 	}
 	for op, in := range valid {

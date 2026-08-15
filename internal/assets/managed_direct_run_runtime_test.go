@@ -83,6 +83,7 @@ if (scenario === "prompt-failure" || scenario === "register-failure") {
     await direct("direct_read")({ path: "a", offset: 0, limit: 1 }, { sessionID: childID, agent }),
     await direct("direct_edit")({ path: "a", base_sha256: "0".repeat(64), replacements: [] }, { sessionID: childID, agent }),
     await direct("direct_inspect")({ query: "tree" }, { sessionID: childID, agent }),
+		await direct("direct_exec")({ command_index: 0 }, { sessionID: childID, agent }),
   ])
   console.log(JSON.stringify({ output: child.output.args, childID, directResult, directError, trace, hasExec: !!hooks.tool.direct_exec }))
 }
@@ -190,7 +191,7 @@ func TestManagedDirectRunPinnedRuntimeAdmission(t *testing.T) {
 	if result["childID"] != "child-1" {
 		t.Fatalf("created child = %#v", result)
 	}
-	if len(native) != 5 {
+	if len(native) != 6 {
 		t.Fatalf("native calls = %#v", native)
 	}
 	if calls := result["trace"].(map[string]any)["calls"].([]any); len(calls) != 2 || calls[0].([]any)[0] != "create" || calls[1].([]any)[0] != "prompt" {
@@ -203,14 +204,14 @@ func TestManagedDirectRunPinnedRuntimeAdmission(t *testing.T) {
 	if register["parent_session_id"] != "parent" || register["parent_call_id"] != "trusted-call" || register["agent"] != "gentle-worker" {
 		t.Fatalf("register provenance = %#v", register)
 	}
-	for index, operation := range []string{"direct_read", "direct_edit", "direct_inspect"} {
+	for index, operation := range []string{"direct_read", "direct_edit", "direct_inspect", "direct_exec"} {
 		execute := native[index+2]["input"].(map[string]any)
 		if execute["operation"] != operation || execute["session_id"] != "child-1" || execute["parent_session_id"] != "parent" || execute["parent_call_id"] != "trusted-call" || execute["agent"] != "gentle-worker" || execute["request_id"] == "" {
 			t.Fatalf("custom tool provenance = %#v", execute)
 		}
 	}
-	if result["hasExec"] != false {
-		t.Fatal("direct_exec was exposed by the plugin")
+	if result["hasExec"] != true {
+		t.Fatal("direct_exec was not exposed by the plugin")
 	}
 }
 

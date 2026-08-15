@@ -15,6 +15,7 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/cli"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/components/opencodeplugin"
 	componentuninstall "github.com/gentleman-programming/gentle-ai/v2/internal/components/uninstall"
+	"github.com/gentleman-programming/gentle-ai/v2/internal/directrun"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/pipeline"
 	"github.com/gentleman-programming/gentle-ai/v2/internal/planner"
@@ -61,6 +62,9 @@ func Run() error {
 }
 
 func RunArgs(args []string, stdout io.Writer) error {
+	if len(args) >= 1 && args[0] == "_direct-run-retained" {
+		return directrun.RunRetainedHelper()
+	}
 	// Propagate the build-time version to the CLI and upgrade layers so backup
 	// manifests record which version of gentle-ai created them.
 	cli.AppVersion = Version
