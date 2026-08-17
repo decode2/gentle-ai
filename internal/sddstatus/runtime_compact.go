@@ -164,6 +164,9 @@ type runtimeReadinessInput struct {
 // Complete or DecisionRequired and clears ActiveAttempt in both branches, so
 // checking Complete first is not a precedence choice among reachable states.
 func runtimeReadiness(in runtimeReadinessInput) (CompactAttemptResult, bool) {
+	if in.Status.validateRuntimeLineage() != nil {
+		return compactBlocked(CompactBlockCorruptAuthority, ""), true
+	}
 	active := in.Status.runtimeActiveAttempt()
 	activeToken := ""
 	if active != nil {
@@ -321,7 +324,7 @@ func (store RuntimeStore) Settle(ctx context.Context, request CompactSettleReque
 		ProcessEvidence: request.ProcessEvidence,
 	}
 	explicitSuccessor := request.SuccessorLineageID != ""
-	failedEvidence, _ := runtimeChainFailedEvidence(status.Attempts)
+	failedEvidence, _ := runtimeLineageFailedEvidence(status)
 	if request.RemediatesEvidenceRevision != "" && failedEvidence != request.RemediatesEvidenceRevision {
 		return compactBlocked(CompactBlockInvalidContinuation, ""), nil
 	}
@@ -362,14 +365,14 @@ func (store RuntimeStore) HandoffCompact(ctx context.Context, request CompactHan
 // unmanagedRemediationSettleable reports whether a settle carrying
 // --remediates-evidence-revision failedEvidence can structurally succeed
 // against this ledger state: the immutable attempt chain must still hold that
-// exact failed evidence unremediated, per runtimeChainFailedEvidence, the
+// exact failed evidence unremediated, per runtimeLineageFailedEvidence, the
 // same chain-derived binding Finish's unmanaged guard enforces (#1974 slice
 // 2). A changed candidate and fresh distinct evidence remain settle-time
 // facts and are not judged here; nor is "may this work proceed?", which
 // stays runtimeReadiness's question alone -- this reads only the immutable
 // attempt chain.
 func unmanagedRemediationSettleable(status RuntimeStatus, failedEvidence string) bool {
-	chainEvidence, chainHasFailedEvidence := runtimeChainFailedEvidence(status.Attempts)
+	chainEvidence, chainHasFailedEvidence := runtimeLineageFailedEvidence(status)
 	return chainHasFailedEvidence && failedEvidence != "" && chainEvidence == failedEvidence
 }
 
@@ -645,14 +648,14 @@ func compactBlockedByUnreadableAuthority(cause error) CompactAttemptResult {
 // surface that speaks earliest is the one that ends up lying.
 //
 // It reads the same chain-derived binding the settle itself enforces
-// (runtimeChainFailedAttempt, #1974 slice 2 / #2565), so the notice cannot
+// (runtimeLineageFailedAttempt, #1974 slice 2 / #2565), so the notice cannot
 // promise something the settle will not demand, or stay silent about
 // something it will.
 func runtimeSettleObligation(status RuntimeStatus, reviewDisabled bool) string {
 	if !reviewDisabled || status.Binding != nil {
 		return ""
 	}
-	failed, ok := runtimeChainFailedAttempt(status.Attempts)
+	failed, ok := runtimeLineageFailedAttempt(status)
 	if !ok || failed.EvidenceRevision == "" {
 		return ""
 	}
