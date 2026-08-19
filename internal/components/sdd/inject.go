@@ -1,6 +1,7 @@
 package sdd
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -477,7 +478,12 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, fmt.Errorf("strip OpenCode-only fallback agents: %w", err)
 				}
 			}
-			// For multi-mode, write shared prompt files before inlining references.
+			overlayBytes, err = inlineOpenCodeSDDPrompts(overlayBytes, homeDir, settingsPath, adapter.Agent(), opts.PreserveOpenCodeOrchestratorPrompt, opts.orchestratorPolicyRenderOptions(), opts.CodeGraphGuidanceMarkdown)
+			if err != nil {
+				return InjectionResult{}, fmt.Errorf("inline OpenCode SDD prompts: %w", err)
+			}
+
+			// For multi-mode, write shared prompt files after validating preserved prompts.
 			if sddMode == model.SDDModeMulti {
 				// Build phase → capability map from model assignments.
 				phaseCapabilities := make(map[string]string)
@@ -498,11 +504,6 @@ func Inject(homeDir string, adapter agents.Adapter, sddMode model.SDDModeID, opt
 					return InjectionResult{}, fmt.Errorf("write shared SDD prompt files: %w", promptsErr)
 				}
 				changed = changed || promptsChanged
-			}
-
-			overlayBytes, err = inlineOpenCodeSDDPrompts(overlayBytes, homeDir, settingsPath, adapter.Agent(), opts.PreserveOpenCodeOrchestratorPrompt, opts.orchestratorPolicyRenderOptions(), opts.CodeGraphGuidanceMarkdown)
-			if err != nil {
-				return InjectionResult{}, fmt.Errorf("inline OpenCode SDD prompts: %w", err)
 			}
 			assignments := opts.OpenCodeModelAssignments
 			if sddMode != model.SDDModeMulti {
@@ -860,21 +861,9 @@ func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string,
 	}
 	orchestratorPrompt, err := composeOpenCodeOrchestratorPrompt(agent, renderOptions)
 	if preserveExistingOrchestratorPrompt {
-		existingPrompt, err := readOpenCodeAgentPrompt(settingsPath, "gentle-orchestrator")
-		if err != nil {
-			return nil, err
-		}
-		if existingPrompt == "" {
-			existingPrompt, err = readOpenCodeAgentPrompt(settingsPath, "sdd-orchestrator")
-			if err != nil {
-				return nil, err
-			}
-		}
-		if existingPrompt == "" {
-			existingPrompt, err = readMisnamedOpenCodeGentlemanSDDPrompt(settingsPath)
-			if err != nil {
-				return nil, err
-			}
+		existingPrompt, readErr := readPreservedOpenCodeOrchestratorPrompt(settingsPath)
+		if readErr != nil {
+			return nil, readErr
 		}
 		if existingPrompt != "" {
 			if strings.Contains(existingPrompt, openCodeBackgroundPolicyMarker) || strings.Contains(existingPrompt, openCodeBackgroundPolicyEnd) {
@@ -882,7 +871,7 @@ func inlineOpenCodeSDDPrompts(overlayBytes []byte, homeDir, settingsPath string,
 					return nil, fmt.Errorf("validate preserved OpenCode background policy: %w", err)
 				}
 			}
-			orchestratorPrompt = renderPreservedOpenCodeOrchestratorPrompt(existingPrompt, agent, renderOptions)
+			orchestratorPrompt, err = renderPreservedOpenCodeOrchestratorPrompt(existingPrompt, agent, renderOptions)
 		}
 	}
 	if err != nil {
@@ -1029,11 +1018,26 @@ func expandOpenCodeBoundedReviewAgents(agentsMap map[string]any) {
 	}
 }
 
-func migratePreservedOpenCodeOrchestratorPrompt(prompt string) string {
-	if prompt == "" {
-		return prompt
-	}
+const legacyOpenCodeSessionPreflightMarker = "<!-- gentle-ai:sdd-session-preflight-migration -->"
+const legacyOpenCodeSessionPreflightHash = "498d98a1b87ad79b300115d56c4d0a366b93ce7e257c4b982acc0dfbfbf3bd0d"
 
+func readPreservedOpenCodeOrchestratorPrompt(settingsPath string) (string, error) {
+	for _, agent := range []string{"gentle-orchestrator", "sdd-orchestrator"} {
+		prompt, err := readOpenCodeAgentPrompt(settingsPath, agent)
+		if err != nil || prompt != "" {
+			return prompt, err
+		}
+	}
+	return readMisnamedOpenCodeGentlemanSDDPrompt(settingsPath)
+}
+func migratePreservedOpenCodeOrchestratorPrompt(prompt string) (string, error) {
+	if prompt == "" {
+		return prompt, nil
+	}
+	migrated, err := migratePreservedOpenCodeSessionPreflight(prompt)
+	if err != nil {
+		return "", err
+	}
 	replacer := strings.NewReplacer(
 		"Bind this to the dedicated `sdd-orchestrator` agent only.",
 		"Bind this to the dedicated `gentle-orchestrator` agent only.",
@@ -1048,18 +1052,60 @@ func migratePreservedOpenCodeOrchestratorPrompt(prompt string) string {
 		"Antes de continuar con SDD, elija una opción por grupo.\r\n",
 		"",
 	)
-	migrated := removeLegacyOpenCodePlainChatPreflightLines(replacer.Replace(prompt))
-	migrated = ensurePreservedOpenCodeOrchestratorPreflight(migrated)
+	migrated = removeLegacyOpenCodePlainChatPreflightLines(replacer.Replace(migrated))
 	migrated = ensurePreservedOpenCodeDelegationHardGates(migrated)
-	return ensurePreservedOpenCodeReviewExecutionContract(migrated)
+	return ensurePreservedOpenCodeReviewExecutionContract(migrated), nil
 }
-
+func migratePreservedOpenCodeSessionPreflight(prompt string) (string, error) {
+	anchor, err := sddSessionPreflightAnchorIndex(prompt, sddSessionPreflightInit)
+	if err != nil {
+		if strings.Count(prompt, sddSessionPreflightInit) != 0 {
+			return "", err
+		}
+		newline := sddSessionPreflightLineEnding(prompt)
+		if prompt != "" && !sddSessionPreflightEndsLine(prompt) {
+			prompt += newline
+		}
+		prompt += sddSessionPreflightInit
+		anchor = strings.Index(prompt, sddSessionPreflightInit)
+	}
+	if strings.Contains(prompt, legacyOpenCodeSessionPreflightMarker) && strings.Contains(prompt, sddSessionPreflightMarker) || strings.Count(prompt, "### SDD Session Preflight (HARD GATE)") > 1 {
+		return "", fmt.Errorf("preserved OpenCode session preflight ownership is ambiguous")
+	}
+	opens, closes := strings.Count(prompt, legacyOpenCodeSessionPreflightMarker), strings.Count(prompt, "<!-- /gentle-ai:sdd-session-preflight-migration -->")
+	if opens != 0 || closes != 0 {
+		start, close := strings.Index(prompt, legacyOpenCodeSessionPreflightMarker), strings.Index(prompt, "<!-- /gentle-ai:sdd-session-preflight-migration -->")
+		end := close + len("<!-- /gentle-ai:sdd-session-preflight-migration -->")
+		if opens != 1 || closes != 1 || close <= start || start >= anchor || end > anchor || !sddSessionPreflightLineStart(prompt, start) || !sddSessionPreflightLineEnd(prompt, end) {
+			return "", fmt.Errorf("preserved OpenCode session preflight marker block is malformed or ambiguous")
+		}
+		prompt = prompt[:start] + prompt[end:]
+	}
+	if !strings.Contains(prompt, sddSessionPreflightMarker) {
+		if count := strings.Count(prompt, "### SDD Session Preflight (HARD GATE)"); count != 0 {
+			start, end := strings.Index(prompt, "### SDD Session Preflight (HARD GATE)"), strings.Index(prompt, "### SDD Entry Routing (MANDATORY)")
+			currentAnchor := strings.Index(prompt, sddSessionPreflightInit)
+			if count != 1 || start >= currentAnchor || end <= start || end > currentAnchor || !sddSessionPreflightLineStart(prompt, start) || !sddSessionPreflightLineStart(prompt, end) {
+				return "", fmt.Errorf("preserved OpenCode historical session preflight is malformed or ambiguous")
+			}
+			legacy, normalizeErr := normalizeSDDSessionPreflightLineEndings(prompt[start:end])
+			if normalizeErr != nil || !strings.Contains(legacyOpenCodeSessionPreflightMigration(""), strings.TrimSpace(legacy)) || fmt.Sprintf("%x", sha256.Sum256([]byte(legacy))) != legacyOpenCodeSessionPreflightHash {
+				return "", fmt.Errorf("preserved OpenCode historical session preflight is not package-owned")
+			}
+			prompt = prompt[:start] + prompt[end:]
+		}
+	}
+	return projectSDDSessionPreflight(prompt, sddSessionPreflightInit)
+}
 func renderPreservedOpenCodeOrchestratorPrompt(
 	prompt string,
 	agent model.AgentID,
 	options ...OrchestratorRenderOptions,
-) string {
-	migrated := migratePreservedOpenCodeOrchestratorPrompt(prompt)
+) (string, error) {
+	migrated, err := migratePreservedOpenCodeOrchestratorPrompt(prompt)
+	if err != nil {
+		return "", err
+	}
 	var renderOptions OrchestratorRenderOptions
 	if len(options) > 0 {
 		renderOptions = options[0]
@@ -1069,7 +1115,7 @@ func renderPreservedOpenCodeOrchestratorPrompt(
 	} else if strings.Contains(migrated, openCodeBackgroundPolicyMarker) || strings.Contains(migrated, openCodeBackgroundPolicyEnd) {
 		migrated = stripOpenCodeBackgroundPolicy(migrated)
 	}
-	return strings.ReplaceAll(migrated, runtimeAgentIDPlaceholder, string(agent))
+	return strings.ReplaceAll(migrated, runtimeAgentIDPlaceholder, string(agent)), nil
 }
 
 // stripOpenCodeBackgroundPolicy removes only the complete Gentle AI-owned block.
@@ -1342,7 +1388,7 @@ func replacePreservedPromptSection(prompt string, start, end int, replacement st
 	return b.String()
 }
 
-func ensurePreservedOpenCodeOrchestratorPreflight(prompt string) string {
+func legacyOpenCodeSessionPreflightMigration(prompt string) string {
 	preflight := `
 
 <!-- gentle-ai:sdd-session-preflight-migration -->

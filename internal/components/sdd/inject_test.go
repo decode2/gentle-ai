@@ -621,6 +621,14 @@ func TestInjectOpenCodeUsesOpenCodeSpecificOrchestratorPrompt(t *testing.T) {
 	}
 }
 
+func assertCanonicalPreservedOpenCodePrompt(t *testing.T, text, userOwned string) {
+	assertTextContainsClauses(t, "canonical preflight, user-owned bytes, and non-preflight routing/delegation/review semantics", text, []string{userOwned, "### SDD Session Preflight (HARD GATE)", "all three groups", "Both maps only to internal `hybrid`", "fixed at 400 changed lines", "NEVER ask it as a fourth group", "Optional SDD rule", "4-file rule", "gentle-ai review validate --gate"})
+	for _, stale := range []string{legacyOpenCodeSessionPreflightMarker, "Use the `question` tool for SDD Session Preflight", "all four preflight groups", "Review: 400 lines", "800 lines", "custom review budget"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("preserved prompt retained stale preflight semantics %q", stale)
+		}
+	}
+}
 func TestInjectOpenCodePreservesExistingOrchestratorPromptWhenRequested(t *testing.T) {
 	home := t.TempDir()
 	mockNoPackageManager(t)
@@ -655,6 +663,7 @@ func TestInjectOpenCodePreservesExistingOrchestratorPromptWhenRequested(t *testi
 		t.Fatalf("ReadFile(opencode.json) error = %v", err)
 	}
 	text := string(settingsBytes)
+	assertCanonicalPreservedOpenCodePrompt(t, text, customPrompt)
 	if !strings.Contains(text, customPrompt) {
 		t.Fatalf("expected preserved custom orchestrator prompt %q in opencode.json", customPrompt)
 	}
@@ -750,10 +759,17 @@ func TestInjectOpenCodeMigratesPreservedLegacyOrchestratorPromptReferences(t *te
 			t.Fatalf("opencode.json still contains stale preserved prompt reference %q", unwanted)
 		}
 	}
+	assertCanonicalPreservedOpenCodePrompt(t, text, "# Gentle AI — SDD Orchestrator Instructions")
 	for _, wanted := range []string{
 		"Bind this to the dedicated `gentle-orchestrator` agent only.",
 		"agent.gentle-orchestrator.model",
 		"### SDD Session Preflight (HARD GATE)",
+	} {
+		if !strings.Contains(text, wanted) {
+			t.Fatalf("opencode.json missing migrated preserved prompt reference %q", wanted)
+		}
+	}
+	for _, stale := range []string{
 		"Use the `question` tool for SDD Session Preflight",
 		"Ask all four preflight groups in one single `question` tool call",
 		"OpenCode can render the groups as tabs",
@@ -775,6 +791,12 @@ func TestInjectOpenCodeMigratesPreservedLegacyOrchestratorPromptReferences(t *te
 		"proposal question round",
 		"business rules, implications, impact, edge cases",
 		"Never launch `sdd-apply` just because the user asked to implement a feature",
+	} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("opencode.json retained stale preflight-owned wording %q", stale)
+		}
+	}
+	for _, wanted := range []string{
 		"### Mandatory Delegation Triggers (Non-Skippable)",
 		"fully mandatory",
 		"Bounded read rule",
@@ -1229,9 +1251,8 @@ Map answers to canonical values: A1/Interactive -> interactive.
 		t.Fatalf("ReadFile(opencode.json) error = %v", err)
 	}
 	text := string(settingsBytes)
-	for _, wanted := range []string{
-		"# Custom prompt",
-		"### SDD Session Preflight (HARD GATE)",
+	assertCanonicalPreservedOpenCodePrompt(t, text, "# Custom prompt")
+	for _, stale := range []string{
 		"openspec/config.yaml",
 		"Use the `question` tool for SDD Session Preflight",
 		"Ask all four preflight groups in one single `question` tool call",
@@ -1254,8 +1275,8 @@ Map answers to canonical values: A1/Interactive -> interactive.
 		"business rules, implications, impact, edge cases",
 		"Never launch `sdd-apply` just because the user asked to implement a feature",
 	} {
-		if !strings.Contains(text, wanted) {
-			t.Fatalf("opencode.json missing migrated partial prompt content %q", wanted)
+		if strings.Contains(text, stale) {
+			t.Fatalf("opencode.json retained stale preflight-owned wording %q", stale)
 		}
 	}
 	for _, stale := range []string{
@@ -1278,7 +1299,7 @@ Map answers to canonical values: A1/Interactive -> interactive.
 	}
 }
 
-func TestInjectOpenCodeReplacesFullyFormedStalePreflightPrompt(t *testing.T) {
+func TestPreservedOpenCodeSessionPreflightRejectsMalformedStateBeforeWrite(t *testing.T) {
 	home := t.TempDir()
 	mockNoPackageManager(t)
 
@@ -1340,8 +1361,8 @@ Hard gate rules:
 			t.Fatalf("opencode.json retained stale preserved prompt leak %q", leak)
 		}
 	}
-	for _, wanted := range []string{
-		"# Custom prompt",
+	assertCanonicalPreservedOpenCodePrompt(t, text, "# Custom prompt")
+	for _, stale := range []string{
 		"Use the `question` tool for SDD Session Preflight",
 		"Ask all four preflight groups in one single `question` tool call",
 		"OpenCode can render the groups as tabs",
@@ -1362,9 +1383,27 @@ Hard gate rules:
 		"proposal question round",
 		"business rules, implications, impact, edge cases",
 	} {
-		if !strings.Contains(text, wanted) {
-			t.Fatalf("opencode.json missing refreshed preserved prompt content %q", wanted)
+		if strings.Contains(text, stale) {
+			t.Fatalf("opencode.json retained stale preflight-owned wording %q", stale)
 		}
+	}
+	promptPath := filepath.Join(SharedPromptDir(home), SharedPromptPhases()[0]+".md")
+	if err := os.Remove(promptPath); err != nil {
+		t.Fatalf("Remove(shared prompt) error = %v", err)
+	}
+	malformedPrompt := strings.Replace(readGentleOrchestratorPrompt(t, settingsPath), sddSessionPreflightEnd, "", 1)
+	malformed := []byte(`{"agent":{"gentle-orchestrator":{"prompt":` + strconv.Quote(malformedPrompt) + `}}}`)
+	if err := os.WriteFile(settingsPath, malformed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inject(home, opencodeAdapter(), model.SDDModeMulti, InjectOptions{PreserveOpenCodeOrchestratorPrompt: true}); err == nil {
+		t.Fatal("Inject() accepted malformed session-preflight markers")
+	}
+	if after, _ := os.ReadFile(settingsPath); !bytes.Equal(after, malformed) {
+		t.Fatal("Inject() wrote settings before rejecting malformed session-preflight markers")
+	}
+	if _, statErr := os.Stat(promptPath); !os.IsNotExist(statErr) {
+		t.Fatalf("Inject() created shared prompt before rejecting malformed session-preflight markers: %v", statErr)
 	}
 }
 

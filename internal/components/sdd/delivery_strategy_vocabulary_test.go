@@ -45,7 +45,7 @@ var deliveryDomainDeclaration = regexp.MustCompile("`(ask-on-risk(?: \\| [a-z][a
 
 // preflightPRGroupLabels matches the user-facing PR option list the preflight
 // renders, e.g. "3. PRs: Ask me, Single PR, Auto."
-var preflightPRGroupLabels = regexp.MustCompile(`(?m)^\s*3\. PRs: (.+?)\.[ \t]*\r?$`)
+var preflightPRGroupLabels = regexp.MustCompile(`(?m)^\s*3\. (?:PRs: |\*\*PR strategy\*\*: )(.+?)\.[ \t]*\r?$`)
 
 // preflightStrategyChoiceDeclaration matches the preflight requirement line that
 // names the canonical values the chained-PR question collects.
@@ -144,8 +144,7 @@ func preflightMappingSources(t *testing.T) map[string]string {
 	// The OpenCode installer re-injects its own copy of the mapping into
 	// existing configs, so a markdown-only fix would be reverted on the next
 	// sync. Check the compiled literal through the same derivation.
-	sources["internal/components/sdd/inject.go (ensurePreservedOpenCodeOrchestratorPreflight)"] =
-		ensurePreservedOpenCodeOrchestratorPreflight("")
+	sources["internal/components/sdd/session_preflight.go"] = sddSessionPreflightBlock()
 
 	return sources
 }
@@ -173,6 +172,9 @@ func canonicalMappingBlock(t *testing.T, path, content string) string {
 
 	start := strings.Index(content, "Map answers to canonical values")
 	if start < 0 {
+		start = strings.Index(content, "Canonical mappings:")
+	}
+	if start < 0 {
 		t.Fatalf("%s lost its canonical mapping block", path)
 	}
 	block := content[start:]
@@ -197,7 +199,7 @@ func TestSDDPreflightDeliveryStrategyMappingStaysInsideConsumerDomain(t *testing
 
 		mapping := canonicalMappingBlock(t, path, content)
 		for _, rawLabel := range strings.Split(labelMatch[1], ",") {
-			label := strings.TrimSpace(rawLabel)
+			label := strings.TrimPrefix(strings.TrimSpace(rawLabel), "or ")
 			if label == "" {
 				continue
 			}
@@ -347,7 +349,7 @@ func TestInjectOpenCodeMigratesRetiredDeliveryStrategyMapping(t *testing.T) {
 	}
 
 	stalePrompt := strings.ReplaceAll(
-		ensurePreservedOpenCodeOrchestratorPreflight(""),
+		legacyOpenCodeSessionPreflightMigration(""),
 		"Ask me -> `ask-on-risk`; Single PR -> `single-pr`; Auto -> `auto-chain`",
 		"Ask me -> `ask-always`; Single PR -> `single-pr-default`; Auto -> `auto-forecast`",
 	)
@@ -469,7 +471,7 @@ func TestInjectOpenCodeMigratesRetiredChainedPRPreflightOption(t *testing.T) {
 		"Ask me -> `ask-on-risk`; Single PR -> `single-pr`; Chained -> `auto-chain`; Auto -> `auto-chain`",
 		"The preflight offers no separate chained option because `delivery_strategy` is only consulted once the tasks forecast flags review-budget risk: below that line there is nothing to chain, and above it `Auto` already resolves to `auto-chain`.",
 		"Chained and Auto both resolve to `auto-chain` because `delivery_strategy` is only consulted once the tasks forecast flags review-budget risk.",
-	).Replace(ensurePreservedOpenCodeOrchestratorPreflight(""))
+	).Replace(legacyOpenCodeSessionPreflightMigration(""))
 
 	for _, seeded := range []string{
 		"3. PRs: Ask me, Single PR, Chained, Auto.",
@@ -510,7 +512,7 @@ func TestInjectOpenCodeMigratesRetiredChainedPRPreflightOption(t *testing.T) {
 			t.Errorf("opencode.json kept retired preflight fragment %q after sync", residue)
 		}
 	}
-	if !strings.Contains(text, "3. PRs: Ask me, Single PR, Auto.") {
+	if !strings.Contains(text, "3. **PR strategy**: Ask me, Single PR, or Auto.") {
 		t.Error("opencode.json did not receive the three-option PR preflight list")
 	}
 	if !strings.Contains(text, "Auto -> `auto-chain`") {
@@ -519,7 +521,7 @@ func TestInjectOpenCodeMigratesRetiredChainedPRPreflightOption(t *testing.T) {
 	if !strings.Contains(text, "# Custom prompt") {
 		t.Error("migration discarded the user's own prompt content")
 	}
-	if count := strings.Count(text, "3. PRs: "); count != 1 {
+	if count := strings.Count(text, "3. **PR strategy**: "); count != 1 {
 		t.Errorf("migrated prompt carries %d PR option lists; the retired menu must be replaced, not appended to", count)
 	}
 

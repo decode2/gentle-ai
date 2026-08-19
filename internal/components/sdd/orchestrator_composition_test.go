@@ -11,14 +11,15 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v2/internal/model"
 )
 
-func TestCanonicalCompositionPreservesHistoricalOrchestratorBytes(t *testing.T) {
+func TestOpenCodeKiloDefaultSessionPreflightProjection(t *testing.T) {
 	for _, agent := range catalog.AllAgents() {
 		t.Run(string(agent.ID), func(t *testing.T) {
 			path := sddOrchestratorAsset(agent.ID)
 			before := renderBoundedReviewAsset(agent.ID, path)
-			after := composeOrchestratorPrompt(agent.ID)
-			if after != before {
-				t.Fatalf("canonical composition changed %s orchestrator bytes", agent.ID)
+			after, err := composeOpenCodeOrchestratorPrompt(agent.ID)
+			projected := agent.ID == model.AgentOpenCode || agent.ID == model.AgentKilocode
+			if err != nil || projected != (after != before) || projected && validateSDDSessionPreflightProjection(after, "### SDD Entry Routing (MANDATORY)") != nil {
+				t.Fatalf("canonical %s composition/projection failed: %v", agent.ID, err)
 			}
 		})
 	}
@@ -100,19 +101,26 @@ func TestOpenCodeBackgroundPolicyInjectionThroughPublicBoundary(t *testing.T) {
 	}
 }
 
-func TestCanonicalCompositionFeedsBaseAndNamedProfile(t *testing.T) {
-	canonical := composeOrchestratorPrompt(model.AgentOpenCode)
-	if got := renderSDDOrchestratorAsset(model.AgentOpenCode); got != canonical {
-		t.Fatal("default OpenCode rendering bypassed canonical composition")
+func TestOpenCodeNamedProfileUsesSessionPreflightProjection(t *testing.T) {
+	canonical, err := composeOpenCodeOrchestratorPrompt(model.AgentOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(renderSDDOrchestratorAsset(model.AgentOpenCode), sddSessionPreflightMarker) {
+		t.Fatal("raw OpenCode renderer unexpectedly owns session preflight")
 	}
 
 	profile, err := buildProfileOrchestratorPrompt(model.Profile{Name: "rapid"})
 	if err != nil {
 		t.Fatalf("buildProfileOrchestratorPrompt() error = %v", err)
 	}
+	if err := validateSDDSessionPreflightProjection(profile, "### SDD Entry Routing (MANDATORY)"); err != nil {
+		t.Fatalf("named profile session preflight is not canonical: %v", err)
+	}
 	for _, marker := range []string{
 		"### Lossless Blocking Prompts (MANDATORY)",
 		"### Native SDD Dispatcher Guard",
+		"### SDD Session Preflight (HARD GATE)",
 		"#### Review Execution Contract",
 	} {
 		if strings.Count(profile, marker) != 1 {

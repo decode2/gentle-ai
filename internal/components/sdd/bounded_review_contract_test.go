@@ -206,10 +206,13 @@ func TestPreservedSharedOrchestratorSubstitutesRuntimeAgentIdentity(t *testing.T
 		"Bind this to the dedicated `sdd-orchestrator` agent only.",
 		runtimeAgentIDPlaceholder,
 	}, "\n")
-	rendered := renderPreservedOpenCodeOrchestratorPrompt(
+	rendered, err := renderPreservedOpenCodeOrchestratorPrompt(
 		preserved,
 		model.AgentKilocode,
 	)
+	if err != nil {
+		t.Fatalf("renderPreservedOpenCodeOrchestratorPrompt() error = %v", err)
+	}
 	if !strings.Contains(rendered, "Bind this to the dedicated `gentle-orchestrator` agent only.") {
 		t.Fatalf("preserved prompt lost its migration:\n%s", rendered)
 	}
@@ -231,10 +234,13 @@ func TestPreservedSharedOrchestratorLeavesRetiredWorkCommandsUntouched(t *testin
 		"gentle-ai work-capabilities --cwd <repo> --contract gentle-ai.work-capabilities/v2 --json",
 		"gentle-ai work-start --cwd <repo> --contract gentle-ai.work-start/v1 --json",
 	}
-	rendered := renderPreservedOpenCodeOrchestratorPrompt(
+	rendered, err := renderPreservedOpenCodeOrchestratorPrompt(
 		strings.Join(retired, "\n"),
 		model.AgentKilocode,
 	)
+	if err != nil {
+		t.Fatalf("renderPreservedOpenCodeOrchestratorPrompt() error = %v", err)
+	}
 	for _, command := range retired {
 		if !strings.Contains(rendered, command) {
 			t.Fatalf("preserved prompt rewrote retired command %q:\n%s", command, rendered)
