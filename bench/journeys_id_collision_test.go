@@ -60,6 +60,7 @@ func journeySources() []journeySource {
 		{"journeys_sdd_shared_scaffolding.go", sddSharedScaffoldingJourneys()},
 		{"journeys_sdd_post_review_verify_report.go", sddPostReviewVerifyReportJourneys()},
 		{"journeys_issue1302.go", issue1302Journeys()},
+		{"journeys_issue3470.go", issue3470Journeys()},
 	}
 }
 

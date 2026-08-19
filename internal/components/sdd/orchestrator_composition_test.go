@@ -44,7 +44,7 @@ func TestOpenCodeBackgroundPolicyComposition(t *testing.T) {
 		"independent, read-only exploration, audit, or review",
 		"foreground tasks when the result is needed before the next action",
 		"user decisions",
-		"SDD apply",
+		"Only explicit `auto` may use OpenCode `background: true`",
 		"dependent verify evidence",
 		"archive",
 		"formal RDD/4R lenses",
@@ -63,6 +63,38 @@ func TestOpenCodeBackgroundPolicyComposition(t *testing.T) {
 		if !strings.Contains(enabled, sentinel) {
 			t.Fatalf("enabled OpenCode composition missing policy sentinel %q", sentinel)
 		}
+	}
+}
+
+const expectedOpenCodeParallelApplyPolicy = `### SDD Item Apply Scheduling
+
+` + "`parallel_apply`" + ` is a coordinator-owned change policy with only ` + "`serialized`" + ` and ` + "`auto`" + `. It is never runtime-ledger authority and is never written into ` + "`gentle-ai.sdd-items/v1`" + ` metadata. Background capability does not select it.
+
+Default to ` + "`serialized`" + `. Launch at most one ready item actor, then require that actor's own successful ` + "`sdd-attempt acquire --item`" + `, opaque token, ` + "`settle`" + `, and coordinator-only projection before considering another item. Preserve the immutable plan, budgets, evidence, item-selected authority, and the final join barrier.
+
+Resolve an unset policy lazily, only when ` + "`sdd-status --json`" + ` exposes at least two ready items with compatible metadata, satisfied dependencies, pairwise disjoint canonical scopes, and available OpenCode background launch capability. In automatic execution, silently cache ` + "`serialized`" + ` for the change. In interactive execution, only at that opportunity ask once whether to use serialized or automatic scheduling, then cache that answer for the change; if capability is absent, disabled, or unknown, serialize silently. Do not add this policy to the mandatory four-group SDD Session Preflight or create a fifth preflight group.
+
+Only explicit ` + "`auto`" + ` may use OpenCode ` + "`background: true`" + `, and only at that real opportunity. Launch only the ready items whose dependencies and canonical scopes remain runtime-admissible; every item still acquires and settles independently, and only the coordinator projects results. Missing or incompatible metadata, unavailable capability, overlapping, dependent, malformed, shared, or unknown scopes stay serialized or blocked by existing authority. Do not add a queue, ` + "`max_parallel`" + `, task-schema field, ledger field, or another attempt authority.`
+
+func TestOpenCodeParallelApplyPolicyRemainsCoordinatorOwned(t *testing.T) {
+	base := composeOrchestratorPrompt(model.AgentOpenCode)
+	enabled := composeOrchestratorPrompt(model.AgentOpenCode, (InjectOptions{
+		IncludeOpenCodeBackgroundPolicy: true,
+	}).orchestratorPolicyRenderOptions())
+
+	if strings.Contains(base, "parallel_apply") {
+		t.Fatal("background capability alone activated parallel apply policy")
+	}
+	policy := mustReadOpenCodeBackgroundPolicy()
+	start := strings.Index(policy, "### SDD Item Apply Scheduling")
+	if start < 0 {
+		t.Fatal("background policy omitted the parallel apply section")
+	}
+	if got := strings.TrimSpace(policy[start:strings.Index(policy, openCodeBackgroundPolicyEnd)]); got != expectedOpenCodeParallelApplyPolicy {
+		t.Fatalf("parallel apply policy drifted:\n--- got ---\n%s\n--- want ---\n%s", got, expectedOpenCodeParallelApplyPolicy)
+	}
+	if strings.Count(enabled, expectedOpenCodeParallelApplyPolicy) != 1 {
+		t.Fatal("rendered OpenCode prompt omitted or duplicated the exact parallel apply policy")
 	}
 }
 
