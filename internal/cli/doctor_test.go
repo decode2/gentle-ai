@@ -347,6 +347,91 @@ func TestCheckStateJSON_AgentConfigDirMissing(t *testing.T) {
 	if !strings.Contains(got.Detail, "config dirs are missing") {
 		t.Errorf("unexpected detail: %s", got.Detail)
 	}
+	if got.Remedy == nil || got.Remedy.ID != doctor.RemedySync {
+		t.Fatalf("absent config dir must retain sync remedy, got %+v", got.Remedy)
+	}
+}
+
+func TestCheckStateJSON_AgentConfigDirDanglingSymlink(t *testing.T) {
+	homeDir := t.TempDir()
+	stateDir := filepath.Join(homeDir, ".gentle-ai")
+	if err := os.MkdirAll(filepath.Join(homeDir, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(homeDir, ".config", "opencode")
+	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
+	if err := os.Symlink(missingTarget, configDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	payload := `{"installed_agents":["opencode"]}`
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkStateJSON(homeDir)
+
+	if got.Status != CheckStatusWarn {
+		t.Fatalf("expected warn for dangling config symlink, got %s: %s", got.Status, got.Detail)
+	}
+	if got.Remedy != nil && got.Remedy.ID == doctor.RemedySync {
+		t.Fatalf("dangling config symlink must not recommend sync: %+v", got.Remedy)
+	}
+	if !strings.Contains(got.Detail, configDir) {
+		t.Fatalf("detail must identify dangling managed path %q, got %q", configDir, got.Detail)
+	}
+	if !strings.Contains(got.Detail, "inspect") || !strings.Contains(got.Detail, "gentle-ai doctor") {
+		t.Fatalf("detail must provide manual inspection and doctor rerun guidance, got %q", got.Detail)
+	}
+	if strings.Contains(got.Detail, "gentle-ai sync") {
+		t.Fatalf("dangling config symlink must not recommend sync, got %q", got.Detail)
+	}
+	info, err := os.Lstat(configDir)
+	if err != nil {
+		t.Fatalf("Lstat dangling config symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("doctor changed dangling config path into non-symlink: mode %v", info.Mode())
+	}
+}
+
+func TestCheckStateJSON_DanglingAndAbsentConfigDirsSuppressSync(t *testing.T) {
+	homeDir := t.TempDir()
+	stateDir := filepath.Join(homeDir, ".gentle-ai")
+	configRoot := filepath.Join(homeDir, ".config")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(configRoot, "opencode")
+	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
+	if err := os.Symlink(missingTarget, configDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(`{"installed_agents":["opencode","claude-code"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := checkStateJSON(homeDir)
+
+	if got.Status != CheckStatusWarn {
+		t.Fatalf("expected warn for mixed dangling/absent config dirs, got %s: %s", got.Status, got.Detail)
+	}
+	if got.Remedy != nil {
+		t.Fatalf("mixed dangling/absent config dirs must suppress sync, got %+v", got.Remedy)
+	}
+	for _, want := range []string{configDir, "genuinely absent config dirs: claude-code", "inspect or repair", "gentle-ai doctor"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("mixed result missing %q: %s", want, got.Detail)
+		}
+	}
+	if strings.Contains(got.Detail, "gentle-ai sync") {
+		t.Fatalf("mixed dangling/absent result must not recommend sync: %s", got.Detail)
+	}
 }
 
 func TestCheckStateJSON_OK(t *testing.T) {
@@ -369,6 +454,9 @@ func TestCheckStateJSON_OK(t *testing.T) {
 
 	if got.Status != CheckStatusPass {
 		t.Errorf("expected pass, got %s: %s", got.Status, got.Detail)
+	}
+	if got.Remedy != nil {
+		t.Fatalf("real config directory must not have a remedy, got %+v", got.Remedy)
 	}
 }
 
@@ -791,6 +879,170 @@ Status:  healthy
 	}
 	if pathSnapshots != 1 {
 		t.Fatalf("PATH snapshots = %d, want 1", pathSnapshots)
+	}
+}
+
+func TestRunDoctor_DanglingConfigSymlinkIsReadOnly(t *testing.T) {
+	origLookPath := lookPathFn
+	origAvail := availableBytesFn
+	origHTTP := httpGetFn
+	origPathDirs := pathDirsFn
+	origHomeDir := osUserHomeDirDoctor
+	origExecutable := osExecutableDoctor
+	defer func() {
+		lookPathFn = origLookPath
+		availableBytesFn = origAvail
+		httpGetFn = origHTTP
+		pathDirsFn = origPathDirs
+		osUserHomeDirDoctor = origHomeDir
+		osExecutableDoctor = origExecutable
+	}()
+
+	homeDir := t.TempDir()
+	stateDir := filepath.Join(homeDir, ".gentle-ai")
+	if err := os.MkdirAll(filepath.Join(homeDir, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(homeDir, ".config", "opencode")
+	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
+	if err := os.Symlink(missingTarget, configDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	statePath := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"installed_agents":["opencode"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetBefore, err := os.Readlink(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lookPathFn = func(name string) (string, error) { return "/usr/local/bin/" + name, nil }
+	availableBytesFn = func(string) (int64, error) { return 1024 * 1024 * 1024, nil }
+	httpGetFn = func(string, time.Duration) (int, error) { return 200, nil }
+	pathDirsFn = func() []string { return []string{"/usr/local/bin"} }
+	osUserHomeDirDoctor = func() (string, error) { return homeDir, nil }
+	osExecutableDoctor = func() (string, error) { return "/usr/local/bin/gentle-ai", nil }
+	t.Setenv(engramHealthEnvVar, "https://engram.example.test")
+
+	var output bytes.Buffer
+	if err := RunDoctor(context.Background(), &output); err != nil {
+		t.Fatalf("RunDoctor returned error: %v", err)
+	}
+	if strings.Contains(output.String(), "gentle-ai sync") {
+		t.Fatalf("Doctor must not recommend sync for a dangling config symlink, got:\n%s", output.String())
+	}
+	for _, want := range []string{configDir, "inspect", "gentle-ai doctor"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("Doctor output missing %q:\n%s", want, output.String())
+		}
+	}
+
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateAfter, stateBefore) {
+		t.Fatalf("Doctor changed state.json")
+	}
+	targetAfter, err := os.Readlink(configDir)
+	if err != nil {
+		t.Fatalf("read dangling config symlink after Doctor: %v", err)
+	}
+	if targetAfter != targetBefore {
+		t.Fatalf("Doctor changed dangling symlink target from %q to %q", targetBefore, targetAfter)
+	}
+	if _, err := os.Lstat(missingTarget); !os.IsNotExist(err) {
+		t.Fatalf("Doctor changed external target %q: err=%v", missingTarget, err)
+	}
+	if _, err := os.Lstat(filepath.Join(stateDir, "backups")); !os.IsNotExist(err) {
+		t.Fatalf("Doctor created backup metadata: err=%v", err)
+	}
+}
+
+func TestDoctorSyncDisagreement_RealCLIBoundary(t *testing.T) {
+	homeDir := t.TempDir()
+	stateDir := filepath.Join(homeDir, ".gentle-ai")
+	configDir := filepath.Join(homeDir, ".config", "opencode")
+	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
+	if err := os.MkdirAll(filepath.Dir(configDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(missingTarget, configDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	statePath := filepath.Join(stateDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"installed_agents":["opencode"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkTargetBefore, err := os.Readlink(configDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Before #3557, this exact os.Stat observation entered the missing-path
+	// branch and caused Doctor to recommend RemedySync.
+	var preFixRemedy *doctor.Remedy
+	if _, err := os.Stat(configDir); os.IsNotExist(err) {
+		preFixRemedy = doctor.NewRemedy(doctor.RemedySync, "Run 'gentle-ai sync' to restore missing config files")
+	}
+	if preFixRemedy == nil || preFixRemedy.ID != doctor.RemedySync {
+		t.Fatalf("dangling managed path did not reproduce the pre-fix sync recommendation: %+v", preFixRemedy)
+	}
+	doctorResult := checkStateJSON(homeDir)
+	if doctorResult.Status != CheckStatusWarn {
+		t.Fatalf("Doctor result = %s, want warn: %s", doctorResult.Status, doctorResult.Detail)
+	}
+	if doctorResult.Remedy != nil {
+		t.Fatalf("fixed Doctor must suppress sync for the dangling path, got %+v", doctorResult.Remedy)
+	}
+
+	setSyncTestHome(t, homeDir)
+	syncResult, syncErr := RunSync([]string{"--agents", "opencode"})
+	if syncErr == nil {
+		t.Fatalf("current sync unexpectedly accepted the dangling managed path: result=%+v", syncResult)
+	}
+	if syncResult.FilesChanged != 0 || len(syncResult.ChangedFiles) != 0 {
+		t.Fatalf("rejected sync reported managed changes: FilesChanged=%d ChangedFiles=%v", syncResult.FilesChanged, syncResult.ChangedFiles)
+	}
+
+	stateAfter, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateAfter, stateBefore) {
+		t.Fatal("sync changed state.json after rejecting the dangling managed path")
+	}
+	info, err := os.Lstat(configDir)
+	if err != nil {
+		t.Fatalf("Lstat managed path after sync: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("sync replaced managed symlink with %s", info.Mode())
+	}
+	linkTargetAfter, err := os.Readlink(configDir)
+	if err != nil {
+		t.Fatalf("Readlink managed path after sync: %v", err)
+	}
+	if linkTargetAfter != linkTargetBefore {
+		t.Fatalf("sync changed symlink target from %q to %q", linkTargetBefore, linkTargetAfter)
+	}
+	if _, err := os.Lstat(missingTarget); !os.IsNotExist(err) {
+		t.Fatalf("sync changed missing symlink target: %v", err)
 	}
 }
 

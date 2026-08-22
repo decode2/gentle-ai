@@ -406,12 +406,31 @@ func checkStateJSON(homeDir string) CheckResult {
 	}
 
 	var missing []string
+	var dangling []string
 	for _, agentID := range s.InstalledAgents {
 		if dir := agentConfigDir(homeDir, agentID); dir != "" {
-			if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			info, lstatErr := os.Lstat(dir)
+			if os.IsNotExist(lstatErr) {
 				missing = append(missing, agentID)
+				continue
+			}
+			if lstatErr != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+					dangling = append(dangling, dir)
+				}
 			}
 		}
+	}
+
+	if len(dangling) > 0 {
+		detail := fmt.Sprintf("state lists %d agent(s) whose managed config paths are dangling symlinks: %s; inspect or repair these paths manually, then re-run 'gentle-ai doctor'", len(dangling), strings.Join(dangling, ", "))
+		if len(missing) > 0 {
+			detail += "; genuinely absent config dirs: " + strings.Join(missing, ", ")
+		}
+		return CheckResult{Name: id, Status: CheckStatusWarn, Detail: detail}
 	}
 
 	if len(missing) > 0 {
