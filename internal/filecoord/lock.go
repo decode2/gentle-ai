@@ -122,11 +122,11 @@ func cleanTarget(path string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
-// Acquire validates inputs, then fails closed in PR1 without filesystem work.
-// It is cooperative, provides no arbitrary-writer CAS, and defers platform primitives.
+// Acquire validates inputs, then delegates to the platform backend.
+// It is cooperative and provides no arbitrary-writer CAS.
 func Acquire(ctx context.Context, target, lockRoot string) (*Lease, error) {
 	if _, err := LockPath(lockRoot, target); err != nil {
 		return nil, err
 	}
-	return nil, unsupportedBackend()
+	return acquireBackend(ctx, target, lockRoot)
 }

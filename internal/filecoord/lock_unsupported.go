@@ -1,4 +1,12 @@
+//go:build !android && !darwin && !dragonfly && !freebsd && !illumos && !ios && !linux && !netbsd && !openbsd && !solaris
+
 package filecoord
 
-// Temporary all-platform PR1 backend: it makes no platform capability claim or filesystem change; POSIX and Windows backends are later PRs.
+import "context"
+
+// The unsupported backend makes no platform capability claim or filesystem change.
+func acquireBackend(context.Context, string, string) (*Lease, error) {
+	return nil, unsupportedBackend()
+}
+
 func unsupportedBackend() error { return &UnsupportedError{} }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,10 @@ func TestLockPathRejectsInvalidRootAndTarget(t *testing.T) {
 }
 
 func TestAcquireUnsupportedHasNoFilesystemSideEffects(t *testing.T) {
+	switch runtime.GOOS {
+	case "android", "darwin", "dragonfly", "freebsd", "illumos", "ios", "linux", "netbsd", "openbsd", "solaris":
+		t.Skip("POSIX backend")
+	}
 	root := filepath.Join(t.TempDir(), "not-created-lock-root")
 	target := filepath.Join(t.TempDir(), "not-created-target")
 	lease, err := Acquire(context.Background(), target, root)
