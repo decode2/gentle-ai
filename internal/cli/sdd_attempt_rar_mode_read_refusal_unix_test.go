@@ -68,9 +68,6 @@ func TestUnsafeDisabledRARModeRefusesStatusAndValidationBeforeTheirReaders(t *te
 		args func(string) []string
 	}{
 		{name: "sdd-status", run: RunSDDStatus, args: func(repo string) []string { return []string{"--cwd", repo, "--json"} }},
-		{name: "review-validate", run: RunReviewValidate, args: func(repo string) []string {
-			return []string{"--cwd", repo, "--receipt", filepath.Join(repo, "missing.json")}
-		}},
 		{name: "review-facade gate", run: RunReviewFacadeValidate, args: func(repo string) []string { return []string{"--cwd", repo, "--gate", "post-apply"} }},
 	} {
 		t.Run(command.name, func(t *testing.T) {

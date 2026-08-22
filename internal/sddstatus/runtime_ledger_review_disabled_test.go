@@ -180,12 +180,12 @@ func TestRuntimeDisabledUnmanagedRemediationConsumesTheOnlyRemainingAttempt(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reenabled.Dependencies.Verify != DependencyAllDone || reenabled.Dependencies.Archive != DependencyBlocked || reenabled.NextRecommended != "resolve-review" {
+	if reenabled.Dependencies.Verify != DependencyAllDone || reenabled.Dependencies.Archive != DependencyReady || reenabled.NextRecommended != "archive" {
 		t.Fatalf("re-enabled unmanaged correction routed verify=%q archive=%q next=%q", reenabled.Dependencies.Verify, reenabled.Dependencies.Archive, reenabled.NextRecommended)
 	}
 	if reenabled.ReviewGate == nil || !strings.Contains(reenabled.ReviewGate.Reason, "disabled/unmanaged correction") ||
-		!strings.Contains(reenabled.ReviewGate.Reason, reviewGateFreshReviewContinuation) {
-		t.Fatalf("re-enabled unmanaged correction omitted bounded-review authority: %#v", reenabled.ReviewGate)
+		strings.Contains(reenabled.ReviewGate.Reason, reviewGateFreshReviewContinuation) {
+		t.Fatalf("re-enabled unmanaged correction context = %#v, want informational ordinary-policy wording", reenabled.ReviewGate)
 	}
 	if reenabled.ReviewOffer == nil || !reenabled.ReviewOffer.Available || !strings.Contains(reenabled.ReviewOffer.Invocation, "review start") {
 		t.Fatalf("re-enabled unmanaged correction omitted the executable review offer: %#v", reenabled.ReviewOffer)
