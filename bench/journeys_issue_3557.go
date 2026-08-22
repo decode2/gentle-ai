@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func issue3557DanglingSymlinkFixture(sandbox *Sandbox) error {
@@ -24,7 +25,8 @@ func issue3557DanglingSymlinkFixture(sandbox *Sandbox) error {
 		return err
 	}
 	statePath := filepath.Join(sandbox.Home, ".gentle-ai", "state.json")
-	state := `{"installed_agents":["opencode","claude-code"]}`
+	// Seed the startup cooldown so this journey isolates Doctor-owned effects.
+	state := fmt.Sprintf(`{"installed_agents":["opencode","claude-code"],"last_update_check":%q}`, time.Now().UTC().Format(time.RFC3339Nano))
 	if err := sandbox.write(statePath, state); err != nil {
 		return err
 	}
