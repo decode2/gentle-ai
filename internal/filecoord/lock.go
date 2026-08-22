@@ -21,8 +21,13 @@ var (
 
 type BusyError struct{ Cause error }
 
-func (e *BusyError) Error() string   { return ErrBusy.Error() }
-func (e *BusyError) Unwrap() []error { return []error{ErrBusy, e.Cause} }
+func (e *BusyError) Error() string { return ErrBusy.Error() }
+func (e *BusyError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrBusy}
+	}
+	return []error{ErrBusy, e.Cause}
+}
 
 type UnsupportedError struct{}
 
@@ -41,8 +46,13 @@ func (*InvalidTargetError) Unwrap() error { return ErrInvalidTarget }
 
 type OperationalError struct{ Cause error }
 
-func (e *OperationalError) Error() string   { return ErrOperational.Error() }
-func (e *OperationalError) Unwrap() []error { return []error{ErrOperational, e.Cause} }
+func (e *OperationalError) Error() string { return ErrOperational.Error() }
+func (e *OperationalError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrOperational}
+	}
+	return []error{ErrOperational, e.Cause}
+}
 
 // Lease is a cooperative lease; Release is concurrent-safe and idempotent.
 type Lease struct {

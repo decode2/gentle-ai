@@ -102,6 +102,29 @@ func TestErrorsExposeTypedTaxonomy(t *testing.T) {
 	}
 }
 
+func TestZeroCauseErrorsDoNotUnwrapNilChildren(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		err      error
+		sentinel error
+	}{
+		{name: "busy", err: &BusyError{}, sentinel: ErrBusy},
+		{name: "operational", err: &OperationalError{}, sentinel: ErrOperational},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !errors.Is(test.err, test.sentinel) {
+				t.Fatalf("errors.Is(%T, %v) = false", test.err, test.sentinel)
+			}
+			children := test.err.(interface{ Unwrap() []error }).Unwrap()
+			for i, child := range children {
+				if child == nil {
+					t.Fatalf("Unwrap()[%d] = nil", i)
+				}
+			}
+		})
+	}
+}
+
 func TestLeaseReleaseIsConcurrentIdempotentAndOperational(t *testing.T) {
 	unlockErr, closeErr := errors.New("unlock failed"), errors.New("close failed")
 	var mu sync.Mutex
