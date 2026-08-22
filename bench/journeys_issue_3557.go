@@ -93,7 +93,7 @@ func issue3557VerifyDoctor(sandbox *Sandbox, observation Observation) error {
 		return fmt.Errorf("read state after doctor: %w", err)
 	}
 	if string(state) != sandbox.Scratch["issue-3557-state-content"] {
-		return fmt.Errorf("doctor changed state.json")
+		return fmt.Errorf("doctor changed state.json: got %q, want %q", string(state), sandbox.Scratch["issue-3557-state-content"])
 	}
 	backupPath := filepath.Join(sandbox.Home, ".gentle-ai", "backups")
 	if _, err := os.Lstat(backupPath); err == nil {
