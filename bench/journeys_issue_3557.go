@@ -82,8 +82,11 @@ func issue3557VerifyDoctor(sandbox *Sandbox, observation Observation) error {
 	if linkTarget != sandbox.Scratch["issue-3557-link-target"] {
 		return fmt.Errorf("doctor changed symlink target from %q to %q", sandbox.Scratch["issue-3557-link-target"], linkTarget)
 	}
-	if _, err := os.Lstat(sandbox.Scratch["issue-3557-target"]); !os.IsNotExist(err) {
-		return fmt.Errorf("doctor changed the missing external target: %v", err)
+	targetPath := sandbox.Scratch["issue-3557-target"]
+	if _, err := os.Lstat(targetPath); err == nil {
+		return fmt.Errorf("doctor unexpectedly created %q", targetPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("doctor changed %q: %w", targetPath, err)
 	}
 	state, err := os.ReadFile(sandbox.Scratch["issue-3557-state"])
 	if err != nil {
@@ -92,8 +95,11 @@ func issue3557VerifyDoctor(sandbox *Sandbox, observation Observation) error {
 	if string(state) != sandbox.Scratch["issue-3557-state-content"] {
 		return fmt.Errorf("doctor changed state.json")
 	}
-	if _, err := os.Lstat(filepath.Join(sandbox.Home, ".gentle-ai", "backups")); !os.IsNotExist(err) {
-		return fmt.Errorf("doctor created backup metadata: %v", err)
+	backupPath := filepath.Join(sandbox.Home, ".gentle-ai", "backups")
+	if _, err := os.Lstat(backupPath); err == nil {
+		return fmt.Errorf("doctor unexpectedly created %q", backupPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("doctor could not inspect %q: %w", backupPath, err)
 	}
 	return nil
 }

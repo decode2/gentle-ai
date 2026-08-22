@@ -352,24 +352,62 @@ func TestCheckStateJSON_AgentConfigDirMissing(t *testing.T) {
 	}
 }
 
-func TestCheckStateJSON_AgentConfigDirDanglingSymlink(t *testing.T) {
+func TestCheckStateJSON_ManagedConfigPathUnreadable(t *testing.T) {
 	homeDir := t.TempDir()
 	stateDir := filepath.Join(homeDir, ".gentle-ai")
-	if err := os.MkdirAll(filepath.Join(homeDir, ".config"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configDir := filepath.Join(homeDir, ".config", "opencode")
-	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
-	if err := os.Symlink(missingTarget, configDir); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
-	}
-	payload := `{"installed_agents":["opencode"]}`
-	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(payload), 0o644); err != nil {
+	configRoot := filepath.Join(homeDir, ".config")
+	if err := os.WriteFile(configRoot, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(`{"installed_agents":["opencode"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configRoot, "opencode")
+	_, statErr := os.Lstat(configPath)
+	if statErr == nil {
+		t.Fatal("unreadable managed config path unexpectedly exists")
+	}
+
+	got := checkStateJSON(homeDir)
+
+	if got.Status != CheckStatusWarn {
+		t.Fatalf("expected warn for unreadable managed config path, got %s: %s", got.Status, got.Detail)
+	}
+	for _, want := range []string{configPath, statErr.Error(), "inspect or repair", "gentle-ai doctor"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("unreadable path result missing %q: %s", want, got.Detail)
+		}
+	}
+	if got.Remedy != nil && got.Remedy.ID == doctor.RemedySync {
+		t.Fatalf("unreadable managed config path must not recommend sync: %+v", got.Remedy)
+	}
+}
+
+func setupDanglingOpenCodeFixture(t *testing.T, statePayload string) (homeDir, configDir, targetPath string) {
+	t.Helper()
+	homeDir = t.TempDir()
+	configDir = filepath.Join(homeDir, ".config", "opencode")
+	if err := os.MkdirAll(filepath.Dir(configDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(homeDir, ".gentle-ai"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	targetPath = filepath.Join(t.TempDir(), "missing-opencode-config")
+	if err := os.Symlink(targetPath, configDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, ".gentle-ai", "state.json"), []byte(statePayload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return homeDir, configDir, targetPath
+}
+
+func TestCheckStateJSON_AgentConfigDirDanglingSymlink(t *testing.T) {
+	homeDir, configDir, _ := setupDanglingOpenCodeFixture(t, `{"installed_agents":["opencode"]}`)
 
 	got := checkStateJSON(homeDir)
 
@@ -398,23 +436,7 @@ func TestCheckStateJSON_AgentConfigDirDanglingSymlink(t *testing.T) {
 }
 
 func TestCheckStateJSON_DanglingAndAbsentConfigDirsSuppressSync(t *testing.T) {
-	homeDir := t.TempDir()
-	stateDir := filepath.Join(homeDir, ".gentle-ai")
-	configRoot := filepath.Join(homeDir, ".config")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(configRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configDir := filepath.Join(configRoot, "opencode")
-	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
-	if err := os.Symlink(missingTarget, configDir); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte(`{"installed_agents":["opencode","claude-code"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	homeDir, configDir, _ := setupDanglingOpenCodeFixture(t, `{"installed_agents":["opencode","claude-code"]}`)
 
 	got := checkStateJSON(homeDir)
 
@@ -898,23 +920,9 @@ func TestRunDoctor_DanglingConfigSymlinkIsReadOnly(t *testing.T) {
 		osExecutableDoctor = origExecutable
 	}()
 
-	homeDir := t.TempDir()
-	stateDir := filepath.Join(homeDir, ".gentle-ai")
-	if err := os.MkdirAll(filepath.Join(homeDir, ".config"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configDir := filepath.Join(homeDir, ".config", "opencode")
-	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
-	if err := os.Symlink(missingTarget, configDir); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
-	}
-	statePath := filepath.Join(stateDir, "state.json")
-	if err := os.WriteFile(statePath, []byte(`{"installed_agents":["opencode"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	homeDir, configDir, missingTarget := setupDanglingOpenCodeFixture(t, `{"installed_agents":["opencode"]}`)
+	statePath := filepath.Join(homeDir, ".gentle-ai", "state.json")
+	stateDir := filepath.Dir(statePath)
 	stateBefore, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -968,23 +976,8 @@ func TestRunDoctor_DanglingConfigSymlinkIsReadOnly(t *testing.T) {
 }
 
 func TestDoctorSyncDisagreement_RealCLIBoundary(t *testing.T) {
-	homeDir := t.TempDir()
-	stateDir := filepath.Join(homeDir, ".gentle-ai")
-	configDir := filepath.Join(homeDir, ".config", "opencode")
-	missingTarget := filepath.Join(t.TempDir(), "missing-opencode-config")
-	if err := os.MkdirAll(filepath.Dir(configDir), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(missingTarget, configDir); err != nil {
-		t.Skipf("symlink creation unavailable: %v", err)
-	}
-	statePath := filepath.Join(stateDir, "state.json")
-	if err := os.WriteFile(statePath, []byte(`{"installed_agents":["opencode"]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	homeDir, configDir, missingTarget := setupDanglingOpenCodeFixture(t, `{"installed_agents":["opencode"]}`)
+	statePath := filepath.Join(homeDir, ".gentle-ai", "state.json")
 	stateBefore, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -994,14 +987,8 @@ func TestDoctorSyncDisagreement_RealCLIBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Before #3557, this exact os.Stat observation entered the missing-path
-	// branch and caused Doctor to recommend RemedySync.
-	var preFixRemedy *doctor.Remedy
-	if _, err := os.Stat(configDir); os.IsNotExist(err) {
-		preFixRemedy = doctor.NewRemedy(doctor.RemedySync, "Run 'gentle-ai sync' to restore missing config files")
-	}
-	if preFixRemedy == nil || preFixRemedy.ID != doctor.RemedySync {
-		t.Fatalf("dangling managed path did not reproduce the pre-fix sync recommendation: %+v", preFixRemedy)
+	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
+		t.Fatalf("dangling managed path stat error = %v, want not-exist", err)
 	}
 	doctorResult := checkStateJSON(homeDir)
 	if doctorResult.Status != CheckStatusWarn {

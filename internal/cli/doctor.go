@@ -415,7 +415,11 @@ func checkStateJSON(homeDir string) CheckResult {
 				continue
 			}
 			if lstatErr != nil {
-				continue
+				return CheckResult{
+					Name:   id,
+					Status: CheckStatusWarn,
+					Detail: fmt.Sprintf("managed config path %s could not be inspected: %v; inspect or repair it manually, then re-run 'gentle-ai doctor'", dir, lstatErr),
+				}
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
 				if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
