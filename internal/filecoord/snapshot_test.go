@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -36,6 +37,9 @@ func TestObserveValidatesCanonicalTargetBeforeUnsupportedBackend(t *testing.T) {
 }
 
 func TestObserveUnsupportedBackendHasNoFilesystemSideEffects(t *testing.T) {
+	if runtime.GOOS == "android" || runtime.GOOS == "darwin" || runtime.GOOS == "dragonfly" || runtime.GOOS == "freebsd" || runtime.GOOS == "illumos" || runtime.GOOS == "ios" || runtime.GOOS == "linux" || runtime.GOOS == "netbsd" || runtime.GOOS == "openbsd" || runtime.GOOS == "solaris" {
+		t.Skip("POSIX backend")
+	}
 	target := filepath.Join(t.TempDir(), "not-created")
 	snapshot, err := Observe(context.Background(), target)
 	if snapshot != nil || !errors.Is(err, ErrUnsupported) {
