@@ -1,3 +1,5 @@
+//go:build !android && !darwin && !dragonfly && !freebsd && !illumos && !ios && !linux && !netbsd && !openbsd && !solaris
+
 package filecoord
 
 import "context"
