@@ -28,7 +28,7 @@ func TestDarwinInheritedACLDescriptorClearExperiment(t *testing.T) {
 	}
 	observation, ok := darwinACLProbe(fd, child)
 	t.Logf("native descriptor observation:\n%s", observation)
-	listing, err := exec.Command("ls", "-le", parent, child).CombinedOutput()
+	listing, err = exec.Command("ls", "-le", parent, child).CombinedOutput()
 	t.Logf("fixture ls -le after (err=%v):\n%s", err, listing)
 	if err != nil {
 		t.Errorf("fixture ls -le after unavailable: %v", err)
