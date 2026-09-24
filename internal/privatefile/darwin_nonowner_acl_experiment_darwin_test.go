@@ -122,16 +122,35 @@ func TestDarwinOwnerACLNonownerDenialExperiment(t *testing.T) {
 		t.Fatalf("disposable parent mode/owner: %+v, %v", parentStat, err)
 	}
 
+	// Check the fixed account directly before sudo. Keep diagnostics private: id
+	// may include system-specific account details on stderr.
+	account := exec.Command("/usr/bin/id", "-u", "_nobody")
+	accountOut, accountErr := account.Output()
+	if accountErr != nil {
+		class := "account-lookup-failed"
+		if executableUnavailable(accountErr) {
+			class = "executable-unavailable"
+		}
+		t.Fatalf("nonowner account precheck: class=%s exit=%d", class, commandExitCode(accountErr))
+	}
+	if _, parseErr := strconv.Atoi(strings.TrimSpace(string(accountOut))); parseErr != nil {
+		t.Fatalf("nonowner account precheck: class=account-lookup-failed exit=0")
+	}
+
 	// Query the effective UID through precisely the passwordless sudo route the
-	// probe will use. A missing sudo, wrong UID, or root is a hard failure.
+	// probe will use. Keep only a safe failure class and numeric exit code.
 	identity := exec.Command("/usr/bin/sudo", "-n", "-u", "_nobody", "/usr/bin/id", "-u")
 	identityOut, err := identity.Output()
 	if err != nil {
-		t.Fatalf("passwordless nonowner identity: %v", err)
+		class := "sudo-command-failed"
+		if executableUnavailable(err) {
+			class = "executable-unavailable"
+		}
+		t.Fatalf("passwordless nonowner identity: class=%s exit=%d", class, commandExitCode(err))
 	}
 	uid, err := strconv.Atoi(strings.TrimSpace(string(identityOut)))
 	if err != nil || uid <= 0 || uint32(uid) == before.Uid {
-		t.Fatalf("probe identity not distinct unprivileged UID: %q, %v", identityOut, err)
+		t.Fatalf("passwordless nonowner identity: class=sudo-command-failed exit=0")
 	}
 
 	written, err := file.Write([]byte(probeMarker))
@@ -166,21 +185,31 @@ func TestDarwinOwnerACLNonownerDenialExperiment(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err = cmd.Run()
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != probeDenied {
-			code := -1
-			if exit != nil {
-				code = exit.ExitCode()
-			}
-			t.Fatalf("nonowner %s probe requires classified denial (%d): exit=%d err=%v", mode, probeDenied, code, err)
+		status := commandExitCode(err)
+		if err == nil {
+			status = 0
 		}
-		if stdout.Len() != 0 {
-			t.Fatalf("nonowner %s probe stdout must be empty: %q", mode, stdout.String())
+		if status != probeDenied {
+			t.Fatalf("nonowner %s probe: expected_status=%d status=%d stdout_len=%d stderr_len=%d",
+				mode, probeDenied, status, stdout.Len(), stderr.Len())
 		}
-		if stderr.Len() != 0 {
-			t.Fatalf("nonowner %s probe stderr must be empty: %q", mode, stderr.String())
+		if stdout.Len() != 0 || stderr.Len() != 0 {
+			t.Fatalf("nonowner %s probe output must be empty: status=%d stdout_len=%d stderr_len=%d",
+				mode, status, stdout.Len(), stderr.Len())
 		}
 	}
+}
+
+func commandExitCode(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+func executableUnavailable(err error) bool {
+	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrPermission)
 }
 
 func checkExperimentFile(t *testing.T, path string, mode os.FileMode, size int64, uid uint32) {
