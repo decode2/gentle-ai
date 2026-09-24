@@ -360,14 +360,16 @@ jobs:
           go test ./internal/privatefile -list '^TestWriteNewReportUnsupportedDoesNotWrite$' | grep -Fx 'TestWriteNewReportUnsupportedDoesNotWrite' >/dev/null
           go test ./internal/privatefile -count=1 -timeout=300s
 
-      # Deliberate RED registration: dispatch only, never an ordinary PR gate.
+      # Dispatch-only observation, never an ordinary PR gate. Keep the format
+      # guard above unconditional (required-check formatter ordering contract).
       - name: Run native Darwin inherited ACL descriptor experiment
-        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
-          go test -tags privatefileaclexperiment ./internal/privatefile -list '^TestDarwinInheritedACLDescriptorClearExperiment$' | grep -Fx 'TestDarwinInheritedACLDescriptorClearExperiment' >/dev/null
-          go test -tags privatefileaclexperiment -v ./internal/privatefile -run '^TestDarwinInheritedACLDescriptorClearExperiment$' -count=1 -timeout=300s
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            go test -tags privatefileaclexperiment ./internal/privatefile -list '^TestDarwinInheritedACLDescriptorClearExperiment$' | grep -Fx 'TestDarwinInheritedACLDescriptorClearExperiment' >/dev/null
+            go test -tags privatefileaclexperiment -v ./internal/privatefile -run '^TestDarwinInheritedACLDescriptorClearExperiment$' -count=1 -timeout=300s
+          fi
 
       # Fails loudly if any manifest entry names a test that no longer exists:
       # `go test -run` with a pattern matching nothing exits 0, which would rot
