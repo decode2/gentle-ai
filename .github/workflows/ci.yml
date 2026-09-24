@@ -258,6 +258,18 @@ jobs:
             go test ./internal/privatefile -run '^TestWindowsManagedRootCandidate$' -count=1 -v
           fi
 
+      - name: Check native Windows managed storage probe registration (dispatch only)
+        shell: bash
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            go test -tags privatefilestorageprobe ./internal/privatefile -list '^TestWindowsManagedStorageProbe$' | grep -Fx TestWindowsManagedStorageProbe >/dev/null
+            go test -tags privatefilestorageprobe ./internal/privatefile -run '^TestWindowsManagedStorageProbe$' -count=1 -timeout=300s -v
+          fi
+
       - name: Run native Windows junction parent tests
         shell: pwsh
         timeout-minutes: 5
