@@ -64,7 +64,7 @@ static int darwin_acl_probe(int fd, const char *child, char *out, size_t n) {
     acl_permset_t perms;
     acl_flagset_t flags;
     uuid_t everyone;
-    int rc = -1, inherited = 0, count = 0, iter;
+    int rc = -1, inherited = 0, count = 0, index;
     struct stat first, last, path_stat;
     ssize_t textlen;
     char *text = NULL;
@@ -83,12 +83,16 @@ static int darwin_acl_probe(int fd, const char *child, char *out, size_t n) {
     REQUIRE((text = acl_to_text(before, &textlen)) != NULL);
     note(out,n,"same-fd before ACL (%ld bytes): %.2000s\n", (long)textlen, text);
     acl_free(text); text = NULL;
-    iter = ACL_FIRST_ENTRY;
-    while (1) {
-        int got = acl_get_entry(before, iter, &entry);
-        REQUIRE(got >= 0);
-        if (got == 0) break;
-        iter = ACL_NEXT_ENTRY;
+    // Darwin returns 0 for an entry, -1 for an error. Indexed IDs are a
+    // nonportable diagnostic extension; never infer an empty ACL from EINVAL.
+    for (index = 0; index < 64; index++) {
+        errno = 0;
+        int got = acl_get_entry(before, index, &entry);
+        int entry_errno = errno;
+        note(out,n,"before acl_get_entry(index=%d)=%d errno=%d\n",index,got,entry_errno);
+        if (got == -1 && entry_errno == EINVAL && index > 0 && count > 0) break;
+        errno = entry_errno;
+        REQUIRE(got == 0); // index 0 EINVAL or any other return is inconclusive.
         count++;
         acl_tag_t tag;
         uuid_t *who;
@@ -106,6 +110,7 @@ static int darwin_acl_probe(int fd, const char *child, char *out, size_t n) {
             inherited_flag == 1 && read_data == 1 && write_data == 1) inherited++;
         acl_free(who);
     }
+    REQUIRE(index < 64); // A truncated enumeration is not evidence.
     note(out,n,"same-fd before entries=%d inherited everyone read/write=%d\n",count,inherited);
     REQUIRE(inherited > 0);
 
@@ -132,17 +137,20 @@ static int darwin_acl_probe(int fd, const char *child, char *out, size_t n) {
     REQUIRE((text = acl_to_text(after, &textlen)) != NULL);
     note(out,n,"same-fd after ACL (%ld bytes): %.2000s\n",(long)textlen,text);
     acl_free(text); text = NULL;
-    iter = ACL_FIRST_ENTRY;
     count = 0;
-    while (1) {
-        int got = acl_get_entry(after, iter, &entry);
-        REQUIRE(got >= 0);
-        if (got == 0) break;
+    for (index = 0; index < 64; index++) {
+        errno = 0;
+        int got = acl_get_entry(after, index, &entry);
+        int entry_errno = errno;
+        note(out,n,"after acl_get_entry(index=%d)=%d errno=%d\n",index,got,entry_errno);
+        if (got == -1 && entry_errno == EINVAL && index > 0 && count > 0) break;
+        errno = entry_errno;
+        REQUIRE(got == 0); // No verified entry at index 0: empty is unproven.
         count++;
-        iter = ACL_NEXT_ENTRY;
     }
+    REQUIRE(index < 64);
     note(out,n,"same-fd after entries=%d\n",count);
-    REQUIRE(count == 0);
+    REQUIRE(count == 0); // Any verified post-set entry is unsafe/inconclusive.
     REQUIRE(S_ISREG(last.st_mode) && last.st_uid == first.st_uid &&
             (last.st_mode & 07777) == 0600 && last.st_size == 0 && last.st_nlink == 1 &&
             last.st_dev == first.st_dev && last.st_ino == first.st_ino &&
