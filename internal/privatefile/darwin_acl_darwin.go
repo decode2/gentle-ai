@@ -7,7 +7,7 @@ package privatefile
 #include <sys/types.h>
 #include <sys/acl.h>
 
-// Clear stale errno so only acl_get_fd_np can establish the no-ACL case.
+// Clear stale errno before retrieval so failure diagnostics reflect this call.
 static acl_t privateACLGetFD(int fd) {
 	errno = 0;
 	return acl_get_fd_np(fd, ACL_TYPE_EXTENDED);
@@ -39,11 +39,10 @@ func probeDarwinPrivateACL(fd int) error {
 
 	acl, getErr := C.privateACLGetFD(C.int(fd))
 	if acl == nil {
-		// Apple's acl_get_fd_np reports ENOENT for a file with no extended
-		// ACL. The successful fstat above rules out an invalid descriptor;
-		// no other retrieval error is evidence of an empty ACL.
-		if getErr == syscall.ENOENT {
-			return nil
+		// A successful fstat does not establish what NULL/ENOENT means for
+		// acl_get_fd_np. No retrieval failure proves the absence of an ACL.
+		if getErr == nil {
+			return errors.New("retrieve private file ACL: NULL without errno")
 		}
 		return fmt.Errorf("retrieve private file ACL: %w", getErr)
 	}
