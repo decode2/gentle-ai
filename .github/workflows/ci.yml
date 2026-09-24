@@ -261,6 +261,10 @@ jobs:
       - name: Check native Windows managed storage probe registration (dispatch only)
         shell: bash
         env:
+          HOME: ${{ runner.temp }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}
+          XDG_CACHE_HOME: ${{ runner.temp }}
+          GOCACHE: ${{ runner.temp }}/go-build-cache
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
         run: |
