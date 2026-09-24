@@ -357,7 +357,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test ./internal/privatefile -list '^TestWriteNewReportUnsupportedDoesNotWrite$' | grep -Fx 'TestWriteNewReportUnsupportedDoesNotWrite' >/dev/null
+          selector='^(TestWriteNewReportUnsupportedDoesNotWrite|TestDarwinPrivateACLNoACLPasses|TestDarwinPrivateACLInheritedPermissiveFails|TestDarwinPrivateACLInspectionFailureFailsClosed)$'
+          listed=$(go test ./internal/privatefile -list "$selector")
+          for test in TestWriteNewReportUnsupportedDoesNotWrite TestDarwinPrivateACLNoACLPasses TestDarwinPrivateACLInheritedPermissiveFails TestDarwinPrivateACLInspectionFailureFailsClosed; do
+            printf '%s\n' "$listed" | grep -Fx "$test" >/dev/null
+          done
           go test ./internal/privatefile -count=1 -timeout=300s
 
       # Fails loudly if any manifest entry names a test that no longer exists:
