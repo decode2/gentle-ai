@@ -1,0 +1,23 @@
+name: Fresh Linux TUI harness controls
+on:
+  push:
+    branches: [feat/shell-linux-fresh-tui-e2e]
+permissions:
+  contents: read
+jobs:
+  harness:
+    if: github.repository == 'decode2/gentle-ai'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Build standard-library harness guest
+        run: docker build -f e2e/Dockerfile.shell-linux-fresh-tui -t fresh-tui-harness e2e
+      - name: Run harness controls, not real Gentle Shell installation
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 64 --memory 256m \
+            --cpus 1 --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+            fresh-tui-harness

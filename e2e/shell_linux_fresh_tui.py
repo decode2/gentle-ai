@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Qualified Linux guest only: fresh TUI installation, launch, Pi preservation."""
+import argparse
+import errno
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pty
+import re
+import select
+import signal
+import stat
+import struct
+import subprocess
+import termios
+import time
+
+
+def require(value, message):
+    if not value:
+        raise RuntimeError(message)
+
+
+def physical(path, directory=True):
+    path = Path(path)
+    require(path.is_absolute() and path == path.resolve(), 'absolute physical path required')
+    for part in [path, *path.parents]:
+        require(not part.is_symlink(), 'symlink path component refused')
+    info = path.stat()
+    require(stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode), 'wrong object type')
+    if directory:
+        require(info.st_uid == os.getuid() and not info.st_mode & 0o022, 'private owned directory required')
+    return path
+
+
+def digest(path):
+    result = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(65536), b''):
+            result.update(block)
+    return result.hexdigest()
+
+
+def inventory(root):
+    result, size = [], 0
+    paths = [root]
+    def refuse(error):
+        raise error
+    for parent, directories, files in os.walk(root, followlinks=False, onerror=refuse):
+        paths.extend(Path(parent) / name for name in sorted(directories + files))
+        require(len(paths) <= 250000, 'Pi inventory entry limit')
+    for path in sorted(paths):
+        before = path.lstat()
+        require(before.st_uid == os.getuid(), 'foreign Pi object owner')
+        content = ''
+        if stat.S_ISLNK(before.st_mode):
+            content = os.readlink(path)  # Inventory the link, never its destination.
+        elif stat.S_ISREG(before.st_mode):
+            size += before.st_size
+            require(before.st_size <= 32 << 20 and size <= 256 << 20, 'Pi inventory byte limit')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                opened = os.fstat(stream.fileno())
+                require((opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino), 'Pi file changed before open')
+                content = hashlib.sha256(stream.read((32 << 20) + 1)).hexdigest()
+        else:
+            require(stat.S_ISDIR(before.st_mode), 'special Pi object refused')
+        after = path.lstat()
+        fields = lambda s: (s.st_dev, s.st_ino, s.st_mode, s.st_uid, s.st_gid, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        require(fields(before) == fields(after), 'Pi changed during inventory')
+        result.append((str(path.relative_to(root)), fields(before), content))
+    return hashlib.sha256(json.dumps(result, separators=(',', ':')).encode()).hexdigest()
+
+
+def child_environment():
+    env = {key: os.environ[key] for key in ('HOME', 'TMPDIR', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS') if key in os.environ}
+    for key in ('HOME', 'TMPDIR', 'XDG_RUNTIME_DIR'):
+        if key in env:
+            physical(env[key])
+    env.update(PATH='/usr/local/bin:/usr/bin:/bin', TERM='xterm-256color')
+    return env
+
+
+def terminal():
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+
+def stop(child, master):
+    groups = {child.pid}
+    try:
+        foreground = os.tcgetpgrp(master)
+        if foreground > 0 and os.getsid(foreground) == child.pid:
+            groups.add(foreground)
+    except (ProcessLookupError, OSError):
+        pass
+    for group in groups:
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    child.wait(timeout=5)
+
+
+def interact(command, project, env, target=None, timeout=300, limit=262144):
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 100, 0, 0))
+    child = None
+    raw, entered, confirmed, queried, registered = bytearray(), False, False, False, False
+    try:
+        child = subprocess.Popen(command, cwd=project, env=env, stdin=slave, stdout=slave, stderr=slave, preexec_fn=terminal)
+        os.close(slave)
+        slave = -1
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    data = os.read(master, 4096)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not data:
+                    break
+                raw.extend(data)
+                require(len(raw) <= limit, 'PTY output limit exceeded; raw output withheld')
+                if target is not None:
+                    if not entered and b'Gentle Shell Linux user installer' in raw:
+                        os.write(master, (str(target) + '\r').encode())
+                        entered = True
+                    if entered and not confirmed and b'Confirm this physical selection' in raw:
+                        os.write(master, b'y')
+                        confirmed = True
+                else:
+                    if not queried:
+                        os.write(master, b'\r/gentle:status\r')
+                        queried = True
+                    if not registered and b'el Gentleman package is active.' in raw:
+                        foreground = os.tcgetpgrp(master)
+                        require(os.readlink(f'/proc/{foreground}/cwd') == str(project), 'foreground project CWD differs')
+                        registered = True
+                        os.write(master, b'\x03\x03')
+            if child.poll() is not None and not select.select([master], [], [], 0)[0]:
+                break
+        child.wait(timeout=2)
+        require(child.returncode == 0, 'interactive command failed; raw output withheld')
+        require(confirmed if target is not None else registered, 'required interactive evidence absent')
+        return {'exit': child.returncode, 'outputBytes': len(raw), 'outputSHA256': hashlib.sha256(raw).hexdigest(), 'confirmed': confirmed, 'registered': registered}
+    finally:
+        if child is not None:
+            stop(child, master)
+        os.close(master)
+        if slave >= 0:
+            os.close(slave)
+
+
+def validate(args):
+    require(args.execute_in_guest, 'explicit --execute-in-guest consent required')
+    require(os.uname().sysname == 'Linux' and os.getuid() != 0, 'non-root Linux required')
+    require(re.fullmatch('[0-9a-f]{40}', args.source_sha), 'source SHA must be 40 lowercase hex digits')
+    supervisor = physical(args.supervisor, False)
+    require(os.access(supervisor, os.X_OK), 'supervisor is not executable')
+    require(re.fullmatch('[0-9a-f]{64}', args.supervisor_sha256), 'supervisor SHA256 required')
+    require(supervisor.stat().st_size <= 128 << 20 and digest(supervisor) == args.supervisor_sha256, 'supervisor hash differs')
+    target, project, fixture = Path(args.target), physical(args.project), physical(args.pi_fixture)
+    require(target.is_absolute() and target == target.resolve(), 'canonical absolute target required')
+    physical(target.parent)
+    require(os.access(target.parent, os.W_OK | os.X_OK), 'target parent not writable')
+    require(not os.path.lexists(target), 'fresh installation requires absent target, including dangling links')
+    for left, right in ((target, fixture), (target, project), (fixture, project)):
+        require(left != right and left not in right.parents and right not in left.parents, 'selected paths overlap')
+    require(supervisor != target and target not in supervisor.parents, 'supervisor overlaps target')
+    return supervisor, target, project, fixture
+
+
+def execute(args):
+    report = {'scenario': 'fresh-tui-install-launch-pi-preservation', 'sourceSHA': args.source_sha, 'sourceSHAIsCallerMetadata': True, 'Ready': False, 'upgradeTested': False, 'passed': False}
+    fixture, before = None, None
+    try:
+        report['stage'] = 'preflight'
+        supervisor, target, project, fixture = validate(args)
+        report.update(supervisorSHA256=digest(supervisor), target=str(target), project=str(project))
+        before = inventory(fixture)
+        report['piBefore'] = before
+        env = child_environment()
+        report['stage'] = 'installation'
+        report['installation'] = interact([str(supervisor), 'shell', 'install'], project, env, target, args.timeout)
+        for name in ('gentle-shell', 'pi'):
+            binding = physical(target / 'bin' / name, False)
+            require(os.access(binding, os.X_OK), 'installed command not executable')
+        manifest = physical(target / 'installation.json', False)
+        require(manifest.stat().st_size <= 65536, 'installation manifest byte limit')
+        data = json.loads(manifest.read_bytes())
+        require(data.get('Mode') == 'separate' and data.get('Destination') == str(target), 'installed manifest identity differs')
+        report['manifestSHA256'] = digest(manifest)
+        report['stage'] = 'launch'
+        report['launch'] = interact([str(target / 'bin/gentle-shell')], project, env, timeout=args.timeout)
+        report['passed'] = True
+    except Exception as error:
+        report.update(errorType=type(error).__name__, effectsUncertain=True)
+    finally:
+        if before is not None:
+            try:
+                report['piAfter'] = inventory(fixture)
+                report['piPreserved'] = before == report['piAfter']
+            except Exception:
+                report['piPreserved'] = False
+            report['passed'] = report['passed'] and report['piPreserved']
+    return report
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--execute-in-guest', action='store_true')
+    for name in ('supervisor', 'supervisor-sha256', 'source-sha', 'target', 'project', 'pi-fixture'):
+        parser.add_argument('--' + name, required=True)
+    parser.add_argument('--timeout', type=float, default=300)
+    args = parser.parse_args()
+    require(0 < args.timeout <= 900, 'timeout must be within (0, 900]')
+    report = execute(args)
+    print(json.dumps(report, sort_keys=True))
+    raise SystemExit(0 if report['passed'] else 1)
+
+
+if __name__ == '__main__':
+    main()
