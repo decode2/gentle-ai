@@ -64,7 +64,9 @@ class HarnessTests(unittest.TestCase):
         for kind in ('directory', 'dangling'):
             with self.subTest(kind=kind):
                 target.mkdir() if kind == 'directory' else target.symlink_to('/missing')
-                self.assertFalse(self.run_case()['passed'])
+                report = self.run_case()
+                self.assertFalse(report['passed'], report)
+                self.assertEqual(report['errorReason'], 'fresh installation requires absent target, including dangling links')
                 target.rmdir() if kind == 'directory' else target.unlink()
 
     def test_bad_hash_consent_and_overlap(self):
@@ -72,6 +74,8 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(change=change), patch.dict(vars(self.args), change):
                 with self.assertRaises(RuntimeError):
                     driver.validate(self.args)
+        with patch.object(driver, 'validate', side_effect=RuntimeError('external path /secret')):
+            self.assertEqual(self.run_case()['errorReason'], 'external diagnostic withheld')
 
     def test_fixture_drift_and_partial_failure_are_not_passes(self):
         self.fake(f"pathlib.Path({str(self.fixture/'pi')!r}).write_bytes(b'changed'); sys.exit(7)")

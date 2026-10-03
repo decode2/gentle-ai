@@ -19,5 +19,5 @@ jobs:
         run: |
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --pids-limit 64 --memory 256m \
-            --cpus 1 --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
+            --cpus 1 --tmpfs /tmp:rw,exec,nosuid,nodev,size=64m,mode=1777 \
             fresh-tui-harness
