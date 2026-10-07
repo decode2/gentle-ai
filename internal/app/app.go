@@ -300,9 +300,11 @@ func RunArgs(args []string, stdout io.Writer) error {
 		if completed, ok := finalModel.(tui.Model); ok {
 			if req, confirmed := completed.ShellInstallSelection(); confirmed {
 				// Only after the parent program has restored the terminal.
-				return runShellEntry([]string{"install", "--target", req.Destination,
-					"--mode", req.Mode, "--prefix", req.SharedPrefix,
-					"--agent", req.SharedAgent, "--confirm", req.Confirmation}, stdout)
+				args, err := cli.ShellInstallArguments(req)
+				if err != nil {
+					return err
+				}
+				return runShellEntry(args, stdout)
 			}
 		}
 		return nil

@@ -20,6 +20,7 @@ gentle-ai shell install --target /owned/private-parent/shell --mode separate
   --mode shared --prefix /owned/selected-prefix --agent /owned/selected-agent
   --inspect                 print physical-selection confirmation without effects
   --confirm SHA256          approve that exact inspected selection
+  --experience JSON         validated persona/background defaults for a new target
 No flags: main Gentle AI TUI; choose Install Gentle-Shell, our own agent.
 Commands live in TARGET/bin, outside npm's bin.
 gentle-ai shell launch ROOT [PI_ARGS...]
@@ -39,6 +40,13 @@ func parseShellInstall(args []string, stdout io.Writer) (shellinstaller.UserInst
 	flags.StringVar(&req.SharedPrefix, "prefix", "", "selected existing global Pi prefix")
 	flags.StringVar(&req.SharedAgent, "agent", "", "selected existing Pi configuration")
 	flags.StringVar(&req.Confirmation, "confirm", "", "physical selection SHA256")
+	flags.Func("experience", "validated target-local persona/background JSON", func(raw string) error {
+		p, err := shellinstaller.DecodeUserExperience(raw)
+		if err == nil {
+			req.Experience = &p
+		}
+		return err
+	})
 	inspect := flags.Bool("inspect", false, "inspect without installation")
 	flags.Usage = func() { _, _ = io.WriteString(stdout, shellInstallHelp) }
 	if err := flags.Parse(args); err != nil {
@@ -98,17 +106,17 @@ func RunShell(args []string, stdout io.Writer) (resultErr error) {
 		if previewErr != nil {
 			return previewErr
 		}
-		_, err = fmt.Fprintf(stdout, "Confirmation: %s\nCommands: %s/bin/gentle-shell, %s/bin/pi\n%s", token, req.Destination, req.Destination, preview)
+		_, err = fmt.Fprintf(stdout, "Confirmation: %s\nCommands: %s/bin/gentle-shell, %s/bin/pi\n%s", token, req.Destination, req.Destination, preview+shellExperienceDisclosure(req))
 		return err
 	}
 	if req.Confirmation != token {
 		return errors.New("inspect the physical selection first with --inspect, then pass its --confirm SHA256; run gentle-ai shell install --help for selection flags or gentle-ai shell install for interactive review")
 	}
-	return shellinstaller.RunUserEntry(ctx, self, append([]string{"install"}, shellEntryValues(req)...), os.Stdin, stdout, os.Stderr)
-}
-
-func shellEntryValues(req shellinstaller.UserInstallRequest) []string {
-	return []string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, req.Confirmation}
+	values, err := shellinstaller.UserInstallEntryValues(req)
+	if err != nil {
+		return err
+	}
+	return shellinstaller.RunUserEntry(ctx, self, append([]string{"install"}, values...), os.Stdin, stdout, os.Stderr)
 }
 
 // NewShellInstallModel provides the existing selection flow without starting a
@@ -213,6 +221,9 @@ func (m shellInstallModel) content() string {
 	rows := []string{"Gentle Shell Linux user installer", "Target: " + m.req.Destination, "Mode: " + m.req.Mode, "Shared prefix: " + m.req.SharedPrefix, "Shared agent: " + m.req.SharedAgent,
 		"Commands: " + m.req.Destination + "/bin/gentle-shell and " + m.req.Destination + "/bin/pi", "Tab selects field; arrows change mode; Enter reviews; Escape cancels."}
 	rows[m.field+1] = "> " + rows[m.field+1]
+	if disclosure := shellExperienceDisclosure(m.req); disclosure != "" {
+		rows = append(rows, disclosure)
+	}
 	if m.review {
 		if m.preview != "" {
 			rows = append(rows, m.preview)

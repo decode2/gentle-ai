@@ -24,7 +24,11 @@ func TestShellInstallFlags(t *testing.T) {
 	if err != nil || !inspect || req.Mode != "shared" || req.Confirmation != "" {
 		t.Fatalf("selection = %+v inspect=%v error=%v", req, inspect, err)
 	}
-	if _, err := shellinstaller.UserInstallFromEntry(shellEntryValues(req)); err != nil {
+	values, err := shellinstaller.UserInstallEntryValues(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := shellinstaller.UserInstallFromEntry(values); err != nil {
 		t.Fatal(err)
 	}
 }
