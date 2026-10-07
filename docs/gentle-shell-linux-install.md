@@ -17,7 +17,7 @@
 | Separate | New private prefix, runtime, HOME, agent and state; existing personal Pi is untouched. |
 | Shared | Explicit existing owned global Pi prefix and agent; both new bindings use those same objects. Review settings changes below. |
 
-Open `gentle-ai` and select **Install Gentle-Shell, our own agent** in the welcome screen. The installer stays inside that same TUI; Escape or Ctrl-C returns to the welcome menu without installation.
+Open `gentle-ai` and select **Install Gentle-Shell, our own agent** in the welcome screen. `gentle-ai shell install` without flags opens that same welcome TUI, not a separate installer. The installer stays inside that same TUI; Escape or Ctrl-C returns to the welcome menu without installation.
 
 Arrows select mode; Tab cycles mode-appropriate fields (Shared adds prefix/agent). Enter reviews; `y` confirms and closes the parent TUI before terminal handoff. Ctrl-C during installation requests cancellation and waits for stop/reap.
 

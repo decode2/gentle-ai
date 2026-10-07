@@ -39,6 +39,7 @@ var (
 	selfUpdateFn              = selfUpdate
 	ensureCurrentOSSupported  = system.EnsureCurrentOSSupported
 	detectSystem              = system.Detect
+	runShellEntry             = cli.RunShell
 	runTUI                    = func(m tea.Model, opts ...tea.ProgramOption) (tea.Model, error) {
 		p := tea.NewProgram(m, opts...)
 		return p.Run()
@@ -84,10 +85,13 @@ func clearPendingSyncAfterDeferredSync(homeDir string, fallback state.InstallSta
 }
 
 func RunArgs(args []string, stdout io.Writer) error {
-	// Shell installation and ordinary owned launches bypass generic setup,
-	// detection, self-update and gates; the dedicated supervisor checks Linux.
+	// The interactive alias opens the same main welcome TUI, not another program.
+	if len(args) == 2 && args[0] == "shell" && args[1] == "install" {
+		args = nil
+	}
+	// Headless shell commands bypass generic setup; their supervisor checks Linux.
 	if len(args) > 0 && args[0] == "shell" {
-		return cli.RunShell(args[1:], stdout)
+		return runShellEntry(args[1:], stdout)
 	}
 	if len(args) == 0 && (!isattyFn(os.Stdin.Fd()) || !isattyFn(os.Stdout.Fd())) {
 		return errors.New(nonInteractiveTUIError)
@@ -296,7 +300,7 @@ func RunArgs(args []string, stdout io.Writer) error {
 		if completed, ok := finalModel.(tui.Model); ok {
 			if req, confirmed := completed.ShellInstallSelection(); confirmed {
 				// Only after the parent program has restored the terminal.
-				return cli.RunShell([]string{"install", "--target", req.Destination,
+				return runShellEntry([]string{"install", "--target", req.Destination,
 					"--mode", req.Mode, "--prefix", req.SharedPrefix,
 					"--agent", req.SharedAgent, "--confirm", req.Confirmation}, stdout)
 			}

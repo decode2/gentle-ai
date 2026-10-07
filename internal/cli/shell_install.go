@@ -20,7 +20,8 @@ gentle-ai shell install --target /owned/private-parent/shell --mode separate
   --mode shared --prefix /owned/selected-prefix --agent /owned/selected-agent
   --inspect                 print physical-selection confirmation without effects
   --confirm SHA256          approve that exact inspected selection
-No flags: dedicated installer TUI. Commands live in TARGET/bin, outside npm's bin.
+No flags: main Gentle AI TUI; choose Install Gentle-Shell, our own agent.
+Commands live in TARGET/bin, outside npm's bin.
 gentle-ai shell launch ROOT [PI_ARGS...]
   Launch the selected stock Pi; normal use is through TARGET/bin/pi or gentle-shell.
 gentle-ai shell recover ROOT inspect
@@ -49,8 +50,8 @@ func parseShellInstall(args []string, stdout io.Writer) (shellinstaller.UserInst
 	return req, *inspect, nil
 }
 
-// Dedicated early route, deliberately independent of the generic installer,
-// profile detector, self-update, gate and ordinary Gentle AI startup TUI.
+// Headless shell route, independent of generic setup. Interactive installation
+// belongs to the main app TUI; this package provides its reusable selection model.
 func RunShell(args []string, stdout io.Writer) (resultErr error) {
 	defer func() {
 		var failure *shellinstaller.PrivateRuntimeError
@@ -69,6 +70,9 @@ func RunShell(args []string, stdout io.Writer) (resultErr error) {
 	default:
 		return fmt.Errorf("unknown shell command %q; run gentle-ai shell --help", args[0])
 	}
+	if len(args) == 1 && args[0] == "install" {
+		return errors.New("interactive installation belongs to the main Gentle AI TUI; run gentle-ai and select Install Gentle-Shell, our own agent")
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
 	self, err := os.Executable()
@@ -77,19 +81,6 @@ func RunShell(args []string, stdout io.Writer) (resultErr error) {
 	}
 	if args[0] != "install" {
 		return shellinstaller.RunUserEntry(ctx, self, args, os.Stdin, stdout, os.Stderr)
-	}
-	if len(args) == 1 {
-		model := NewShellInstallModel(cancel)
-		final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(stdout)).Run()
-		if err != nil {
-			return err
-		}
-		req, confirmed, _, selectionErr := ShellInstallOutcome(final)
-		if !confirmed {
-			return selectionErr
-		}
-		// Run only after Bubble Tea has restored the terminal and released stdin.
-		return shellinstaller.RunUserEntry(ctx, self, append([]string{"install"}, shellEntryValues(req)...), os.Stdin, stdout, os.Stderr)
 	}
 	req, inspect, err := parseShellInstall(args[1:], stdout)
 	if errors.Is(err, flag.ErrHelp) {
