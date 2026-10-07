@@ -66,7 +66,16 @@ func RenderWelcomeWithWidth(cursor int, version string, updateBanner string, upd
 	return RenderWelcomeWithAdvisory(cursor, version, updateBanner, updateResults, updateCheckDone, showProfiles, profileCount, hasEngines, width, 0, WelcomeAdvisory{})
 }
 
-func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, updateResults []update.UpdateResult, updateCheckDone bool, showProfiles bool, profileCount int, hasEngines bool, width int, height int, advisory WelcomeAdvisory) string {
+func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, updateResults []update.UpdateResult, updateCheckDone bool, showProfiles bool, profileCount int, hasEngines bool, width int, height int, advisory WelcomeAdvisory, shellInstaller ...bool) string {
+	hasShell := len(shellInstaller) > 0 && shellInstaller[0]
+	options := WelcomeOptions(updateResults, updateCheckDone, showProfiles, profileCount, hasEngines)
+	minimum := func() string {
+		if hasShell {
+			entries := append([]string{gentleShellInstallTitle}, options...)
+			return renderWelcomeMinimum(width, height, 0, entries[min(max(cursor, 0), len(entries)-1)])
+		}
+		return renderWelcomeMinimum(width, height, cursor)
+	}
 	render := func(includeLogo, includeOptional, compact bool) string {
 		var b strings.Builder
 
@@ -90,6 +99,16 @@ func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, 
 			}
 		}
 
+		menuOptions, menuCursor := options, cursor
+		if hasShell {
+			if includeOptional && !compact {
+				b.WriteString(renderGentleShellInstallHero(cursor == 0, welcomeContentWidth(width)))
+				b.WriteString("\n")
+				menuCursor--
+			} else {
+				menuOptions = append([]string{gentleShellInstallTitle}, options...)
+			}
+		}
 		if !compact && includeLogo {
 			b.WriteString("\n")
 		}
@@ -103,11 +122,10 @@ func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, 
 		} else {
 			b.WriteString("\n\n")
 		}
-		options := WelcomeOptions(updateResults, updateCheckDone, showProfiles, profileCount, hasEngines)
 		if compact {
-			b.WriteString(renderWelcomeOptions(options, cursor, width))
+			b.WriteString(renderWelcomeOptions(menuOptions, menuCursor, width))
 		} else {
-			b.WriteString(renderOptions(options, cursor))
+			b.WriteString(renderOptions(menuOptions, menuCursor))
 		}
 		if !compact && includeLogo {
 			b.WriteString("\n")
@@ -124,7 +142,7 @@ func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, 
 		return welcomeFrameStyle(width).Render(b.String())
 	}
 	if width > 0 && width <= styles.FrameStyle.GetHorizontalBorderSize() {
-		return renderWelcomeMinimum(width, height, cursor)
+		return minimum()
 	}
 	fitsViewport := func(view string) bool {
 		return (width <= 0 || lipgloss.Width(view) <= width) &&
@@ -145,7 +163,7 @@ func RenderWelcomeWithAdvisory(cursor int, version string, updateBanner string, 
 	if !fitsViewport(view) {
 		// A viewport shorter than the compact menu still needs a safe, actionable
 		// state instead of allowing the terminal to clip the rendered content.
-		view = renderWelcomeMinimum(width, height, cursor)
+		view = minimum()
 	}
 	return view
 }
@@ -178,7 +196,7 @@ func renderWelcomeOptions(options []string, cursor int, width int) string {
 	return b.String()
 }
 
-func renderWelcomeMinimum(width int, height int, cursor int) string {
+func renderWelcomeMinimum(width int, height int, cursor int, selectedAction ...string) string {
 	const primaryAction = "Start installation"
 	const compactPrimaryAction = "Go"
 	const narrowPrimaryAction = ">"
@@ -186,6 +204,9 @@ func renderWelcomeMinimum(width int, height int, cursor int) string {
 	const narrowHelp = "q"
 
 	primaryLabel := primaryAction
+	if len(selectedAction) > 0 {
+		primaryLabel = selectedAction[0]
+	}
 	if width > 0 && lipgloss.Width(primaryLabel) > width {
 		primaryLabel = compactPrimaryAction
 		if lipgloss.Width(primaryLabel) > width {

@@ -259,7 +259,7 @@ func RunArgs(args []string, stdout io.Writer) error {
 			printPostUpgradeDoctorAdvisory(stdout)
 		}
 
-		m := tui.NewModel(result, Version, installedState)
+		m := tui.NewModel(result, Version, installedState).WithShellInstaller()
 		m.ExecuteFn = tuiExecuteWithBackground
 		m.ExecuteSDKFn = tuiExecuteWithSDK
 		m.RestoreFn = tuiRestore
@@ -292,6 +292,14 @@ func RunArgs(args []string, stdout io.Writer) error {
 		}
 		if latestVersion, ok := gentleAIUpgradeVersionFromTUI(finalModel); ok {
 			return restartAfterGentleAIUpgrade(latestVersion, stdout)
+		}
+		if completed, ok := finalModel.(tui.Model); ok {
+			if req, confirmed := completed.ShellInstallSelection(); confirmed {
+				// Only after the parent program has restored the terminal.
+				return cli.RunShell([]string{"install", "--target", req.Destination,
+					"--mode", req.Mode, "--prefix", req.SharedPrefix,
+					"--agent", req.SharedAgent, "--confirm", req.Confirmation}, stdout)
+			}
 		}
 		return nil
 	}

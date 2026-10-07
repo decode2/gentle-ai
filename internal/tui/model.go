@@ -578,9 +578,11 @@ const (
 	ScreenReviewStoreResetResult
 	// ScreenReviewMode displays and changes the global review-mode switch.
 	ScreenReviewMode
+	ScreenShellInstall
 )
 
 type Model struct {
+	shellInstall              shellInstallState
 	openCodePresentationMajor opencode.RuntimeMajor
 	Screen                    Screen
 	PreviousScreen            Screen
@@ -971,6 +973,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		m.clampAdvisoryScroll()
+		if m.Screen == ScreenShellInstall {
+			return m.updateShellInstall(msg)
+		}
 		return m, nil
 	case TickMsg:
 		if tuiAnimationsDisabled() {
@@ -1220,6 +1225,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.UpdateCheckDone = false
 		return m, m.Init()
 	case tea.KeyMsg:
+		if m.Screen == ScreenShellInstall {
+			return m.updateShellInstall(msg)
+		}
 		if m.Screen == ScreenRenameBackup {
 			return m.handleRenameInput(msg)
 		}
@@ -1389,7 +1397,10 @@ func (m Model) View() string {
 			m.hasDetectedOpenCode(), 0, m.hasAgentBuilderEngines(),
 			m.Width, m.Height,
 			screens.WelcomeAdvisory{Message: m.AdvisoryMessage, URL: m.AdvisoryURL, Scroll: m.AdvisoryScroll},
+			m.shellInstall.enabled,
 		)
+	case ScreenShellInstall:
+		return m.shellInstall.child.View()
 	case ScreenUpgrade:
 		return screens.RenderUpgradeWithWidth(m.UpdateResults, m.UpgradeReport, m.UpgradeErr, m.OperationRunning, m.UpdateCheckDone, m.Cursor, m.SpinnerFrame, m.Width)
 	case ScreenSync:
@@ -1908,7 +1919,14 @@ func (m Model) isModelPickerSeparatorCursor() bool {
 func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 	switch m.Screen {
 	case ScreenWelcome:
-		switch m.Cursor {
+		cursor := m.Cursor
+		if m.shellInstall.enabled {
+			if cursor == 0 {
+				return m.startShellInstall()
+			}
+			cursor--
+		}
+		switch cursor {
 		case 0:
 			m.InstallFlowActive = true
 			m.setScreen(ScreenDetection)
@@ -1948,29 +1966,29 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 		default:
 			next := 6
 
-			if m.Cursor == next {
+			if cursor == next {
 				m.setScreen(ScreenBackups)
 				return m, nil
 			}
 			next++
 
-			if m.Cursor == next {
+			if cursor == next {
 				return m.startReviewStoreResetSurvey()
 			}
 			next++
 
-			if m.Cursor == next {
+			if cursor == next {
 				return m.startReviewModeLoad()
 			}
 			next++
 
-			if m.Cursor == next {
+			if cursor == next {
 				m.setScreen(ScreenUninstallMode)
 				return m, nil
 			}
 			next++
 
-			if m.Cursor == next {
+			if cursor == next {
 				m.CommunityToolsStandalone = true
 				m.CommunityToolResults = nil
 				m.CommunityToolErr = nil
@@ -1983,7 +2001,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			}
 			next++
 
-			if m.Cursor == next {
+			if cursor == next {
 				return m, tea.Quit
 			}
 		}
@@ -3715,7 +3733,11 @@ func (m Model) optionCount() int {
 	}
 	switch m.Screen {
 	case ScreenWelcome:
-		return len(screens.WelcomeOptions(m.UpdateResults, m.UpdateCheckDone, m.hasDetectedOpenCode(), 0, m.hasAgentBuilderEngines()))
+		count := len(screens.WelcomeOptions(m.UpdateResults, m.UpdateCheckDone, m.hasDetectedOpenCode(), 0, m.hasAgentBuilderEngines()))
+		if m.shellInstall.enabled {
+			count++
+		}
+		return count
 	case ScreenUpgrade:
 		if m.UpgradeReport != nil || m.UpgradeErr != nil {
 			return 0
