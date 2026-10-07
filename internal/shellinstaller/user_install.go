@@ -16,6 +16,7 @@ type UserInstallRequest struct {
 	SharedPrefix string
 	SharedAgent  string
 	Confirmation string
+	Experience   *UserExperience
 }
 
 type UserInstallResult struct {
@@ -34,7 +35,15 @@ const userCapabilityDrop = "/usr/bin/setpriv"
 // Confirmation binds the human's approval to the inspected physical selection,
 // not a boolean flag or an unvalidated path alias.
 func userConfirmation(req UserInstallRequest, identity string) string {
-	data, _ := json.Marshal([]string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, identity})
+	selection := []string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, identity}
+	if req.Experience != nil {
+		encoded, err := req.Experience.Encode()
+		if err != nil {
+			return "" // Inspection validates the profile before deriving authority.
+		}
+		selection = append(selection, encoded)
+	}
+	data, _ := json.Marshal(selection)
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
@@ -55,12 +64,20 @@ func userGraphRepairError(root, mode string, err error) error {
 }
 
 func UserInstallFromEntry(args []string) (UserInstallRequest, error) {
-	if len(args) != 5 {
+	if len(args) != 5 && len(args) != 6 {
 		return UserInstallRequest{}, fmt.Errorf("invalid internal install arguments")
 	}
-	return UserInstallRequest{
+	req := UserInstallRequest{
 		Destination: args[0], Mode: args[1], SharedPrefix: args[2], SharedAgent: args[3], Confirmation: args[4],
-	}, nil
+	}
+	if len(args) == 6 {
+		profile, err := DecodeUserExperience(args[5])
+		if err != nil {
+			return UserInstallRequest{}, err
+		}
+		req.Experience = &profile
+	}
+	return req, nil
 }
 
 func userServiceArgs(unit string, interactive bool, self, cwd string, args, env []string) []string {

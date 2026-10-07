@@ -75,6 +75,16 @@ func ValidateUserInstall(req UserInstallRequest) error {
 	if !userSelectionPath(req.Destination) || (req.Mode != "separate" && req.Mode != "shared") {
 		return privateError("refused", errors.New("choose separate or shared mode and a canonical absolute target using only ASCII letters, digits, /, _, . or -"))
 	}
+	if req.Experience != nil {
+		if err := req.Experience.Validate(); err != nil {
+			return privateError("refused", err)
+		}
+		if _, err := os.Lstat(req.Destination); err == nil {
+			return privateError("refused", errors.New("experience choices require a new empty target; existing runtime preferences are not overwritten"))
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	parent, err := privateDirectory(filepath.Dir(req.Destination))
 	if err != nil {
 		return err
@@ -591,6 +601,11 @@ func RunUserInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 	for _, name := range []string{"user.npmrc", "global.npmrc"} {
 		if err = os.WriteFile(filepath.Join(root, "config", name), nil, 0600); err != nil {
 			return result, err
+		}
+	}
+	if req.Experience != nil {
+		if err = userApplyExperience(root, *req.Experience); err != nil {
+			return result, fmt.Errorf("experience configuration: %w", err)
 		}
 	}
 	if err = userBootstrap(ctx, root, workspace); err != nil {
