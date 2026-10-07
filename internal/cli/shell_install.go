@@ -79,17 +79,17 @@ func RunShell(args []string, stdout io.Writer) (resultErr error) {
 		return shellinstaller.RunUserEntry(ctx, self, args, os.Stdin, stdout, os.Stderr)
 	}
 	if len(args) == 1 {
-		model := shellInstallModel{cancel: cancel, req: shellinstaller.UserInstallRequest{Mode: "separate"}}
+		model := NewShellInstallModel(cancel)
 		final, err := tea.NewProgram(model, tea.WithInput(os.Stdin), tea.WithOutput(stdout)).Run()
 		if err != nil {
 			return err
 		}
-		selection := final.(shellInstallModel)
-		if !selection.confirmed {
-			return selection.err
+		req, confirmed, _, selectionErr := ShellInstallOutcome(final)
+		if !confirmed {
+			return selectionErr
 		}
 		// Run only after Bubble Tea has restored the terminal and released stdin.
-		return shellinstaller.RunUserEntry(ctx, self, append([]string{"install"}, shellEntryValues(selection.req)...), os.Stdin, stdout, os.Stderr)
+		return shellinstaller.RunUserEntry(ctx, self, append([]string{"install"}, shellEntryValues(req)...), os.Stdin, stdout, os.Stderr)
 	}
 	req, inspect, err := parseShellInstall(args[1:], stdout)
 	if errors.Is(err, flag.ErrHelp) {
@@ -120,12 +120,28 @@ func shellEntryValues(req shellinstaller.UserInstallRequest) []string {
 	return []string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, req.Confirmation}
 }
 
+// NewShellInstallModel provides the existing selection flow without starting a
+// Bubble Tea program. The containing program owns terminal release and execution.
+func NewShellInstallModel(cancel func()) tea.Model {
+	return shellInstallModel{cancel: cancel, req: shellinstaller.UserInstallRequest{Mode: "separate"}}
+}
+
+// ShellInstallOutcome reads a selection without executing it. Only a finished,
+// confirmed selection is eligible for handoff; the backend still revalidates it.
+func ShellInstallOutcome(model tea.Model) (shellinstaller.UserInstallRequest, bool, bool, error) {
+	if selection, ok := model.(shellInstallModel); ok {
+		return selection.req, selection.confirmed, selection.finished, selection.err
+	}
+	return shellinstaller.UserInstallRequest{}, false, false, nil
+}
+
 type shellInstallModel struct {
 	cancel    context.CancelFunc
 	req       shellinstaller.UserInstallRequest
 	field     int
 	review    bool
 	confirmed bool
+	finished  bool
 	preview   string
 	width     int
 	height    int
@@ -146,8 +162,10 @@ func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if key.String() == "ctrl+c" || key.String() == "esc" {
-		m.cancel()
-		m.confirmed = false
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.confirmed, m.finished = false, true
 		return m, tea.Quit
 	}
 	if m.review {
@@ -158,7 +176,7 @@ func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.review, m.scroll = false, 0
 			return m, nil
 		}
-		m.confirmed = true
+		m.confirmed, m.finished = true, true
 		return m, tea.Quit
 	}
 	switch key.String() {
