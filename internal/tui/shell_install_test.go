@@ -3,12 +3,14 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/cli"
 	"github.com/gentleman-programming/gentle-ai/v4/internal/shellinstaller"
 	"github.com/gentleman-programming/gentle-ai/v4/internal/system"
 )
@@ -88,7 +90,8 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 			if err := os.WriteFile(sentinel, []byte("inert owned fixture"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			want := shellinstaller.UserInstallRequest{Destination: filepath.Join(parent, "qshell"), Mode: "separate"}
+			p := shellinstaller.DefaultUserExperience()
+			want := shellinstaller.UserInstallRequest{Destination: filepath.Join(parent, "qshell"), Mode: "separate", Experience: &p}
 			t.Cleanup(func() {
 				if data, err := os.ReadFile(sentinel); err != nil || string(data) != "inert owned fixture" {
 					t.Errorf("owned sentinel changed: %q, %v", data, err)
@@ -100,6 +103,7 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 			m := NewModel(system.DetectionResult{}, "test").WithShellInstaller()
 			shellInstallIdleUpdate(t, &m, tea.WindowSizeMsg{Width: 120, Height: 50})
 			shellInstallIdleUpdate(t, &m, tea.KeyMsg{Type: tea.KeyEnter})
+			shellExperienceContinue(t, &m)
 			for _, msg := range []tea.Msg{
 				tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(parent + string(os.PathSeparator))},
 				tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")},
@@ -108,7 +112,8 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 			} {
 				shellInstallIdleUpdate(t, &m, msg)
 			}
-			if _, confirmed := m.ShellInstallSelection(); confirmed || m.Screen != ScreenShellInstall || !strings.Contains(ansi.Strip(m.View()), want.Destination) {
+			edited, ok := cli.ShellInstallPresentationOf(m.shellInstall.child)
+			if _, confirmed := m.ShellInstallSelection(); confirmed || !ok || edited.Request.Destination != want.Destination || m.Screen != ScreenShellInstall || !strings.Contains(ansi.Strip(m.View()), "Target") {
 				t.Fatal("q or background messages stole the child route or granted consent")
 			}
 			if tt.review {
@@ -130,7 +135,7 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 						}
 					}
 				}
-				if _, confirmed := m.ShellInstallSelection(); confirmed || !strings.Contains(ansi.Strip(m.View()), token) {
+				if _, confirmed := m.ShellInstallSelection(); confirmed || !strings.Contains(shellReviewVisibleData(m.View()), token) {
 					t.Fatal("review did not disclose real SHA without granting consent")
 				}
 			}
@@ -141,7 +146,7 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 				next, cmd := m.Update(tt.key)
 				m = next.(Model)
 				got, confirmed := m.ShellInstallSelection()
-				if !confirmed || got != want || cmd == nil {
+				if !confirmed || !reflect.DeepEqual(got, want) || cmd == nil {
 					t.Fatalf("confirmed handoff = %+v, confirmed=%v, quit command=%v", got, confirmed, cmd != nil)
 				}
 				if _, ok := cmd().(tea.QuitMsg); !ok {
@@ -167,7 +172,8 @@ func TestMainShellInstallChildTransitions(t *testing.T) {
 			}
 			if tt.key.String() == "n" {
 				shellInstallIdleUpdate(t, &m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-				if _, confirmed := m.ShellInstallSelection(); confirmed || m.Screen != ScreenShellInstall || !strings.Contains(ansi.Strip(m.View()), want.Destination+"q") {
+				edited, ok := cli.ShellInstallPresentationOf(m.shellInstall.child)
+				if _, confirmed := m.ShellInstallSelection(); confirmed || !ok || edited.Request.Destination != want.Destination+"q" || m.Screen != ScreenShellInstall {
 					t.Fatal("declining review did not return to child path editing")
 				}
 			} else if m.Screen != ScreenWelcome || m.Cursor != 0 {

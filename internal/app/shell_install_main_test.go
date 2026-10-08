@@ -45,7 +45,8 @@ func TestMainShellInstallTerminalHandoff(t *testing.T) {
 			detectSystem = func(context.Context) (system.DetectionResult, error) {
 				return system.DetectionResult{System: system.SystemInfo{Supported: true}}, nil
 			}
-			want := shellinstaller.UserInstallRequest{Destination: filepath.Join(home, "shell"), Mode: "separate"}
+			p := shellinstaller.UserExperience{Persona: "neutral", BackgroundSubagents: "off"}
+			want := shellinstaller.UserInstallRequest{Destination: filepath.Join(home, "shell"), Mode: "separate", Experience: &p}
 			stopped := false
 			programCalls, backendCalls := 0, 0
 			programFailure := errors.New("parent program failed")
@@ -55,6 +56,10 @@ func TestMainShellInstallTerminalHandoff(t *testing.T) {
 				defer func() { stopped = true }()
 				for _, msg := range []tea.Msg{
 					tea.WindowSizeMsg{Width: 120, Height: 50},
+					tea.KeyMsg{Type: tea.KeyEnter},
+					tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyEnter},
+					tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyDown},
+					tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyDown},
 					tea.KeyMsg{Type: tea.KeyEnter},
 					tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(want.Destination)},
 					tea.KeyMsg{Type: tea.KeyEnter},
@@ -97,6 +102,11 @@ func TestMainShellInstallTerminalHandoff(t *testing.T) {
 				}
 				expected := []string{"install", "--target", want.Destination, "--mode", want.Mode,
 					"--prefix", "", "--agent", "", "--confirm", want.Confirmation}
+				raw, err := p.Encode()
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected = append(expected, "--experience", raw)
 				if !reflect.DeepEqual(args, expected) {
 					t.Fatalf("handoff args = %q, want %q", args, expected)
 				}

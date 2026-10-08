@@ -1400,7 +1400,7 @@ func (m Model) View() string {
 			m.shellInstall.enabled,
 		)
 	case ScreenShellInstall:
-		return m.shellInstall.child.View()
+		return m.shellInstallView()
 	case ScreenUpgrade:
 		return screens.RenderUpgradeWithWidth(m.UpdateResults, m.UpgradeReport, m.UpgradeErr, m.OperationRunning, m.UpdateCheckDone, m.Cursor, m.SpinnerFrame, m.Width)
 	case ScreenSync:
