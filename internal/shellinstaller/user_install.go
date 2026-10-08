@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // Shared mode selects an existing owned global Pi installation and agent
@@ -29,22 +28,12 @@ type userManifest struct {
 }
 
 const userSchema = "gentle-shell-user-install/v1"
-const userCapabilityDrop = "/usr/bin/setpriv"
 
 // Confirmation binds the human's approval to the inspected physical selection,
 // not a boolean flag or an unvalidated path alias.
 func userConfirmation(req UserInstallRequest, identity string) string {
 	data, _ := json.Marshal([]string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, identity})
 	return fmt.Sprintf("%x", sha256.Sum256(data))
-}
-
-func userBinding(root, name string) string {
-	root = strings.ReplaceAll(root, "'", "'\\''")
-	binding := "#!/bin/sh\nexec '" + root + "/supervisor' shell launch '" + root + "' \"$@\"\n"
-	if name == "gentle-shell" {
-		binding = "#!/bin/sh\nif test \"${1-}\" = install; then shift; exec '" + root + "/supervisor' shell install \"$@\"; fi\n" + binding[len("#!/bin/sh\n"):]
-	}
-	return binding
 }
 
 func userGraphRepairError(root, mode string, err error) error {
@@ -61,19 +50,4 @@ func UserInstallFromEntry(args []string) (UserInstallRequest, error) {
 	return UserInstallRequest{
 		Destination: args[0], Mode: args[1], SharedPrefix: args[2], SharedAgent: args[3], Confirmation: args[4],
 	}, nil
-}
-
-func userServiceArgs(unit string, interactive bool, self, cwd string, args, env []string) []string {
-	result := []string{"--user", "--quiet", "--wait", "--collect", "--service-type=exec", "--expand-environment=no", "--description=Gentle Shell owned runtime", "--unit=" + unit, "--working-directory=" + cwd,
-		"--property=MemoryMax=3221225472", "--property=MemorySwapMax=0", "--property=CPUQuota=100%", "--property=CPUQuotaPeriodSec=100ms",
-		"--property=TasksMax=64", "--property=NoNewPrivileges=yes", "--property=UMask=0077", "--property=KillMode=control-group", "--property=TimeoutStopSec=2s",
-		"--property=UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT NODE_OPTIONS NODE_PATH"}
-	if interactive {
-		result = append(result, "--pty")
-	} else {
-		result = append(result, "--pipe")
-	}
-	result = append(result, "/usr/bin/env", "-i")
-	result = append(result, env...)
-	return append(append(result, userCapabilityDrop, "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "--", self, "shell"), args...)
 }

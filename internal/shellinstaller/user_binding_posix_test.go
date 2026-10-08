@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package shellinstaller
 
 import (
@@ -5,16 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestUserBindingPreservesPathsAndArguments(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("generated bindings require POSIX sh")
-	}
 	for _, name := range []string{"pi", "gentle-shell"} {
 		for _, install := range []bool{false, true} {
 			if name == "pi" && install {
