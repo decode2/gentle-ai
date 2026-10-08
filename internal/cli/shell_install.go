@@ -46,7 +46,7 @@ func parseShellInstall(args []string, stdout io.Writer) (shellinstaller.UserInst
 	}
 	channel, err := shellinstaller.UserInstallChannel(req.Channel)
 	if err != nil || req.Channel == "" {
-		return shellinstaller.UserInstallRequest{}, false, errors.New("invalid channel; use stable or main")
+		return shellinstaller.UserInstallRequest{}, false, errors.New("invalid channel; use stable or main; run gentle-ai shell install --help for selection flags")
 	}
 	req.Channel = channel
 	return req, *inspect, nil
@@ -103,24 +103,53 @@ func shellEntryValues(req shellinstaller.UserInstallRequest) []string {
 	return []string{req.Destination, req.Mode, req.SharedPrefix, req.SharedAgent, req.Confirmation, "--channel", channel}
 }
 
+// NewShellInstallModel creates a selection-only child of the main TUI.
+// It neither starts a program nor executes an installation command.
+func NewShellInstallModel(cancel func()) tea.Model {
+	return shellInstallModel{
+		cancel: cancel, embedded: true,
+		req: shellinstaller.UserInstallRequest{Mode: "separate", Channel: "stable"},
+	}
+}
+
+// ShellInstallOutcome copies the terminal selection for execution after the
+// parent restores its terminal. An unfinished model is not authorization.
+func ShellInstallOutcome(model tea.Model) (shellinstaller.UserInstallRequest, bool, bool, error) {
+	m, ok := model.(shellInstallModel)
+	if !ok || !m.embedded {
+		// refusal:by-design world-action: the caller must construct an embedded model before reading its outcome; a CLI command cannot correct this API misuse.
+		return shellinstaller.UserInstallRequest{}, false, false, errors.New("expected an embedded shell install model; use cli.NewShellInstallModel before reading its outcome")
+	}
+	return m.req, m.confirmed, m.finished, m.err
+}
+
 type shellInstallDone struct{ err error }
 
 type shellInstallModel struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	self   string
-	stdout io.Writer
-	req    shellinstaller.UserInstallRequest
-	field  int
-	review bool
-	busy   bool
-	err    error
+	ctx       context.Context
+	cancel    context.CancelFunc
+	self      string
+	stdout    io.Writer
+	req       shellinstaller.UserInstallRequest
+	field     int
+	review    bool
+	busy      bool
+	err       error
+	embedded  bool
+	confirmed bool
+	finished  bool
 }
 
 func (m shellInstallModel) Init() tea.Cmd { return nil }
 
 func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.embedded && m.finished {
+		return m, nil
+	}
 	if done, ok := msg.(shellInstallDone); ok {
+		if m.embedded {
+			return m, nil // Selection-only children own no backend completion.
+		}
 		m.busy, m.err = false, done.err
 		return m, tea.Quit
 	}
@@ -129,7 +158,13 @@ func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if key.String() == "ctrl+c" || key.String() == "esc" {
-		m.cancel()
+		if m.cancel != nil {
+			m.cancel()
+		}
+		if m.embedded {
+			m.finished = true
+			return m, tea.Quit
+		}
 		if m.busy {
 			return m, nil // Await actual stop/reap; never abandon the install goroutine.
 		}
@@ -142,7 +177,7 @@ func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Windows console modifier records can carry a NUL character instead of text.
 		// Never turn those records into path bytes or let them dismiss physical review.
 		if key.Paste || len(key.Runes) > 1 {
-			m.err = errors.New("destination text contains control characters; input refused")
+			m.err = errors.New("destination text contains control characters; input refused; enter a path without control characters or run gentle-ai shell install --help")
 		}
 		return m, nil
 	}
@@ -150,6 +185,10 @@ func (m shellInstallModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.String() != "y" {
 			m.review = false
 			return m, nil
+		}
+		if m.embedded {
+			m.confirmed, m.finished = true, true
+			return m, tea.Quit
 		}
 		m.busy = true
 		return m, func() tea.Msg {

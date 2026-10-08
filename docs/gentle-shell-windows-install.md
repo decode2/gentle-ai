@@ -60,6 +60,26 @@ inside the qualified isolated Windows Guest, never on the operator's system.
 Shared, update, force/recovery, Darwin, registration and the full Ready contract
 are outside this minimum change.
 
+## Preparing the shared parent TUI
+
+`cli.NewShellInstallModel(cancel)` provides an opt-in selection-only child. It
+starts neither a `tea.Program` nor an installation worker. Confirmation returns
+a copied request through `cli.ShellInstallOutcome`; cancellation returns an
+unconfirmed terminal outcome and calls the optional callback once. Backend
+completion messages are ignored because this child owns no backend operation.
+An unfinished outcome is not permission to install.
+
+The parent must collect that outcome, finish its own program and restore the
+terminal before handing the request to the native entrypoint, which still must
+validate the physical selection. This API does not yet connect the shared
+Welcome/Configure/Ready route: the existing standalone Windows CLI path remains
+unchanged until that integration is implemented and tested.
+
+This unit does not add persona/background persistence or change the Windows
+five-value/default-channel and seven-value/explicit-channel entry protocol.
+It does not accept Linux's sixth profile value. State-machine fixture tests do
+not prove Windows installation, physical consent or terminal restoration.
+
 ## Integration and rollback
 
 The feature starts from Main, not the unmerged Linux PR #5242. It reuses that
