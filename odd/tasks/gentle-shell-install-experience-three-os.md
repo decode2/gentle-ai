@@ -103,4 +103,4 @@ No Main merge, auto-merge, Main push, release/tag/signing/pin or runtime activat
 - [ ] Platform matrices15–17 admitted against the same authentic installed artifacts.
 - [ ] Human acceptance and distribution gate18 complete.
 
-Unit01 source groundwork: `e0b0a773`,249 changed lines including this roadmap; exact reviewed/ACKed. Selection tests and three-target test builds passed, but the Guest controller did not complete successfully. Unit02a adds opt-in Welcome embedding;02b must connect actual post-TUI execution. Neither is installed feature qualification.
+Unit01 source groundwork: `e0b0a773`,249 changed lines including this roadmap; unit02a opt-in embedding: `4abda8b6`,204 lines; both exact reviewed/ACKed, with retained Guest controller failures. Unit02b connects the ordinary application to guarded execution only after its TUI returns; newer source checks have observed controller exit0, not an authorized lab repair or closure of prior failures. Actual common experience controls, terminal E2E, packed distribution and installed-platform qualification remain open.
