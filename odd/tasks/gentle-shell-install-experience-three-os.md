@@ -61,7 +61,7 @@ Each unit includes its meaningful tests/docs and stays at or below400 additions 
 | Order | Unit | Completion evidence |
 |---|---|---|
 | 01 | Export a common CLI selection/outcome API; opt-in selection-only Windows | Public defaults/outcome/cancel/confirmation; no worker started; native builds all targets |
-| 02 | Opt-in Welcome embedding and parent post-`runTUI` handoff | One `tea.Program`; cancel/back; execution occurs after terminal restoration |
+| 02 | Two bounded subunits:02a opt-in Welcome embedding;02b parent post-`runTUI` handoff | One `tea.Program`; cancel/back; execution occurs after terminal restoration |
 | 03 | Common configure/destination/Ready rendering and navigation | Behavioral model tests and real PTY resize/review/cancel, without backend duplication |
 | 04 | Experience schema and legacy ABI/hash preservation | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
 | 05 | Persona/background effect and canonical readback on POSIX | Fresh target only; unmanaged no-write; retained precedence and private scopes |
@@ -103,4 +103,4 @@ No Main merge, auto-merge, Main push, release/tag/signing/pin or runtime activat
 - [ ] Platform matrices15–17 admitted against the same authentic installed artifacts.
 - [ ] Human acceptance and distribution gate18 complete.
 
-Next: unit01, the selection-only common CLI API. It is usable groundwork, not a feature-completion claim.
+Unit01 source groundwork: `e0b0a773`,249 changed lines including this roadmap; exact reviewed/ACKed. Selection tests and three-target test builds passed, but the Guest controller did not complete successfully. Unit02a adds opt-in Welcome embedding;02b must connect actual post-TUI execution. Neither is installed feature qualification.
