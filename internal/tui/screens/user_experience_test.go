@@ -9,6 +9,24 @@ import (
 	"github.com/gentleman-programming/gentle-ai/v4/internal/shellinstaller"
 )
 
+func TestUserExperienceDoesNotOfferSDD(t *testing.T) {
+	p := shellinstaller.DefaultUserExperience()
+	for _, entry := range UserExperienceEntries(p) {
+		metadata := strings.ToLower(strings.Join([]string{entry.Category, entry.Label, entry.Description, entry.Value, string(entry.Action)}, " "))
+		if strings.Contains(metadata, "sdd") || strings.Contains(metadata, "openspec") || entry.Category == "Optional workflows" {
+			t.Fatalf("retired workflow still offered: %+v", entry)
+		}
+	}
+	for _, size := range [][2]int{{120, 50}, {80, 50}, {80, 8}} {
+		for cursor := 0; cursor < 6; cursor++ {
+			view := strings.ToLower(ansi.Strip(RenderUserExperienceConfig(p, cursor, size[0], size[1])))
+			if strings.Contains(view, "sdd") || strings.Contains(view, "openspec") || strings.Contains(view, "optional workflows") {
+				t.Fatalf("retired workflow rendered at %dx%d cursor=%d: %q", size[0], size[1], cursor, view)
+			}
+		}
+	}
+}
+
 func TestUserExperienceSemantics(t *testing.T) {
 	p := shellinstaller.DefaultUserExperience()
 	want := []UserExperienceAction{UserExperienceGentleman, UserExperienceNeutral, UserExperienceUnmanaged, UserExperienceBackgroundSubagents, UserExperienceContinue, UserExperienceCancel}
@@ -59,7 +77,7 @@ func TestUserExperienceSemantics(t *testing.T) {
 func TestUserExperienceWidePresentation(t *testing.T) {
 	p := shellinstaller.UserExperience{Persona: "unmanaged", BackgroundSubagents: "off"}
 	view := ansi.Strip(RenderUserExperienceConfig(p, 2, 120, 50))
-	for _, text := range []string{"Configure Gentle-Shell experience", "Required foundation", "Engram", "Persona", "Recommended", "Release channel", "Optional workflows", "Advanced", "Actions", "About: Custom", "Current persona: unmanaged", "Background subagents: off", "project", "Gentleman fallback", "not connected", "4.0.0", "j/k: navigate", "enter: select", "esc: back"} {
+	for _, text := range []string{"Configure Gentle-Shell experience", "Required foundation", "Engram", "Persona", "Recommended", "Release channel", "Advanced", "Actions", "About: Custom", "Current persona: unmanaged", "Background subagents: off", "project", "Gentleman fallback", "not connected", "4.0.0", "j/k: navigate", "enter: select", "esc: back"} {
 		if !strings.Contains(view, text) {
 			t.Errorf("missing %q", text)
 		}
@@ -69,7 +87,7 @@ func TestUserExperienceWidePresentation(t *testing.T) {
 			t.Fatal("detail must be right of chooser")
 		}
 	}
-	for _, label := range []string{"Strict TDD", "global RDD", "CodeGraph", "Context7", "SDD/OpenSpec", "GGA", "Main preview"} {
+	for _, label := range []string{"Strict TDD", "global RDD", "CodeGraph", "Context7", "GGA", "Main preview"} {
 		found := false
 		for _, e := range UserExperienceEntries(p) {
 			if e.Label == label {

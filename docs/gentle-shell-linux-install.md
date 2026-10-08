@@ -19,7 +19,7 @@
 
 Open `gentle-ai` and select **Install Gentle-Shell, our own agent** in the welcome screen. `gentle-ai shell install` without flags opens that same welcome TUI, not a separate installer. The installer stays inside that same TUI; Escape or Ctrl-C returns to the welcome menu without installation.
 
-1. **Configure Gentle-Shell experience:** use arrows or `j/k`, then Enter to select Gentleman, Neutral, Custom (unmanaged), or background-subagent on/off defaults. Continue opens destination editing. Required package/Engram memory integration, ODD and core skills are informational, not installed-health checks; unsupported historical controls are marked unavailable.
+1. **Configure Gentle-Shell experience:** use arrows or `j/k`, then Enter to select Gentleman, Neutral, Custom (unmanaged), or background-subagent on/off defaults. Continue opens destination editing. Required package/Engram memory integration, ODD and core skills are informational, not installed-health checks; unsupported historical controls are marked unavailable. Retired workflow options are not offered or accepted as experience preferences. Existing project and personal configuration files are preserved.
 2. **Choose installation destination:** arrows select mode; Tab cycles mode-appropriate fields (Shared adds prefix/agent). Enter performs fresh physical inspection.
 3. **Ready to install Gentle-Shell:** review the Plan/About panels, then select Install, Back (edit destination), or Cancel with arrows/`j/k` and Enter. `y` also confirms. Confirmation closes the parent TUI before backend handoff; Ctrl-C during installation requests cancellation and waits for stop/reap.
 

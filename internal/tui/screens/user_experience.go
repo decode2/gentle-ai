@@ -64,7 +64,6 @@ func UserExperienceEntries(p shellinstaller.UserExperience) []UserExperienceEntr
 	}
 	add("Release channel", "Stable", "Frozen supplier release 4.0.0 only; no selectable release channel.", "4.0.0", UserExperienceNone, false)
 	add("Release channel", "Main preview", unavailable, "unavailable", UserExperienceNone, false)
-	add("Optional workflows", "SDD/OpenSpec", unavailable, "unavailable", UserExperienceNone, false)
 	add("Advanced", "GGA", unavailable, "unavailable", UserExperienceNone, false)
 	add("Actions", "Continue", "Continue to the next confirmation step; choosing this row does not apply configuration.", "", UserExperienceContinue, false)
 	add("Actions", "Cancel", "Go back without applying configuration.", "", UserExperienceCancel, false)
