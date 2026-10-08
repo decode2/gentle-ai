@@ -59,7 +59,7 @@ func TestUserExperienceSemantics(t *testing.T) {
 func TestUserExperienceWidePresentation(t *testing.T) {
 	p := shellinstaller.UserExperience{Persona: "unmanaged", BackgroundSubagents: "off"}
 	view := ansi.Strip(RenderUserExperienceConfig(p, 2, 120, 50))
-	for _, text := range []string{"Configure Gentle-Shell experience", "Required foundation", "Persona", "Recommended", "Release channel", "Optional workflows", "Advanced", "Actions", "About: Custom", "Current persona: unmanaged", "Background subagents: off", "project", "Gentleman fallback", "not connected", "4.0.0", "j/k: navigate", "enter: select", "esc: back"} {
+	for _, text := range []string{"Configure Gentle-Shell experience", "Required foundation", "Engram", "Persona", "Recommended", "Release channel", "Optional workflows", "Advanced", "Actions", "About: Custom", "Current persona: unmanaged", "Background subagents: off", "project", "Gentleman fallback", "not connected", "4.0.0", "j/k: navigate", "enter: select", "esc: back"} {
 		if !strings.Contains(view, text) {
 			t.Errorf("missing %q", text)
 		}

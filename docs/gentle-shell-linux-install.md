@@ -19,7 +19,11 @@
 
 Open `gentle-ai` and select **Install Gentle-Shell, our own agent** in the welcome screen. `gentle-ai shell install` without flags opens that same welcome TUI, not a separate installer. The installer stays inside that same TUI; Escape or Ctrl-C returns to the welcome menu without installation.
 
-Arrows select mode; Tab cycles mode-appropriate fields (Shared adds prefix/agent). Enter reviews; `y` confirms and closes the parent TUI before terminal handoff. Ctrl-C during installation requests cancellation and waits for stop/reap.
+1. **Configure Gentle-Shell experience:** use arrows or `j/k`, then Enter to select Gentleman, Neutral, Custom (unmanaged), or background-subagent on/off defaults. Continue opens destination editing. Required package/Engram memory integration, ODD and core skills are informational, not installed-health checks; unsupported historical controls are marked unavailable.
+2. **Choose installation destination:** arrows select mode; Tab cycles mode-appropriate fields (Shared adds prefix/agent). Enter performs fresh physical inspection.
+3. **Ready to install Gentle-Shell:** review the Plan/About panels, then select Install, Back (edit destination), or Cancel with arrows/`j/k` and Enter. `y` also confirms. Confirmation closes the parent TUI before backend handoff; Ctrl-C during installation requests cancellation and waits for stop/reap.
+
+Experience choices require a new target. Preferences are written only to its private `config`, including in Shared mode—not to personal Pi, the selected shared agent, or project preference files. Existing project overrides remain and may supersede these defaults. Custom leaves persona files unmanaged; without an override, the supplier falls back to Gentleman. Existing runtimes are not silently reconfigured.
 
 The confirmation review wraps to terminal width. Use PgUp/PgDn to scroll and Home/End to reach the first/last page, including the full Shared settings preview and recovery warnings; scrolling or resizing does not confirm or change your selection.
 

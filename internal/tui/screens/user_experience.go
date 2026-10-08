@@ -44,7 +44,7 @@ func UserExperienceEntries(p shellinstaller.UserExperience) []UserExperienceEntr
 		}
 		entries = append(entries, e)
 	}
-	add("Required foundation", "Gentle-Shell package integration", "Current package integration is the required foundation; this view does not inspect installation health or MCP binary availability.", "required", UserExperienceNone, false)
+	add("Required foundation", "Package + Engram memory integration", "Required package memory integration; this view does not inspect live Engram tools, installation health or MCP binary availability.", "required", UserExperienceNone, false)
 	add("Required foundation", "ODD + core skills", "Required ODD and core skills cannot be disabled here.", "required", UserExperienceNone, false)
 	add("Required foundation", "Subagent / interaction support", "Package-provided interaction support is foundation information, not a readiness check.", "required", UserExperienceNone, false)
 	for _, choice := range []struct {
