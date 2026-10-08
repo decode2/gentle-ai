@@ -63,7 +63,7 @@ Each unit includes its meaningful tests/docs and stays at or below400 additions 
 | 01 | Export a common CLI selection/outcome API; opt-in selection-only Windows | Public defaults/outcome/cancel/confirmation; no worker started; native builds all targets |
 | 02 | Two bounded subunits:02a opt-in Welcome embedding;02b parent post-`runTUI` handoff | One `tea.Program`; cancel/back; execution occurs after terminal restoration |
 | 03 | Common configure/destination/Ready rendering and navigation | Behavioral model tests and real PTY resize/review/cancel, without backend duplication |
-| 04 | Experience schema and legacy ABI/hash preservation | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
+| 04 | Bounded subunits:04a inert codec;04b physical selection/legacy ABI/hash; consumer effects05/06 before UI enablement | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
 | 05 | Persona/background effect and canonical readback on POSIX | Fresh target only; unmanaged no-write; retained precedence and private scopes |
 | 06 | The same profile effects on Windows | SID/DACL/file identity/custody retained; actual Win11 target proof |
 | 07 | Resolve RDD publication prerequisite and bind installed artifact | Authentic compatible native version; global-only effect/readback and no Git discovery |
