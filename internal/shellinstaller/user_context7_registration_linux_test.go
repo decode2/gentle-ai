@@ -69,6 +69,18 @@ func TestUserContext7FrozenRegistration(t *testing.T) {
 			}
 		}
 	}
+	if os.Getenv("GENTLE_EXPERIENCE_STRICT_TDD_PROBE") == "1" {
+		script, marker, cases = "/source/e2e/shell-strict-tdd-stage-session.mjs", "FROZEN_PI_STRICT_TDD_STAGE_PASS", 3
+		for _, choice := range []string{"on", "off", "absent"} {
+			profile := UserExperience{Persona: "unmanaged", BackgroundSubagents: "off"}
+			if choice != "absent" {
+				profile.StrictTDD = choice
+			}
+			if err := userPrepareInstallStage(ctx, filepath.Join(root, choice), "separate", &profile); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	cmd = exec.CommandContext(ctx, "/opt/node/bin/node", script, pkg, root)
 	cmd.Dir = root
 	cmd.Env = []string{"HOME=" + root, "PATH=/opt/node/bin:/usr/bin:/bin", "GENTLE_AI_TELEMETRY_DISABLE=1"}
