@@ -50,14 +50,18 @@ func TestUserContext7FrozenRegistration(t *testing.T) {
 	if err := os.Symlink("/node_modules/@earendil-works/pi-coding-agent/node_modules", filepath.Join(pkg, "node_modules")); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.CommandContext(ctx, "/opt/node/bin/node", "/source/e2e/shell-context7-registration.mjs", pkg, root)
+	script, marker, cases := "/source/e2e/shell-context7-registration.mjs", "FROZEN_PI_REGISTRATION_PASS", 4
+	if os.Getenv("GENTLE_EXPERIENCE_PRIVATE_CONTEXT7_PROBE") == "1" {
+		script, marker, cases = "/source/e2e/shell-context7-private.mjs", "FROZEN_PI_PRIVATE_POLICY_PASS", 7
+	}
+	cmd = exec.CommandContext(ctx, "/opt/node/bin/node", script, pkg, root)
 	cmd.Dir = root
 	cmd.Env = []string{"HOME=" + root, "PATH=/opt/node/bin:/usr/bin:/bin", "GENTLE_AI_TELEMETRY_DISABLE=1"}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("actual SDK registration: %v\n%s", err, output)
 	}
-	if strings.Count(string(output), "FROZEN_PI_REGISTRATION_PASS") != 4 {
+	if strings.Count(string(output), marker) != cases {
 		t.Fatalf("incomplete actual consumer controls: %s", output)
 	}
 	t.Logf("%s", output)
