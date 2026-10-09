@@ -22,7 +22,7 @@ Every offered item needs a real effect, canonical readback, preservation checks 
 | Retired routing/migration | #1956 at `93158f1`, fresh review/ACK, hosted checks green, still open | Companion ownership or release qualification |
 | Retired ownership | #1952 remote378 lines; local reshape review is STOP | Do not bypass, reset or invent recovery inputs |
 
-Native entry is `internal/cli/shell_install.go`; the ordinary TUI Welcome has no shell-installer entry. POSIX exits its own program before execution; Windows starts its worker inside that program. Existing private UI/profile commits are references, not an integration base.
+At the acquired baseline, native entry is `internal/cli/shell_install.go`; ordinary Welcome has no shell-installer entry and Windows runs its worker inside its own program. Units01–03 now provide an opt-in common parent selection and post-terminal handoff in this dedicated branch. The installed release and personal preview are not changed by those source commits.
 
 ## Architecture boundaries
 
@@ -86,7 +86,7 @@ Tests are test-first where applicable: distinguish behavioral RED from unsupport
 No host source SDK/compiler/test/formatter execution. Reuse the existing offline credentialless asserted Guest, without sudo, Docker, a new lab, copied stock helpers, fake ownership or relaxed limits. Source execution summaries and physical unit completion are separate evidence.
 
 - The existing Linux Guest has an independently diagnosed systemd cgroup inotify ENOSPC → stop timeout, despite some test children exiting0. Do not call that full Guest PASS; restoring host capacity requires an authorized operator action, not a source workaround.
-- No confirmed authentic Win11 x64 acceptance environment is recorded here. Hosted Windows Server checks and cross-builds do not close it.
+- The existing VM is manually reported as Windows11 x64 build26300.9457, Medium token and healthy local NTFS. The narrow test packet is prepared, but no Windows source test ran: the attempted media/network window was aborted and both devices restored after management/interop failures. This is not installed acceptance.
 - Darwin qualification CI succeeded on the prior source; its artifact fetch failed with a network error and no receipt contents have been admitted. Preserve the failed fetch; do not infer every new item passed.
 - Published4.0.0 lacks the new RDD interface and pending SDK fixes. Source-only progress does not authorize signing, release, pins or a preview activation.
 - #1952's prior review STOP has no negotiated disposition/continuation; do not bypass it with another lineage or invent the six recovery inputs.
@@ -104,3 +104,5 @@ No Main merge, auto-merge, Main push, release/tag/signing/pin or runtime activat
 - [ ] Human acceptance and distribution gate18 complete.
 
 Unit01 source groundwork: `e0b0a773`,249 changed lines including this roadmap; unit02a opt-in embedding: `4abda8b6`,204 lines; both exact reviewed/ACKed, with retained Guest controller failures. Unit02b connects the ordinary application to guarded execution only after its TUI returns; newer source checks have observed controller exit0, not an authorized lab repair or closure of prior failures. Unit03a adds Linux real-PTY public selection/confirm/cancel and physical terminal-restoration coverage with an inert worker-boundary spy; no acquisition or installed-platform acceptance is inferred. Actual common experience controls, packed distribution and installed-platform qualification remain open.
+
+Unit07a integrates the corrected #5411 global-only CLI source contract into this branch, with fresh tests/review rather than an inherited receipt. Explicit global status/mutation/repair avoid cwd-based mode resolution; ordinary clone-off precedence remains. This provides no support in published4.0.0 and does not enable the refused public experience profiles. No-Git invocation and unreadable-file platform controls are a separate07b verification unit before private RDD wiring.
