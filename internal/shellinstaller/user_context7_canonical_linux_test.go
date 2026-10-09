@@ -129,7 +129,21 @@ func TestUserContext7FrozenBuiltinMCPCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			configPath := filepath.Join(agent, "mcp.json")
-			if err := os.WriteFile(configPath, config, 0600); err != nil {
+			transport := server.URL
+			if tc.name == "disabled" {
+				// Consume the producer's exact official-endpoint bytes, not a
+				// rewritten fixture URL. Disabled performs no service request.
+				if err := userStageContext7(ctx, root, "separate", "off"); err != nil {
+					t.Fatal(err)
+				}
+				transport = "https://mcp.context7.com/mcp"
+				config, err = os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err := userToolWrite(configPath, config, 0600); err != nil {
+				// Transport-fixture bytes use the existing exclusive writer;
+				// they are not the fixed-endpoint Context7 producer's output.
 				t.Fatal(err)
 			}
 			before, err := os.Stat(configPath)
@@ -181,7 +195,7 @@ func TestUserContext7FrozenBuiltinMCPCLI(t *testing.T) {
 					t.Fatalf("unexpected CLI reports: %s", output)
 				}
 				s := report.Servers[0]
-				if s.Name != "context7" || s.Scope != "global" || s.Source != configPath || s.Enabled != tc.enabled || s.Exposure != "codemode" || s.Transport != server.URL {
+				if s.Name != "context7" || s.Scope != "global" || s.Source != configPath || s.Enabled != tc.enabled || s.Exposure != "codemode" || s.Transport != transport {
 					t.Fatalf("canonical policy/source mismatch: %s", output)
 				}
 				if tc.broken {
