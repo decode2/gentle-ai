@@ -113,11 +113,15 @@ func TestUserContext7FrozenBuiltinMCPCLI(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			root := t.TempDir()
-			for _, name := range []string{"home", "agent", "config", "workspace"} {
-				if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
-					t.Fatal(err)
-				}
+			root := installStagePath(t)
+			var profile *UserExperience
+			if tc.name == "disabled" {
+				selected := DefaultUserExperience()
+				selected.Context7 = "off"
+				profile = &selected
+			}
+			if err := userPrepareInstallStage(ctx, root, "separate", profile); err != nil {
+				t.Fatal(err)
 			}
 			agent := filepath.Join(root, "agent")
 			entry := map[string]any{"url": server.URL, "enabled": tc.enabled, "exposure": "codemode", "timeout": 1}
@@ -131,11 +135,8 @@ func TestUserContext7FrozenBuiltinMCPCLI(t *testing.T) {
 			configPath := filepath.Join(agent, "mcp.json")
 			transport := server.URL
 			if tc.name == "disabled" {
-				// Consume the producer's exact official-endpoint bytes, not a
-				// rewritten fixture URL. Disabled performs no service request.
-				if err := userStageContext7(ctx, root, "separate", "off"); err != nil {
-					t.Fatal(err)
-				}
+				// Consume the actual prepared stage's unchanged official-endpoint
+				// bytes. Disabled performs no service request or URL rewrite.
 				transport = "https://mcp.context7.com/mcp"
 				config, err = os.ReadFile(configPath)
 				if err != nil {
@@ -158,7 +159,7 @@ func TestUserContext7FrozenBuiltinMCPCLI(t *testing.T) {
 			runCtx, stop := context.WithTimeout(ctx, 15*time.Second)
 			defer stop()
 			cmd := exec.CommandContext(runCtx, "/opt/node/bin/node", filepath.Join(pkg, "dist/bundle/cli.js"), "mcp", "list", "--json")
-			cmd.Dir = filepath.Join(root, "workspace")
+			cmd.Dir = filepath.Join(root, "project")
 			cmd.Env = []string{"HOME=" + filepath.Join(root, "home"), "PI_CODING_AGENT_DIR=" + agent, "GENTLE_PI_CONFIG_HOME=" + filepath.Join(root, "config"), "PATH=/opt/node/bin:/usr/bin:/bin", "GENTLE_AI_TELEMETRY_DISABLE=1"}
 			output, runErr := cmd.CombinedOutput()
 			if runCtx.Err() != nil {

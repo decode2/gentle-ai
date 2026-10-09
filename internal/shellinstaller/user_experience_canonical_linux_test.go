@@ -16,7 +16,7 @@ func TestUserStageExperienceActualSDKConsumers(t *testing.T) {
 			t.Run(persona+"-"+background, func(t *testing.T) {
 				root := installStagePath(t)
 				profile := UserExperience{Persona: persona, BackgroundSubagents: background}
-				if err := userPrepareInstallStage(context.Background(), root, &profile); err != nil {
+				if err := userPrepareInstallStage(context.Background(), root, "separate", &profile); err != nil {
 					t.Fatal(err)
 				}
 				cmd := exec.Command("/opt/node/bin/node", "--experimental-strip-types", "/source/e2e/shell-experience-canonical.mjs", root, persona, background)
