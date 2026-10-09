@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-// Source-consumer E2E, not installed-platform qualification. Files passed here
-// were written by the native stage writer, never by a duplicate fixture codec.
-const [root, persona, background] = process.argv.slice(2);
+// Consumer E2E, not installed-platform qualification. Files passed here were
+// written by the native stage writer, never by a duplicate fixture codec.
+const [root, persona, background, frozenPackage] = process.argv.slice(2);
+const sdk = frozenPackage ?? "/sdk";
+if (frozenPackage) {
+  const manifest = JSON.parse(readFileSync(join(sdk, "package.json"), "utf8"));
+  assert.equal(manifest.name, "gentle-pi");
+  assert.equal(manifest.version, "4.0.0");
+}
 process.env.GENTLE_PI_CONFIG_HOME = join(root, "config");
 process.env.HOME = join(root, "home");
 const cwd = join(root, "project");
@@ -14,8 +21,8 @@ mkdirSync(cwd, { recursive: true });
 mkdirSync(personal, { recursive: true });
 const canary = "personal historical bytes\n";
 writeFileSync(join(personal, "persona.json"), canary);
-const { resolveBackgroundSubagentsPolicy } = await import("/sdk/lib/background-subagents-policy.ts");
-const { createGentleAiExtension } = await import("/sdk/extensions/gentle-ai.ts");
+const { resolveBackgroundSubagentsPolicy } = await import(pathToFileURL(join(sdk, "lib/background-subagents-policy.ts")).href);
+const { createGentleAiExtension } = await import(pathToFileURL(join(sdk, "extensions/gentle-ai.ts")).href);
 const personaFile = join(root, "config/persona.json");
 const personaPreimage = existsSync(personaFile) ? readFileSync(personaFile) : null;
 const backgroundFile = join(root, "config/background-subagents.json");
@@ -64,4 +71,4 @@ assert.deepEqual(existsSync(personaFile) ? readFileSync(personaFile) : null, per
 assert.deepEqual(readFileSync(backgroundFile), backgroundPreimage);
 assert.equal(readFileSync(join(project, "persona.json"), "utf8"), '{"mode":"neutral"}');
 assert.equal(readFileSync(join(project, "background-subagents.json"), "utf8"), "{malformed historical bytes");
-console.log(`CANONICAL_SOURCE_PASS persona=${persona} background=${background} actual-handler=true project-precedence=true personal-preserved=true`);
+console.log(`CANONICAL_${frozenPackage ? "PACKAGE" : "SOURCE"}_PASS persona=${persona} background=${background} actual-handler=true project-precedence=true personal-preserved=true`);
