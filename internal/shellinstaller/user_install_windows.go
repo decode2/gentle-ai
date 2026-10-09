@@ -394,6 +394,9 @@ func RunUserInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 			return result, err
 		}
 	}
+	if err := userStageExperience(ctx, stage, req.Experience); err != nil {
+		return result, err
+	}
 	selection, _ := json.Marshal(req)
 	if err := userWindowsWrite(filepath.Join(stage, "selection.json"), selection); err != nil {
 		return result, err

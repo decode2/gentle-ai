@@ -65,7 +65,7 @@ Each unit includes its meaningful tests/docs and stays at or below400 additions 
 | 03 | Common configure/destination/Ready rendering and navigation | Behavioral model tests and real PTY resize/review/cancel, without backend duplication |
 | 04 | Bounded subunits:04a codec;04b request/hash/refusal guard;04c transport only with consumers05/06 before UI enablement | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
 | 05 | 05a writer;05b POSIX wiring;05c frozen-package consumer proof | Full installed/lifecycle qualification remains; public profiles refused until transport/platform support |
-| 06 | 06a shared canonical bytes;06b Windows writer/wiring | SID/DACL/file identity/custody retained; actual Win11 target proof still required |
+| 06 | 06a shared bytes;06b private Windows writer/pre-acquisition wiring | Native Windows tests and Win11 installed proof pending; public profiles remain refused |
 | 07 | Resolve RDD publication prerequisite and bind installed artifact | Authentic compatible native version; global-only effect/readback and no Git discovery |
 | 08 | SDK Strict TDD canonical policy consumer | Observable runtime behavior and ordinary/off negative controls; not prompt-only enablement |
 | 09 | Private frozen CodeGraph provisioning and tool health | Version/graph integrity, executable/tool health, no automatic project indexing |
