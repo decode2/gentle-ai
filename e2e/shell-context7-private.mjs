@@ -59,11 +59,19 @@ try {
     const policyBefore = tree(config);
     const settings = SettingsManager.inMemory(mode === "builtin-disabled" ? { extensions: ["-builtin:mcp"] } : {});
     let api;
+    let permissionHooks = 0, resultHooks = 0;
     const loader = new DefaultResourceLoader({ cwd: join(target, "workspace"), agentDir: agent, settingsManager: settings, noSkills: true, noPromptTemplates: true, noThemes: true,
       additionalExtensionPaths: ["/sdk/extensions/private-context7.ts"],
       extensionFactories: [
         { name: "mcp", builtin: true, replaceable: true, factory: createMcpExtension() },
-        (pi) => { api = pi; },
+        (pi) => {
+          api = pi;
+          pi.on("tool_call", () => {
+            permissionHooks++;
+            return { block: true, reason: "Fixture permission hook reached unexpectedly" };
+          });
+          pi.on("tool_result", () => { resultHooks++; });
+        },
       ],
     });
     await loader.reload();
@@ -114,6 +122,25 @@ try {
         const tool = session.getToolDefinition("mcp__context7__fixture_docs");
         if (mode === "on") {
           assert.ok(tool);
+          const name = "mcp__context7__fixture_docs";
+          assert.ok(session.getCallableToolNames().includes(name));
+          assert.equal(session.messages.some((message) => message.role === "assistant"), false);
+          assert.ok(methods.includes("initialize") && methods.includes("tools/list"));
+          assert.equal(methods.includes("tools/call"), false);
+          const beforeNested = requests;
+          // This is a host-chosen probe ID, not a model-issued parent call.
+          const context = runner.createToolContext("host-nested-probe", AbortSignal.timeout(2000));
+          const refusal = await context.executeTool(name, {});
+          assert.equal(refusal.isError, true);
+          assert.equal(refusal.toolCall.name, name);
+          assert.ok(refusal.toolCall.id.startsWith("host-nested-probe/"));
+          assert.deepEqual(refusal.result.content, [{ type: "text", text: "No assistant message issued this call" }]);
+          assert.equal(session.messages.some((message) => message.role === "assistant"), false);
+          assert.equal(permissionHooks, 0);
+          assert.equal(resultHooks, 0);
+          assert.equal(requests, beforeNested);
+          assert.equal(methods.includes("tools/call"), false);
+          console.log(`FROZEN_PI_NO_ASSISTANT_GATE ${JSON.stringify({ beforeHTTP: beforeNested, afterHTTP: requests, permissionHooks, resultHooks, refusal })}`);
           const result = await tool.execute("fixture-call", {}, AbortSignal.timeout(2000), undefined, session.extensionRunner.createContext());
           assert.match(JSON.stringify(result), /PRIVATE_POLICY_CALLBACK_RESULT/);
           assert.ok(methods.includes("initialize") && methods.includes("tools/list") && methods.includes("tools/call"));
