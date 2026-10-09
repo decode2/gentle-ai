@@ -14,6 +14,7 @@ type UserExperience struct {
 	Persona             string `json:"persona"`
 	BackgroundSubagents string `json:"background_subagents"`
 	GlobalRDD           string `json:"global_rdd,omitempty"`
+	Context7            string `json:"context7,omitempty"`
 }
 
 func DefaultUserExperience() UserExperience {
@@ -30,10 +31,13 @@ func (p UserExperience) Validate() error {
 	if p.GlobalRDD != "" && p.GlobalRDD != "on" && p.GlobalRDD != "off" {
 		return experienceError("choose on or off for global RDD, or omit it to inherit")
 	}
+	if p.Context7 != "" && p.Context7 != "on" && p.Context7 != "off" {
+		return experienceError("choose on or off for Context7, or omit it to inherit")
+	}
 	return nil
 }
 
-// Encode retains the historical two-key bytes when global RDD is omitted.
+// Encode retains historical bytes when the new optional choices are omitted.
 func (p UserExperience) Encode() (string, error) {
 	if err := p.Validate(); err != nil {
 		return "", err
@@ -56,6 +60,7 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		"persona":              &profile.Persona,
 		"background_subagents": &profile.BackgroundSubagents,
 		"global_rdd":           &profile.GlobalRDD,
+		"context7":             &profile.Context7,
 	}
 	seen := make(map[string]bool)
 	for decoder.More() {
@@ -74,6 +79,9 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		}
 		if key == "global_rdd" && *field == "" {
 			return UserExperience{}, experienceError("an explicit global RDD choice must be on or off")
+		}
+		if key == "context7" && *field == "" {
+			return UserExperience{}, experienceError("an explicit Context7 choice must be on or off")
 		}
 	}
 	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
