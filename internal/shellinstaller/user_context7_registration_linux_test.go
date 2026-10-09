@@ -54,6 +54,9 @@ func TestUserContext7FrozenRegistration(t *testing.T) {
 	if os.Getenv("GENTLE_EXPERIENCE_PRIVATE_CONTEXT7_PROBE") == "1" {
 		script, marker, cases = "/source/e2e/shell-context7-private.mjs", "FROZEN_PI_PRIVATE_POLICY_PASS", 7
 	}
+	if os.Getenv("GENTLE_EXPERIENCE_PRIVATE_CONTEXT7_CLI_PROBE") == "1" {
+		script, marker, cases = "/source/e2e/shell-context7-private-cli.mjs", "FROZEN_PI_PRIVATE_CLI_PASS", 3
+	}
 	cmd = exec.CommandContext(ctx, "/opt/node/bin/node", script, pkg, root)
 	cmd.Dir = root
 	cmd.Env = []string{"HOME=" + root, "PATH=/opt/node/bin:/usr/bin:/bin", "GENTLE_AI_TELEMETRY_DISABLE=1"}
