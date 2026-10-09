@@ -11,7 +11,9 @@ const { createAgentSession, createMcpExtension, DefaultResourceLoader, ModelRunt
 const { FileAuthStorageBackend } = await import(pathToFileURL(join(pkg, "dist/core/auth-storage.js")).href);
 const { McpOAuthCredentialStore } = await import(pathToFileURL(join(pkg, "dist/extensions/mcp/oauth.js")).href);
 const methods = [];
+let requests = 0;
 const server = createServer(async (request, response) => {
+  requests++;
   if (request.method !== "POST") { response.writeHead(405).end(); return; }
   let bytes = "";
   for await (const chunk of request) {
@@ -40,8 +42,15 @@ function tree(path) {
   });
 }
 try {
+  // Prove the observer counts rejected traffic, not only decoded JSON-RPC.
+  const rejected = await fetch(url, { method: "GET", signal: AbortSignal.timeout(2000) });
+  assert.equal(rejected.status, 405);
+  assert.equal(requests, 1);
+  assert.deepEqual(methods, []);
+  console.log("HTTP_REQUEST_ACCOUNTING_PASS rejected-GET=405 total=1 rpc=0");
   for (const mode of ["on", "off", "shadowed", "builtin-disabled"]) {
     methods.length = 0;
+    requests = 0;
     const base = join(root, mode), target = join(base, "target"), agent = join(base, "shared-agent"), cwd = join(base, "workspace");
     for (const path of [join(target, "config"), agent, cwd]) mkdirSync(path, { recursive: true, mode: 0o700 });
     writeFileSync(join(agent, "historical.txt"), "Shared historical bytes\n", { mode: 0o600 });
@@ -83,9 +92,11 @@ try {
         const result = await tool.execute("direct-source-callback", {}, AbortSignal.timeout(2000), undefined, session.extensionRunner.createContext());
         assert.ok(result.content.some((item) => item.type === "text" && item.text === "ACTUAL_MCP_CALLBACK_RESULT"));
         assert.ok(methods.includes("initialize") && methods.includes("tools/list") && methods.includes("tools/call"));
+        assert.ok(requests >= 4, "actual handshake and tool call were not observed");
       } else {
         assert.equal(tool, undefined);
         assert.deepEqual(methods, []);
+        assert.equal(requests, 0, "disabled/shadowed server received HTTP traffic");
       }
       assert.equal(session.getActiveToolNames().includes("write"), false);
     } finally {
@@ -109,7 +120,7 @@ try {
     } else {
       assert.deepEqual(after, targetBefore, "disabled private config changed");
     }
-    console.log(`FROZEN_PI_REGISTRATION_PASS mode=${mode} methods=${JSON.stringify(methods)} actual-tool-callback=${mode === "on"} shared-tree-preserved=true private-auth-initialized=${mode === "on"}`);
+    console.log(`FROZEN_PI_REGISTRATION_PASS mode=${mode} requests=${requests} methods=${JSON.stringify(methods)} actual-tool-callback=${mode === "on"} shared-tree-preserved=true private-auth-initialized=${mode === "on"}`);
   }
 } finally {
   server.closeAllConnections();
