@@ -21,6 +21,9 @@ func userPrepareInstallStage(ctx context.Context, root, mode string, profile *Us
 	if err := userValidateStagePreferences(profile); err != nil {
 		return err
 	}
+	if profile != nil && profile.StrictTDD != "" && mode != "separate" {
+		return experienceError("explicit Strict TDD requires a private Separate SDK runtime")
+	}
 	if profile != nil && profile.Context7 != "" && mode != "separate" {
 		return experienceError("explicit Context7 requires a private Separate agent")
 	}

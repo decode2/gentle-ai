@@ -15,6 +15,7 @@ type UserExperience struct {
 	BackgroundSubagents string `json:"background_subagents"`
 	GlobalRDD           string `json:"global_rdd,omitempty"`
 	Context7            string `json:"context7,omitempty"`
+	StrictTDD           string `json:"strict_tdd,omitempty"`
 }
 
 func DefaultUserExperience() UserExperience {
@@ -33,6 +34,9 @@ func (p UserExperience) Validate() error {
 	}
 	if p.Context7 != "" && p.Context7 != "on" && p.Context7 != "off" {
 		return experienceError("choose on or off for Context7, or omit it to inherit")
+	}
+	if p.StrictTDD != "" && p.StrictTDD != "on" && p.StrictTDD != "off" {
+		return experienceError("choose on or off for Strict TDD, or omit it to inherit")
 	}
 	return nil
 }
@@ -61,6 +65,7 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		"background_subagents": &profile.BackgroundSubagents,
 		"global_rdd":           &profile.GlobalRDD,
 		"context7":             &profile.Context7,
+		"strict_tdd":           &profile.StrictTDD,
 	}
 	seen := make(map[string]bool)
 	for decoder.More() {
@@ -82,6 +87,9 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		}
 		if key == "context7" && *field == "" {
 			return UserExperience{}, experienceError("an explicit Context7 choice must be on or off")
+		}
+		if key == "strict_tdd" && *field == "" {
+			return UserExperience{}, experienceError("an explicit Strict TDD choice must be on or off")
 		}
 	}
 	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
