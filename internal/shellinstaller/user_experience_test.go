@@ -1,6 +1,9 @@
 package shellinstaller
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestUserExperienceLegacyEncodingAndOptionalRDD(t *testing.T) {
 	profile := DefaultUserExperience()
@@ -23,6 +26,17 @@ func TestUserExperienceLegacyEncodingAndOptionalRDD(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestUserExperienceValidJSONAtSizeBoundary(t *testing.T) {
+	valid, _ := DefaultUserExperience().Encode()
+	atLimit := strings.Repeat(" ", 256-len(valid)) + valid
+	if _, err := DecodeUserExperience(atLimit); err != nil {
+		t.Fatalf("valid JSON at 256 bytes refused: %v", err)
+	}
+	if _, err := DecodeUserExperience(" " + atLimit); err == nil {
+		t.Fatal("valid JSON at 257 bytes bypassed the size guard")
 	}
 }
 
