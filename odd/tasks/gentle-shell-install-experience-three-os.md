@@ -64,7 +64,7 @@ Each unit includes its meaningful tests/docs and stays at or below400 additions 
 | 02 | Two bounded subunits:02a opt-in Welcome embedding;02b parent post-`runTUI` handoff | One `tea.Program`; cancel/back; execution occurs after terminal restoration |
 | 03 | Common configure/destination/Ready rendering and navigation | Behavioral model tests and real PTY resize/review/cancel, without backend duplication |
 | 04 | Bounded subunits:04a codec;04b request/hash/refusal guard;04c transport only with consumers05/06 before UI enablement | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
-| 05 | 05a private-stage writer + actual SDK consumer proof;05b installation wiring | Fresh target only; unmanaged no-write; retained precedence and private scopes |
+| 05 | 05a writer/readback;05b POSIX stage wiring;05c installed-package qualification | Public profiles remain refused until transport/artifacts qualify; unmanaged no-write and private scopes |
 | 06 | The same profile effects on Windows | SID/DACL/file identity/custody retained; actual Win11 target proof |
 | 07 | Resolve RDD publication prerequisite and bind installed artifact | Authentic compatible native version; global-only effect/readback and no Git discovery |
 | 08 | SDK Strict TDD canonical policy consumer | Observable runtime behavior and ordinary/off negative controls; not prompt-only enablement |
