@@ -77,15 +77,40 @@ try {
       const { session } = await createAgentSession({ cwd: join(target, "workspace"), agentDir: agent, resourceLoader: loader, settingsManager: settings, sessionManager: SessionManager.inMemory(), noTools: "builtin" });
       try {
         const errors = [];
+        const notifications = [];
         await session.bindExtensions({ onError(error) { errors.push(error); } });
+        const runner = session.extensionRunner;
+        const hostUI = runner.getUIContext();
+        const originalNotify = hostUI.notify;
+        // Compose a new public UI context; do not mutate the host or manager.
+        runner.setUIContext({
+          ...hostUI,
+          notify(message, type) { notifications.push([message, type]); },
+        }, "print");
+        assert.equal(hostUI.notify, originalNotify, "the original UI remains unchanged");
         if (mode !== "builtin-disabled") await session.prompt("/mcp");
         if (mode === "builtin-disabled") {
+          assert.deepEqual(notifications, [], "disabled manager has no status to capture");
           assert.equal(errors.length, 1);
           assert.match(errors[0].error, /no loaded extension connects MCP servers/);
         } else {
           assert.deepEqual(errors, []);
         }
         assert.equal(api.getMcpServers().length, ["on", "shadowed", "builtin-disabled"].includes(mode) ? 1 : 0);
+        if (mode !== "builtin-disabled") {
+          assert.equal(notifications.length, 1, "capture the same-session manager notification");
+          const [message, type] = notifications[0];
+          assert.equal(type, "info");
+          assert.ok(!message.includes(url), "manager text is not endpoint readback");
+          if (mode === "on") assert.equal(message, "context7: connected, 1 tools (direct)");
+          if (mode === "off" || mode === "absent") {
+            assert.equal(message, `No MCP servers configured. Add them to ${join(agent, "mcp.json")} or .pi/mcp.json.`);
+          }
+          if (mode === "shadowed") {
+            assert.equal(message, `context7: disabled (codemode)\noverridden: "context7" registered by /sdk/extensions/private-context7.ts is overridden by "context7" in ${join(agent, "mcp.json")}`);
+          }
+          console.log(`FROZEN_PI_MANAGER_TEXT ${JSON.stringify({ mode, message, type })}`);
+        }
         const tool = session.getToolDefinition("mcp__context7__fixture_docs");
         if (mode === "on") {
           assert.ok(tool);
@@ -98,7 +123,15 @@ try {
           assert.equal(tool, undefined);
           assert.equal(requests, 0);
         }
+        if (mode !== "builtin-disabled") {
+          const beforeQuery = requests;
+          const first = notifications[0];
+          await session.prompt("/mcp");
+          assert.deepEqual(notifications, [first, first], "repeat the same manager status");
+          assert.equal(requests, beforeQuery, "status query did not open another connection");
+        }
       } finally {
+        session.extensionRunner.setUIContext(undefined, "print");
         await session.extensionRunner.emit({ type: "session_shutdown" });
         session.dispose();
       }
