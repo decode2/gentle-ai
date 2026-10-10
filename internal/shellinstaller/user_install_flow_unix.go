@@ -256,6 +256,7 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 		return result, fmt.Errorf("supervisor provenance: %w", err)
 	}
 	manifest := userManifest{Schema: userSchema, Destination: req.Destination, Prefix: finalPrefix, Agent: finalAgent, Mode: req.Mode, SupervisorSHA: selfSHA, NodeSHA: privateNativeNodeSHA}
+	manifest.GGA = req.Experience != nil && req.Experience.GGA == "on"
 	manifest.PrefixIdentity, err = userIdentity(prefix)
 	if err == nil {
 		manifest.AgentIdentity, err = userIdentity(agent)
@@ -631,6 +632,14 @@ func userReadManifest(ctx context.Context, root string) (userManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > 4096 || json.Unmarshal(data, &manifest) != nil || manifest.Schema != userSchema || manifest.Destination != root || (manifest.Mode != "separate" && manifest.Mode != "shared") {
 		return manifest, privateError("refused", err)
+	}
+	if manifest.GGA {
+		if manifest.Mode != "separate" {
+			return manifest, privateError("refused", errors.New("GGA requires a Separate manifest"))
+		}
+		if err := userGGAReadback(ctx, root); err != nil {
+			return manifest, fmt.Errorf("GGA retained integrity: %w", err)
+		}
 	}
 	for _, name := range []string{"gentle-shell", "pi"} {
 		binding := userBinding(root, name)

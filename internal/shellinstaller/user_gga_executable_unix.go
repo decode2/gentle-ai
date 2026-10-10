@@ -86,22 +86,9 @@ func userStageGGAExecutable(ctx context.Context, root string, archive []byte) er
 	if ctx == nil || ctx.Err() != nil || !privateHierarchyPath(root) {
 		return privateError("refused", errors.New("GGA executable requires a live absolute private stage"))
 	}
-	files := make([]userExperienceStageFile, 0, 4)
-	for _, leaf := range []string{"bin/gga", "lib/providers.sh", "lib/cache.sh", "lib/pr_mode.sh"} {
-		data, err := userToolMember(ctx, archive, userGGASourceSHA, userGGASourcePrefix+leaf)
-		if err != nil {
-			return err
-		}
-		if leaf == "bin/gga" {
-			const original = "VERSION=\"${GGA_VERSION:-dev}\""
-			if strings.Count(string(data), original) != 1 {
-				return privateError("source", errors.New("GGA version recipe preimage differs"))
-			}
-			// Match upstream's tag-stamping installation recipe, not an environment
-			// claim. The original authenticated source archive is retained below.
-			data = []byte(strings.Replace(string(data), original, "VERSION=\"2.10.1\"", 1))
-		}
-		files = append(files, userExperienceStageFile{leaf, data})
+	files, err := userGGAMembers(ctx, archive)
+	if err != nil {
+		return err
 	}
 	runtime := filepath.Join(root, "runtime")
 	identity, err := privateDirectory(runtime)
@@ -156,4 +143,26 @@ func userStageGGAExecutable(ctx context.Context, root string, archive []byte) er
 		}
 	}
 	return nil
+}
+
+// One authenticated recipe drives initial publication and retained readback.
+func userGGAMembers(ctx context.Context, archive []byte) ([]userExperienceStageFile, error) {
+	files := make([]userExperienceStageFile, 0, 4)
+	for _, leaf := range []string{"bin/gga", "lib/providers.sh", "lib/cache.sh", "lib/pr_mode.sh"} {
+		data, err := userToolMember(ctx, archive, userGGASourceSHA, userGGASourcePrefix+leaf)
+		if err != nil {
+			return nil, err
+		}
+		if leaf == "bin/gga" {
+			const original = "VERSION=\"${GGA_VERSION:-dev}\""
+			if strings.Count(string(data), original) != 1 {
+				return nil, privateError("source", errors.New("GGA version recipe preimage differs"))
+			}
+			// Match upstream's tag-stamping installation recipe, not an environment
+			// claim. The original authenticated source archive is retained below.
+			data = []byte(strings.Replace(string(data), original, "VERSION=\"2.10.1\"", 1))
+		}
+		files = append(files, userExperienceStageFile{leaf, data})
+	}
+	return files, nil
 }
