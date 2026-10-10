@@ -672,6 +672,19 @@ func userLaunchCommand(ctx context.Context, root string, manifest userManifest, 
 	// Read-only stock Git probes must not refresh the caller's index. Explicit
 	// Git writes still take their mandatory locks.
 	cmd.Env = append(userEnvironment(root, manifest.Prefix, manifest.Agent), "GIT_OPTIONAL_LOCKS=0")
+	// Only a validated Separate manifest selects this owned optional payload.
+	// Installation/provisioning environments do not inherit this activation.
+	if manifest.GGA && manifest.Mode == "separate" {
+		if strings.ContainsRune(root, os.PathListSeparator) {
+			cmd.Err = privateError("refused", errors.New("private GGA launch root cannot contain a PATH separator"))
+			return cmd
+		}
+		for i, entry := range cmd.Env {
+			if path, ok := strings.CutPrefix(entry, "PATH="); ok {
+				cmd.Env[i] = "PATH=" + filepath.Join(root, "runtime/gga/bin") + ":" + path
+			}
+		}
+	}
 	return cmd // Empty Dir inherits the caller's project, not the installer stage.
 }
 
@@ -704,7 +717,7 @@ func userLaunch(ctx context.Context, root string, args []string, stdin io.Reader
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	return userLaunchGroup(cmd, stdin, func(err error) error {
 		settled = true
-		err = limited(err)
+		err = userGGAExitReadback(context.Background(), root, manifest.GGA, limited(err))
 		if readbackErr := userVerifyGlobal(context.Background(), root, manifest.Prefix, manifest.Agent, manifest.Prefix, root, manifest.Mode); readbackErr != nil {
 			failure := privateError("uncertain", errors.Join(err, readbackErr))
 			failure.Workspace, failure.Destination = root, manifest.Prefix

@@ -71,3 +71,16 @@ func userGGAReadback(ctx context.Context, root string) error {
 	}
 	return nil
 }
+
+// A launched runtime may have invoked GGA through its generic shell tool.
+// Preserve its wait result; drift retains the root as uncertain, never success.
+func userGGAExitReadback(ctx context.Context, root string, selected bool, waitErr error) error {
+	if selected {
+		if err := userGGAReadback(ctx, root); err != nil {
+			failure := privateError("uncertain", errors.Join(waitErr, err))
+			failure.Workspace, failure.Destination = root, root
+			return failure
+		}
+	}
+	return waitErr
+}
