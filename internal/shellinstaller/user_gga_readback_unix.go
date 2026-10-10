@@ -35,10 +35,7 @@ func userGGAReadback(ctx context.Context, root string) error {
 		}
 	}
 	path := filepath.Join(base, "source.tgz")
-	if _, err := privateNativeFile(ctx, path, 0600, 81841, userGGASourceSHA); err != nil {
-		return err
-	}
-	archive, err := os.ReadFile(path)
+	archive, err := userGGAReadArchive(ctx, path, userGGAOpenArchive)
 	if err != nil {
 		return err
 	}
