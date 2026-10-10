@@ -67,6 +67,9 @@ func TestUserCodeGraphAuthenticatedRetainedAdmission(t *testing.T) {
 	if err := userStageCodeGraphLibrary(ctx, root, archives); err != nil {
 		t.Fatal(err)
 	}
+	if err := userStageCodeGraphExecutable(ctx, root, root); err != nil {
+		t.Fatal(err)
+	}
 	before, err := userTreeStamp(root)
 	if err != nil {
 		t.Fatal(err)

@@ -44,6 +44,7 @@ func userCodeGraphReadback(ctx context.Context, root string) error {
 	if err != nil {
 		return err
 	}
+	files = append(files, userExperienceStageFile{"bin/codegraph", []byte(userCodeGraphCommand(root))})
 	children := map[string]map[string]bool{"": {}}
 	for _, file := range files {
 		for name := file.name; name != "."; name = filepath.Dir(name) {
@@ -90,7 +91,11 @@ func userCodeGraphReadback(ctx context.Context, root string) error {
 			return privateError("source", errors.Join(err, errors.New("CodeGraph member alias refused")))
 		}
 		pin := fmt.Sprintf("%x", sha256.Sum256(file.data))
-		if _, err := privateNativeFile(ctx, path, 0600, int64(len(file.data)), pin); err != nil {
+		mode := os.FileMode(0600)
+		if file.name == "bin/codegraph" {
+			mode = 0700
+		}
+		if _, err := privateNativeFile(ctx, path, mode, int64(len(file.data)), pin); err != nil {
 			return err
 		}
 		after, err := privatePhysical(path)

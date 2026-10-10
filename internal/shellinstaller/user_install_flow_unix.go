@@ -221,6 +221,11 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 	if err = userCodeGraphProvision(ctx, root, req.Mode, req.Experience); err != nil {
 		return result, fmt.Errorf("optional CodeGraph provisioning: %w", err)
 	}
+	if req.Experience != nil && req.Experience.CodeGraph == "on" {
+		if err = userStageCodeGraphExecutable(ctx, root, req.Destination); err != nil {
+			return result, err
+		}
+	}
 	if err = userGGAProvision(ctx, root, req.Mode, req.Experience); err != nil {
 		return result, fmt.Errorf("optional GGA provisioning: %w", err)
 	}
@@ -703,6 +708,18 @@ func userLaunchCommand(ctx context.Context, root string, manifest userManifest, 
 			}
 		}
 	}
+	if manifest.CodeGraph && manifest.Mode == "separate" {
+		if strings.ContainsRune(root, os.PathListSeparator) {
+			cmd.Err = privateError("refused", errors.New("private CodeGraph launch root cannot contain a PATH separator"))
+			return cmd
+		}
+		for i, entry := range cmd.Env {
+			if path, ok := strings.CutPrefix(entry, "PATH="); ok {
+				cmd.Env[i] = "PATH=" + filepath.Join(root, "runtime/codegraph/bin") + ":" + path
+			}
+		}
+		cmd.Env = append(cmd.Env, "CODEGRAPH_NO_DOWNLOAD=1", "CODEGRAPH_TELEMETRY=0", "DO_NOT_TRACK=1")
+	}
 	return cmd // Empty Dir inherits the caller's project, not the installer stage.
 }
 
@@ -736,6 +753,13 @@ func userLaunch(ctx context.Context, root string, args []string, stdin io.Reader
 	return userLaunchGroup(cmd, stdin, func(err error) error {
 		settled = true
 		err = userGGAExitReadback(context.Background(), root, manifest.GGA, limited(err))
+		if manifest.CodeGraph {
+			if readbackErr := userCodeGraphReadback(context.Background(), root); readbackErr != nil {
+				failure := privateError("uncertain", errors.Join(err, readbackErr))
+				failure.Workspace, failure.Destination = root, root
+				return failure
+			}
+		}
 		if readbackErr := userVerifyGlobal(context.Background(), root, manifest.Prefix, manifest.Agent, manifest.Prefix, root, manifest.Mode); readbackErr != nil {
 			failure := privateError("uncertain", errors.Join(err, readbackErr))
 			failure.Workspace, failure.Destination = root, manifest.Prefix
