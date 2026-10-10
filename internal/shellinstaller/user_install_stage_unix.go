@@ -21,6 +21,9 @@ func userPrepareInstallStage(ctx context.Context, root, mode string, profile *Us
 	if err := userValidateStagePreferences(profile); err != nil {
 		return err
 	}
+	if profile != nil && profile.GGA != "" && mode != "separate" {
+		return experienceError("explicit GGA requires a private Separate configuration stage")
+	}
 	if profile != nil && profile.StrictTDD != "" && mode != "separate" {
 		return experienceError("explicit Strict TDD requires a private Separate SDK runtime")
 	}
@@ -56,5 +59,8 @@ func userPrepareInstallStage(ctx context.Context, root, mode string, profile *Us
 	if profile == nil {
 		return nil
 	}
-	return userStageContext7(ctx, root, mode, profile.Context7)
+	if err := userStageContext7(ctx, root, mode, profile.Context7); err != nil {
+		return err
+	}
+	return userStageGGA(ctx, root, mode, profile.GGA, profile.GGAProvider)
 }

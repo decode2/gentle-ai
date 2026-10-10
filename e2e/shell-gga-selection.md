@@ -3,7 +3,9 @@
 GGA is optional. This unit transports an explicit `gga: on|off` selection
 and `gga_provider` in the existing experience/confirmation contract. It does
 not install GGA, authenticate a provider, configure a project, or install hooks.
-All public non-nil profiles and explicit GGA stages remain refused before writes.
+Public non-nil profiles and generic/Windows/Shared GGA stages remain refused.
+Private Separate preparation can write the canonical configuration; this does not
+admit installation or certify provider availability.
 
 ## Selection contract
 
@@ -21,10 +23,11 @@ All public non-nil profiles and explicit GGA stages remain refused before writes
 
 `go test -run '^TestUserGGA' ./internal/shellinstaller` covers canonical encoding,
 confirmation differences, malformed input, historical bytes and unchanged
-filesystems on unsupported Separate/Shared/generic stage requests.
+filesystems on unsupported Shared/generic stage requests.
 Run Go only inside the existing offline credentialless verification Guest.
 Rollback removes these optional fields, validation and tests together.
 
-Next: qualify the canonical private configuration, authenticated GGA CLI and
-actual readback before admitting installation. `gga init`/`gga install` require
+The [private stage proof](shell-gga-stage.md) checks canonical configuration and
+actual fixed-source CLI readback. Next: qualify CLI acquisition/provisioning and
+operational provider setup before admitting installation. `gga init`/`gga install` require
 explicit per-project consent; configuration readback is not an AI review receipt.
