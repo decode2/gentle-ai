@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,18 +38,37 @@ func userGGAProvision(ctx context.Context, root, mode string, profile *UserExper
 	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 	transport.TLSClientConfig.ServerName = "codeload.github.com"
 	defer client.CloseIdleConnections()
-	url := "https://codeload.github.com/Gentleman-Programming/gentleman-guardian-angel/tar.gz/1124c3672f082c56b033c4e23a30e95d0e8cd593"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	return userGGAAcquire(ctx, root, client)
+}
+
+// The client seam permits offline response controls, not an alternate endpoint
+// or trust store. Production supplies the cold system-rooted TLS transport.
+func userGGAAcquire(ctx context.Context, root string, client *http.Client) error {
+	if ctx == nil || client == nil {
+		return privateError("acquisition", errors.New("missing GGA acquisition context/client"))
+	}
+	if err := ctx.Err(); err != nil {
+		return privateError("acquisition", err)
+	}
+	const endpoint = "https://codeload.github.com/Gentleman-Programming/gentleman-guardian-angel/tar.gz/1124c3672f082c56b033c4e23a30e95d0e8cd593"
+	origin, err := url.Parse(endpoint)
 	if err != nil {
 		return err
 	}
-	response, err := client.Do(req)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	bounded := *client
+	bounded.Jar = nil
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := bounded.Do(req)
 	if err != nil {
 		return privateError("acquisition", err)
 	}
 	encoding := response.Header.Values("Content-Encoding")
-	if response.StatusCode != http.StatusOK || response.Uncompressed || response.TLS == nil || len(response.TLS.VerifiedChains) == 0 || len(encoding) > 1 || (len(encoding) == 1 && encoding[0] != "" && encoding[0] != "identity") {
-		return privateError("acquisition", errors.Join(response.Body.Close(), errors.New("GGA source response refused")))
+	if !gentleShellStableResponseMatches(response, origin, origin.Path) || response.StatusCode != http.StatusOK || response.Uncompressed || len(encoding) > 1 || (len(encoding) == 1 && encoding[0] != "" && encoding[0] != "identity") {
+		return privateError("acquisition", errors.Join(response.Body.Close(), ctx.Err(), errors.New("GGA source response refused")))
 	}
 	// Codeload can omit Content-Length; exact bounded bytes and the independent
 	// frozen archive SHA remain mandatory. No redirects, proxy or decompression.
