@@ -2,6 +2,7 @@ package shellinstaller
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -80,8 +81,9 @@ func TestUserContext7ExperienceRefusesUnsupportedStage(t *testing.T) {
 		if files, err := userStageExperienceFiles(&profile); err == nil || files != nil || !strings.Contains(err.Error(), "Context7") {
 			t.Fatalf("unsupported MCP staging silently accepted: %v, %v", files, err)
 		}
-		if err := userExperienceSupported(&profile); err == nil {
-			t.Fatal("codec granted public installer support")
+		qualified := runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+		if err := userExperienceSupported(&profile); (err == nil) != qualified {
+			t.Fatal("public Context7 differs from supported platform", err)
 		}
 		identity := []string{"destination", "mode", "identity"}
 		data, err := userExperienceConfirmationData(identity, &profile)

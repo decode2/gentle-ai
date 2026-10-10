@@ -13,8 +13,8 @@ import (
 )
 
 // userStageContext7 writes an internal, unpublished Separate stage only.
-// Public profile acceptance and the staging validator remain refused. The
-// caller owns cleanup; this neither discovers Shared paths nor reads persona.
+// Linux amd64 public profiles reuse this canonical writer after consent.
+// The caller owns cleanup; this neither discovers Shared paths nor reads persona.
 func userStageContext7(ctx context.Context, root, mode, choice string) error {
 	if choice == "" {
 		return nil
