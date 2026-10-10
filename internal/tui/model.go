@@ -636,6 +636,8 @@ const (
 )
 
 type Model struct {
+	shellExperience       *shellExperienceConfig
+	shellReadyOffset      int
 	shellInstallEnabled   bool
 	shellInstallModel     tea.Model
 	shellInstallSelection cli.ShellInstallSelection
@@ -1483,7 +1485,7 @@ func (m Model) View() string {
 			screens.WelcomeAdvisory{Message: m.AdvisoryMessage, URL: m.AdvisoryURL, Scroll: m.AdvisoryScroll},
 		)
 	case ScreenShellInstall:
-		return m.shellInstallModel.View()
+		return m.shellInstallView()
 	case ScreenUpgrade:
 		return screens.RenderUpgradeWithWidth(m.UpdateResults, m.UpgradeReport, m.UpgradeErr, m.OperationRunning, m.UpdateCheckDone, m.Cursor, m.SpinnerFrame, m.Width)
 	case ScreenSync:
@@ -2008,7 +2010,7 @@ func (m Model) confirmSelection() (tea.Model, tea.Cmd) {
 			switch options[m.Cursor] {
 			case screens.ShellInstallWelcomeOption:
 				m.shellInstallSelection = cli.ShellInstallSelection{}
-				m.shellInstallModel = cli.NewShellInstallModel(nil)
+				m.beginShellExperience()
 				m.shellInstallModel, _ = m.shellInstallModel.Update(tea.WindowSizeMsg{Width: m.Width, Height: m.Height})
 				m.setScreen(ScreenShellInstall)
 				return m, nil

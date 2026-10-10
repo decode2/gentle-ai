@@ -17,6 +17,14 @@ func (m Model) ShellInstallSelection() cli.ShellInstallSelection {
 }
 
 func (m Model) updateShellInstall(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.shellExperience != nil {
+		return m.configureShellExperience(msg)
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if next, handled := m.shellExperienceNavigation(key); handled {
+			return next, nil
+		}
+	}
 	m.shellInstallModel, _ = m.shellInstallModel.Update(msg)
 	if key, ok := msg.(tea.KeyMsg); ok && (key.Type == tea.KeyEsc || key.Type == tea.KeyCtrlC) {
 		m.shellInstallSelection = cli.ShellInstallSelection{}

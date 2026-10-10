@@ -1,0 +1,9 @@
+# Ordinary Configure → Destination → Ready
+
+The opt-in Welcome entry opens an inert configuration in the same parent tea.Program. Persona/background and all existing optional profile fields are editable; GGA provider is explicit, not inferred from Pi. Absent/on/off remain distinct. Windows keeps its existing Destination channel choice; interactive POSIX Main preview and complete installed advanced effects remain pending.
+
+Continue passes an independent complete snapshot to the existing Destination selector. Ready displays the exact request/physical token and changes/scopes in two panels (stacked on narrower terminals), with bounded scroll. It is pre-install review, not installed health. Ctrl-E returns to configuration preserving target/mode/channel; re-entering Destination clears prior consent. Escape/Ctrl-C return to Welcome, without workers. No nested program or new installer/writer.
+
+Observed behavioral RED: ordinary entry skipped Configure. GREEN covers Configure→real inspection→Ready, editable snapshots/consent invalidation, exact unsupported choice retention/refusal and cancellation. Physical PTY tests exercise one program, default configured profile, confirm/cancel and complete terminal restoration before the inert worker hook; no actual installation is claimed. Viewport checks include narrow/short sizes. Pertinent regression, Guest formatting and three-target structural compilation are required.
+
+This connects E1's main UI path, not E2–E6 acceptance. Authentic compatible advanced distribution, actual install/launch and native Darwin/Windows proof are still required. Historical nil/Shared entry contracts remain available; explicit new profiles require a fresh Separate runtime. Rollback removes common configuration/rendering and restores the earlier selector entry, leaving native effects/transport unchanged.

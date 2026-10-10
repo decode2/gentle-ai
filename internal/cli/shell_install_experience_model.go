@@ -12,7 +12,17 @@ import (
 func NewShellInstallModelWithExperience(cancel context.CancelFunc, profile shellinstaller.UserExperience) tea.Model {
 	model := NewShellInstallModel(cancel).(shellInstallModel)
 	model.req.Experience = &profile
-	model.err = profile.Validate()
+	return NewShellInstallModelWithRequest(cancel, model.req)
+}
+
+// NewShellInstallModelWithRequest resumes editing without reusing old consent.
+func NewShellInstallModelWithRequest(cancel context.CancelFunc, req shellinstaller.UserInstallRequest) tea.Model {
+	model := NewShellInstallModel(cancel).(shellInstallModel)
+	req.Confirmation = ""
+	model.req = shellInstallRequestSnapshot(req)
+	if req.Experience != nil {
+		model.err = model.req.Experience.Validate()
+	}
 	return model
 }
 

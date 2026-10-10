@@ -27,9 +27,13 @@ func TestShellInstallerWelcomeOptIn(t *testing.T) {
 	}
 	final, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = final.(Model)
-	if m.Screen != ScreenShellInstall || cmd != nil || !strings.Contains(m.View(), "Target:") {
+	if m.Screen != ScreenShellInstall || cmd != nil || !strings.Contains(m.View(), "Configure experience") {
 		t.Fatal("welcome starts a program or fails to enter the selector")
 	}
+	final, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = final.(Model)
+	final, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = final.(Model)
 	final, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	m = final.(Model)
 	selection, err := cli.ShellInstallOutcome(m.shellInstallModel)

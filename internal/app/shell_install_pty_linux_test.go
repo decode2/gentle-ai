@@ -146,10 +146,12 @@ func TestShellInstallParentPhysicalPTY(t *testing.T) {
 			})
 			waitFor("Install Gentle Shell")
 			send(strings.Repeat("\x1b[B", 11) + "\r")
+			waitFor("Configure experience")
+			send(strings.Repeat("\x1b[B", 8) + "\r")
 			waitFor("Target:")
 			if scenario != "cancel-target" {
 				send(target + "\r")
-				waitFor("Confirm this physical selection")
+				waitFor("Ready — review before installation")
 			}
 			if scenario == "confirm" {
 				send("y")
