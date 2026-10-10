@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,12 @@ func TestUserCodeGraphStageRefusesBeforeEffects(t *testing.T) {
 				}
 				parent := t.TempDir()
 				root := filepath.Join(parent, "stage")
+				if mode == "separate" && runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
+					if err := userPrepareInstallStage(context.Background(), root, mode, &profile); err != nil {
+						t.Fatal("qualified CodeGraph stage refused", err)
+					}
+					return
+				}
 				if err := userPrepareInstallStage(context.Background(), root, mode, &profile); err == nil || !strings.Contains(err.Error(), "CodeGraph") {
 					t.Fatal("unqualified CodeGraph stage was admitted", err)
 				}

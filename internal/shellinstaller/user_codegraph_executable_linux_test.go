@@ -16,6 +16,9 @@ import (
 )
 
 func TestUserCodeGraphPrivateCommandAndPackagedSDK(t *testing.T) {
+	if testing.Short() {
+		t.Skip("authenticated external CLI/SDK fixture")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	archives := make([][]byte, 2)
@@ -26,8 +29,15 @@ func TestUserCodeGraphPrivateCommandAndPackagedSDK(t *testing.T) {
 		}
 		archives[i] = data
 	}
-	root := filepath.Join(t.TempDir(), "stage")
-	if err := userPrepareInstallStage(ctx, root, "separate", nil); err != nil {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "stage")
+	destination := filepath.Join(parent, "selected-final")
+	profile := DefaultUserExperience()
+	profile.CodeGraph = "on"
+	if token, err := InspectUserInstall(UserInstallRequest{Destination: destination, Mode: "separate", Experience: &profile}); err != nil || token == "" {
+		t.Fatal("selected final destination refused physical review", token, err)
+	}
+	if err := userPrepareInstallStage(ctx, root, "separate", &profile); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(root, "runtime"), 0700); err != nil {
@@ -36,9 +46,13 @@ func TestUserCodeGraphPrivateCommandAndPackagedSDK(t *testing.T) {
 	if err := userStageCodeGraphLibrary(ctx, root, archives); err != nil {
 		t.Fatal(err)
 	}
-	if err := userStageCodeGraphExecutable(ctx, root, root); err != nil {
+	if err := userStageCodeGraphExecutable(ctx, root, destination); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Rename(root, destination); err != nil {
+		t.Fatal(err)
+	}
+	root = destination
 	if err := userCodeGraphReadback(ctx, root); err != nil {
 		t.Fatal(err)
 	}

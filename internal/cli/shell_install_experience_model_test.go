@@ -39,7 +39,7 @@ func TestShellInstallEmbeddedExperienceRefusalAndCancel(t *testing.T) {
 	for _, key := range []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC} {
 		t.Run(tea.KeyMsg{Type: key}.String(), func(t *testing.T) {
 			profile := shellinstaller.DefaultUserExperience()
-			profile.CodeGraph = "on"
+			profile.StrictTDD = "on"
 			cancelled := false
 			model := NewShellInstallModelWithExperience(func() { cancelled = true }, profile)
 			model, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(t.TempDir() + "/target")})

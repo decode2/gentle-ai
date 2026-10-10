@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // userPrepareInstallStage is called after physical confirmation, before any
@@ -18,7 +19,21 @@ func userPrepareInstallStage(ctx context.Context, root, mode string, profile *Us
 	if mode != "separate" && mode != "shared" {
 		return experienceError("installation stage requires separate or shared mode")
 	}
-	if err := userValidateStagePreferences(profile); err != nil {
+	preferences := profile
+	if profile != nil && profile.CodeGraph != "" {
+		if err := profile.Validate(); err != nil {
+			return err
+		}
+		if mode != "separate" || runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+			return experienceError("explicit CodeGraph requires Linux amd64 Separate")
+		}
+		// Only this preparer has the authenticated optional runtime producer;
+		// generic and Windows writers keep refusing this field.
+		base := *profile
+		base.CodeGraph = ""
+		preferences = &base
+	}
+	if err := userValidateStagePreferences(preferences); err != nil {
 		return err
 	}
 	if profile != nil && profile.GGA != "" && mode != "separate" {

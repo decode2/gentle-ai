@@ -62,7 +62,7 @@ func TestShellInstallEmbeddedConfirmationOnlySelects(t *testing.T) {
 func TestShellInstallArgumentsDoNotDropUnsupportedExperience(t *testing.T) {
 	selection, _ := ShellInstallOutcome(NewShellInstallModel(nil))
 	profile := shellinstaller.DefaultUserExperience()
-	profile.CodeGraph = "on"
+	profile.StrictTDD = "on"
 	selection.Confirmed, selection.Request.Experience = true, &profile
 	args := ShellInstallArguments(selection)
 	req, err := shellinstaller.UserInstallFromEntry(args[1:])

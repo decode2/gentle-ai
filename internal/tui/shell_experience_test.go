@@ -79,16 +79,16 @@ func TestShellExperienceConfigureDestinationReady(t *testing.T) {
 
 func TestShellExperiencePreservesUnsupportedChoicesAndCancel(t *testing.T) {
 	m := experienceStart(t)
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 2; i++ {
 		m = experienceKey(m, tea.KeyMsg{Type: tea.KeyDown})
 	}
-	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyEnter}) // CodeGraph on
+	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyEnter}) // Strict TDD on
 	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyEnd})
 	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(filepath.Join(t.TempDir(), "target"))})
 	m = experienceKey(m, tea.KeyMsg{Type: tea.KeyEnter})
 	state, _ := cli.ShellInstallPresentationOf(m.shellInstallModel)
-	if state.Error == nil || state.Review || state.Request.Experience.CodeGraph != "on" {
+	if state.Error == nil || state.Review || state.Request.Experience.StrictTDD != "on" {
 		t.Fatal("unsupported choice dropped or admitted")
 	}
 	for _, key := range []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC} {

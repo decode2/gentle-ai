@@ -59,7 +59,7 @@ func TestUserExperienceAdmissionKeepsScopeAndFeatureRefusals(t *testing.T) {
 			t.Fatal("preferences admitted outside fresh Separate")
 		}
 	}
-	profile.CodeGraph = "on"
+	profile.StrictTDD = "on"
 	if token, err := InspectUserInstall(UserInstallRequest{Destination: filepath.Join(parent, "advanced"), Mode: "separate", Experience: &profile}); err == nil || token != "" {
 		t.Fatal("unqualified advanced effects admitted")
 	}

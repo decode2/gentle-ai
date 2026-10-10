@@ -1,6 +1,7 @@
 package shellinstaller
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -83,8 +84,9 @@ func TestUserCodeGraphExperienceHistoricalAndRefusal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := userExperienceSupported(&profile); err == nil {
-			t.Fatal("transport granted public installation")
+		qualified := runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+		if err := userExperienceSupported(&profile); (err == nil) != qualified {
+			t.Fatal("selection admission differs from qualified platform", err)
 		}
 		if files, err := userStageExperienceFiles(&profile); err == nil || files != nil || !strings.Contains(err.Error(), "CodeGraph") {
 			t.Fatal("generic/Windows stage silently accepted CodeGraph", files, err)

@@ -52,7 +52,7 @@ func TestUserExperienceSelectionRefusesUnsupportedProfileBeforeEffects(t *testin
 	}
 	target := filepath.Join(root, "target")
 	profile := DefaultUserExperience()
-	profile.CodeGraph = "on" // Still lacks its installed manifest/launcher/SDK chain.
+	profile.StrictTDD = "on" // Still requires a compatible installed SDK distribution.
 	req := UserInstallRequest{Destination: target, Mode: "separate", Experience: &profile}
 	if token, err := InspectUserInstall(req); err == nil || token != "" || !strings.Contains(err.Error(), "experience") {
 		t.Fatalf("unsupported profile is silently ignored: %q, %v", token, err)
