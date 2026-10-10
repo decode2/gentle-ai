@@ -23,7 +23,12 @@ The existing offline Guest uses retained official Main commit
 `43541a0d30dfafacfcb2e99ef4135ab8b1693e99`, ZIP SHA
 `cbc39d46b0d5416435c22498515e5bdfef8b4368e6a8e9d591f265f2de99362e`.
 Original Gentle Pi 4.0.0 is authenticated against the committed npm SRI and
-original supplier hashes. Actual Main/source/stock byte/stat readbacks stay exact.
+original supplier hashes. Actual Main/source/stock bytes and custody readbacks
+stay exact. Supplier stat comparisons exclude only `atimeMs`/`atimeNs`: a read
+can update access time without changing the supplier. Identity, ownership, mode,
+link count, size, modification/change/birth times and all other stat fields remain
+compared. The native offline Linux VM exposed this observer failure on reads;
+this qualification fix does not change either production admission gate.
 
 The production comparator first rejected the authorized SDK composition at the
 changed installer (behavioral RED), then accepted its fixed stock preservation
@@ -39,8 +44,9 @@ and `/source` mounted read-only. No new network or supplier code is executed.
 
 No copy/activation, launcher, worker, selector or Ready composition label is
 implemented by this unit. Future Ready must disclose SDK Main + stock provider.
-The full owned stock-helper positive chain remains blocked by the existing
-supervisor-custody prerequisite; comparator success is not that qualification.
+The real offline Linux VM passes the existing supervisor-helper custody test
+with UID1000 and genuinely root-owned system files. The full owned stock-helper
+positive chain still needs its own proof; comparator success is not that qualification.
 Three-OS installation, health and advanced effects remain unqualified. No pin
 exception, personal activation or publication authority is created.
 
