@@ -266,6 +266,7 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 	}
 	manifest := userManifest{Schema: userSchema, Destination: req.Destination, Prefix: finalPrefix, Agent: finalAgent, Mode: req.Mode, SupervisorSHA: selfSHA, NodeSHA: privateNativeNodeSHA}
 	manifest.GGA = req.Experience != nil && req.Experience.GGA == "on"
+	manifest.CodeGraph = req.Experience != nil && req.Experience.CodeGraph == "on"
 	manifest.PrefixIdentity, err = userIdentity(prefix)
 	if err == nil {
 		manifest.AgentIdentity, err = userIdentity(agent)
@@ -641,6 +642,14 @@ func userReadManifest(ctx context.Context, root string) (userManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > 4096 || json.Unmarshal(data, &manifest) != nil || manifest.Schema != userSchema || manifest.Destination != root || (manifest.Mode != "separate" && manifest.Mode != "shared") {
 		return manifest, privateError("refused", err)
+	}
+	if manifest.CodeGraph {
+		if manifest.Mode != "separate" {
+			return manifest, privateError("refused", errors.New("CodeGraph requires a Separate manifest"))
+		}
+		if err := userCodeGraphReadback(ctx, root); err != nil {
+			return manifest, fmt.Errorf("CodeGraph retained integrity: %w", err)
+		}
 	}
 	if manifest.GGA {
 		if manifest.Mode != "separate" {

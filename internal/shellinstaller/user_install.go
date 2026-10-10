@@ -18,6 +18,7 @@ type userManifest struct {
 	SupervisorSHA, NodeSHA                   string
 	PrefixIdentity, AgentIdentity            string
 	GGA                                      bool `json:"gga,omitempty"`
+	CodeGraph                                bool `json:"codegraph,omitempty"`
 }
 
 const userSchema = "gentle-shell-user-install/v1"
