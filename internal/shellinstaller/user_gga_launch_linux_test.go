@@ -5,6 +5,7 @@ package shellinstaller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -92,7 +93,7 @@ func TestUserGGALaunchEnvironment(t *testing.T) {
 				if probe := syscall.Kill(-cmd.Process.Pid, 0); !errors.Is(probe, syscall.ESRCH) {
 					t.Error("readback preceded group reap", probe)
 				}
-				return userGGAExitReadback(context.Background(), root, allowed, waitErr)
+				return userGGAExitReadback(context.Background(), root, manifest.GGA, waitErr)
 			})
 			if readbacks != 1 {
 				t.Fatal("owned group did not complete readback", err)
@@ -140,5 +141,35 @@ func TestUserGGALaunchRefusesAmbiguousPATH(t *testing.T) {
 	}
 	if err := cmd.Start(); !errors.Is(err, cmd.Err) || cmd.Process != nil {
 		t.Fatal("refused launch attempted a process", err)
+	}
+}
+
+// Manifest DATA: the real launch consumer must reject this combination before
+// any supervisor, Node, Bash or payload execution; no full runtime is invented.
+func TestUserGGASharedManifestRefusesLaunch(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "stage")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := userManifest{Schema: userSchema, Destination: root, Mode: "shared", GGA: true}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := userToolWrite(filepath.Join(root, "installation.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := userTreeStamp(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err = userLaunch(context.Background(), root, nil, strings.NewReader(""), &output, &output)
+	if err == nil || !strings.Contains(err.Error(), "GGA requires a Separate manifest") {
+		t.Fatal("real launch consumer did not reject Shared GGA at manifest validation", err)
+	}
+	after, stampErr := userTreeStamp(root)
+	if stampErr != nil || before != after || output.Len() != 0 {
+		t.Fatal("manifest refusal changed stage or issued CLI presentation", stampErr, output.String())
 	}
 }
