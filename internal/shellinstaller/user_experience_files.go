@@ -27,6 +27,9 @@ func userValidateStagePreferences(profile *UserExperience) error {
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if profile.CodeGraph != "" {
+		return experienceError("explicit CodeGraph requires a qualified private library/runtime stage")
+	}
 	if profile.GlobalRDD != "" {
 		return experienceError("explicit global RDD requires a supported native distribution")
 	}

@@ -18,6 +18,7 @@ type UserExperience struct {
 	StrictTDD           string `json:"strict_tdd,omitempty"`
 	GGA                 string `json:"gga,omitempty"`
 	GGAProvider         string `json:"gga_provider,omitempty"`
+	CodeGraph           string `json:"codegraph,omitempty"`
 }
 
 func DefaultUserExperience() UserExperience {
@@ -39,6 +40,9 @@ func (p UserExperience) Validate() error {
 	}
 	if p.StrictTDD != "" && p.StrictTDD != "on" && p.StrictTDD != "off" {
 		return experienceError("choose on or off for Strict TDD, or omit it to inherit")
+	}
+	if p.CodeGraph != "" && p.CodeGraph != "on" && p.CodeGraph != "off" {
+		return experienceError("choose on or off for CodeGraph, or omit it to inherit")
 	}
 	return userValidateGGASelection(p.GGA, p.GGAProvider)
 }
@@ -70,6 +74,7 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		"strict_tdd":           &profile.StrictTDD,
 		"gga":                  &profile.GGA,
 		"gga_provider":         &profile.GGAProvider,
+		"codegraph":            &profile.CodeGraph,
 	}
 	seen := make(map[string]bool)
 	for decoder.More() {
@@ -94,6 +99,9 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		}
 		if key == "strict_tdd" && *field == "" {
 			return UserExperience{}, experienceError("an explicit Strict TDD choice must be on or off")
+		}
+		if key == "codegraph" && *field == "" {
+			return UserExperience{}, experienceError("an explicit CodeGraph choice must be on or off")
 		}
 		if (key == "gga" || key == "gga_provider") && *field == "" {
 			return UserExperience{}, experienceError("an explicit GGA choice/provider must not be empty")
