@@ -45,6 +45,9 @@ func userValidateInstall(req UserInstallRequest) error {
 	if err := userExperienceSupported(req.Experience); err != nil {
 		return err
 	}
+	if req.Experience != nil && req.Mode != "separate" {
+		return experienceError("explicit experience requires a fresh Separate runtime")
+	}
 	req, err := userCanonicalRequest(req)
 	if err != nil {
 		return err
@@ -58,6 +61,9 @@ func userValidateInstall(req UserInstallRequest) error {
 	}
 	fresh := true
 	if err := privateDestination(req.Destination); err != nil {
+		if req.Experience != nil {
+			return experienceError("explicit experience requires a new empty target; existing preferences are preserved")
+		}
 		fresh = false
 		manifest, readErr := userReadManifest(context.Background(), req.Destination)
 		if readErr != nil || manifest.Mode != req.Mode || (req.Mode == "shared" && (manifest.Prefix != req.SharedPrefix || manifest.Agent != req.SharedAgent)) {

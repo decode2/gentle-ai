@@ -13,8 +13,8 @@ import (
 
 // userStageExperience writes only an unpublished, private installer stage.
 // It never updates an existing runtime, personal Pi or a Shared agent home.
-// Public profile acceptance stays disabled until the installation flow and
-// canonical consumers are qualified; explicit RDD requires its native API.
+// Public base preferences use this same canonical writer in fresh Separate.
+// Additional choices require their compatible installed consumers.
 func userStageExperience(ctx context.Context, root string, profile *UserExperience) error {
 	if profile == nil {
 		return nil

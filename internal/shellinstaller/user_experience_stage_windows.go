@@ -10,7 +10,7 @@ import (
 )
 
 // userStageExperience writes only an unpublished installer stage. The caller
-// retains cleanup/uncertainty ownership; no public profile acceptance is added.
+// retains cleanup/uncertainty ownership; base preferences reuse this writer.
 // Native SID/DACL, NTFS, reparse and hard-link custody remain mandatory.
 func userStageExperience(ctx context.Context, root string, profile *UserExperience) error {
 	if profile == nil {

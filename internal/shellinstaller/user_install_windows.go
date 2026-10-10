@@ -89,6 +89,9 @@ func InspectUserInstall(req UserInstallRequest) (string, error) {
 	}
 	identity := "absent"
 	if _, err := os.Lstat(req.Destination); err == nil {
+		if req.Experience != nil {
+			return "", experienceError("explicit experience requires a new empty target; existing preferences are preserved")
+		}
 		selected, err := userWindowsIdentity(req.Destination, true)
 		if err != nil {
 			return "", err
