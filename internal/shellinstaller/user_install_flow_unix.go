@@ -212,6 +212,9 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 	if err = userToolsAcquire(ctx, root); err != nil {
 		return result, fmt.Errorf("pinned tool acquisition: %w", err)
 	}
+	if err = userGGAProvision(ctx, root, req.Mode, req.Experience); err != nil {
+		return result, fmt.Errorf("optional GGA provisioning: %w", err)
+	}
 	freshConfirmation, inspectErr := InspectUserInstall(req)
 	if inspectErr != nil || freshConfirmation != req.Confirmation {
 		return result, privateError("preimage", errors.Join(inspectErr, errors.New("selected files changed before global provisioning")))

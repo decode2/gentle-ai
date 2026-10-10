@@ -42,6 +42,46 @@ func TestUserGGAStageFrozenCLI(t *testing.T) {
 		}
 	}
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	t.Run("private executable recipe", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "stage")
+		profile := UserExperience{Persona: "unmanaged", BackgroundSubagents: "off", GGA: "on", GGAProvider: "codex"}
+		if err := userPrepareInstallStage(ctx, root, "separate", &profile); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(root, "runtime"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		bad := append([]byte(nil), archive...)
+		bad[0] ^= 1
+		if err := userStageGGAExecutable(ctx, root, bad); err == nil {
+			t.Fatal("tampered source admitted")
+		}
+		if _, err := os.Lstat(filepath.Join(root, "runtime/gga")); !os.IsNotExist(err) {
+			t.Fatal("tampered source produced files", err)
+		}
+		if err := userStageGGAExecutable(ctx, root, archive); err != nil {
+			t.Fatal(err)
+		}
+		before, err := userTreeStamp(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(ctx, "/usr/bin/bash", filepath.Join(root, "runtime/gga/bin/gga"), "--version")
+		cmd.Dir = filepath.Join(root, "project")
+		cmd.Env = append(userEnvironment(root, "", filepath.Join(root, "agent")), "GGA_VERSION=untrusted-override")
+		output, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(ansi.ReplaceAllString(string(output), ""), "gga v2.10.1") {
+			t.Fatalf("stamped recipe version %q: %v", output, err)
+		}
+		if err := userStageGGAExecutable(ctx, root, archive); err == nil {
+			t.Fatal("existing payload replaced")
+		}
+		after, err := userTreeStamp(root)
+		if err != nil || before != after {
+			t.Fatal("readback/repeated provisioning changed payload", err)
+		}
+		t.Log("FROZEN_GGA_PRIVATE_EXECUTABLE_PASS")
+	})
 	for _, choice := range []string{"on", "off", "absent"} {
 		t.Run(choice, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "stage")
