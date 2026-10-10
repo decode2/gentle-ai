@@ -24,6 +24,9 @@ func userValidateStagePreferences(profile *UserExperience) error {
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if profile.GGA != "" {
+		return experienceError("explicit GGA requires a qualified optional private CLI/config stage")
+	}
 	if profile.GlobalRDD != "" {
 		return experienceError("explicit global RDD requires a supported native distribution")
 	}

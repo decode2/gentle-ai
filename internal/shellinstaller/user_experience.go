@@ -16,6 +16,8 @@ type UserExperience struct {
 	GlobalRDD           string `json:"global_rdd,omitempty"`
 	Context7            string `json:"context7,omitempty"`
 	StrictTDD           string `json:"strict_tdd,omitempty"`
+	GGA                 string `json:"gga,omitempty"`
+	GGAProvider         string `json:"gga_provider,omitempty"`
 }
 
 func DefaultUserExperience() UserExperience {
@@ -38,7 +40,7 @@ func (p UserExperience) Validate() error {
 	if p.StrictTDD != "" && p.StrictTDD != "on" && p.StrictTDD != "off" {
 		return experienceError("choose on or off for Strict TDD, or omit it to inherit")
 	}
-	return nil
+	return userValidateGGASelection(p.GGA, p.GGAProvider)
 }
 
 // Encode retains historical bytes when the new optional choices are omitted.
@@ -66,6 +68,8 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		"global_rdd":           &profile.GlobalRDD,
 		"context7":             &profile.Context7,
 		"strict_tdd":           &profile.StrictTDD,
+		"gga":                  &profile.GGA,
+		"gga_provider":         &profile.GGAProvider,
 	}
 	seen := make(map[string]bool)
 	for decoder.More() {
@@ -90,6 +94,9 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		}
 		if key == "strict_tdd" && *field == "" {
 			return UserExperience{}, experienceError("an explicit Strict TDD choice must be on or off")
+		}
+		if (key == "gga" || key == "gga_provider") && *field == "" {
+			return UserExperience{}, experienceError("an explicit GGA choice/provider must not be empty")
 		}
 	}
 	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
