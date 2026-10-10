@@ -595,13 +595,17 @@ func userProvisionAssets(ctx context.Context, root string, stage bool) error {
 }
 
 func userVerifyGlobal(ctx context.Context, root, prefix, agent, finalPrefix, finalRoot, mode string) error {
+	return userVerifyGlobalAction(ctx, root, prefix, agent, finalPrefix, finalRoot, mode, "verify")
+}
+
+func userVerifyGlobalAction(ctx context.Context, root, prefix, agent, finalPrefix, finalRoot, mode, action string) error {
 	if err := userProvisionAssets(ctx, root, false); err != nil {
 		return err
 	}
 	helper := filepath.Join(root, "provision.mjs")
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(root, "runtime/node/bin/node"), helper, root, prefix, agent, finalPrefix, finalRoot, mode, "verify")
+	cmd := exec.CommandContext(ctx, filepath.Join(root, "runtime/node/bin/node"), helper, root, prefix, agent, finalPrefix, finalRoot, mode, action)
 	cmd.Dir, cmd.Env = filepath.Join(root, "project"), userEnvironment(root, prefix, agent)
 	_, err := userOwnedRun(ctx, cmd, cancel)
 	return err
