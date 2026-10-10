@@ -1,6 +1,7 @@
 package shellinstaller
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -83,8 +84,9 @@ func TestUserGGAExperienceHistoricalAndRefusal(t *testing.T) {
 		{Persona: "unmanaged", BackgroundSubagents: "off", GGA: "off"},
 		{Persona: "unmanaged", BackgroundSubagents: "off", GGA: "on", GGAProvider: "codex"},
 	} {
-		if err := userExperienceSupported(&profile); err == nil {
-			t.Fatal("transport granted public installation")
+		qualified := runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+		if err := userExperienceSupported(&profile); (err == nil) != qualified {
+			t.Fatal("public GGA differs from supported platform", err)
 		}
 		if files, err := userStageExperienceFiles(&profile); err == nil || files != nil || !strings.Contains(err.Error(), "GGA") {
 			t.Fatal("unqualified generic/Windows stage accepted GGA", files, err)

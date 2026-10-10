@@ -33,6 +33,7 @@ func userExperienceConfirmationData(fields []string, profile *UserExperience) ([
 // Base persona/background use the existing canonical stage and pinned consumer.
 // CodeGraph uses its authenticated Linux amd64 Separate producer/consumer chain.
 // Context7 uses the existing canonical agent configuration and built-in MCP.
+// GGA uses its authenticated optional CLI and explicit private configuration.
 // Other explicit choices stay refused until their compatible chain exists.
 func userExperienceSupported(profile *UserExperience) error {
 	if profile == nil {
@@ -47,7 +48,10 @@ func userExperienceSupported(profile *UserExperience) error {
 	if profile.Context7 != "" && (runtime.GOOS != "linux" || runtime.GOARCH != "amd64") {
 		return experienceError("explicit Context7 requires Linux amd64 Separate")
 	}
-	if profile.GlobalRDD != "" || profile.StrictTDD != "" || profile.GGA != "" {
+	if profile.GGA != "" && (runtime.GOOS != "linux" || runtime.GOARCH != "amd64") {
+		return experienceError("explicit GGA requires Linux amd64 Separate")
+	}
+	if profile.GlobalRDD != "" || profile.StrictTDD != "" {
 		return experienceError("selected additional experience preferences require a compatible installed runtime")
 	}
 	return nil

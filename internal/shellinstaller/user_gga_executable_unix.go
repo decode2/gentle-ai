@@ -12,14 +12,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 const userGGASourceSHA = "fb681f48706be5ee8f7d1efd558fdfacbc7757aaf4ca9d8fd05fce4c44d7d004"
 const userGGASourcePrefix = "gentleman-guardian-angel-1124c3672f082c56b033c4e23a30e95d0e8cd593/"
 
-// Fixed acquisition into an unpublished stage only. Public profile admission
-// stays refused; managed launch/readback and provider setup are separate gates.
+// Fixed acquisition into an unpublished stage only. Linux amd64 public GGA
+// reuses this producer; provider installation/authentication/hooks stay separate.
 func userGGAProvision(ctx context.Context, root, mode string, profile *UserExperience) error {
 	if profile == nil {
 		return nil
@@ -31,7 +32,16 @@ func userGGAProvision(ctx context.Context, root, mode string, profile *UserExper
 	if profile.GGA != "on" {
 		return nil
 	}
-	if err := userValidateStagePreferences(profile); err != nil {
+	preferences := *profile
+	if preferences.CodeGraph != "" {
+		if mode != "separate" || runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+			return experienceError("explicit CodeGraph requires Linux amd64 Separate")
+		}
+		// The complete original selection was validated above. Only this
+		// qualified producer copy bypasses the generic CodeGraph refusal.
+		preferences.CodeGraph = ""
+	}
+	if err := userValidateStagePreferences(&preferences); err != nil {
 		return err
 	}
 	if mode != "separate" || ctx == nil || ctx.Err() != nil {
