@@ -1,110 +1,113 @@
 # Complete the Gentle Shell install experience on three operating systems
 
-Status: **in progress; not a qualified release**. Parent session `01a10f0e` owns integration and delivery. Reuse approved umbrella #4935; do not close it against source-only progress.
+Status: **in progress; no complete installed flow qualified on any target**.
+Parent session `01a10f0e` owns integration. Approved umbrella: #4935.
+This scope supersedes the earlier component-first work order; completed evidence and consumed reviews remain valid within their original bounds.
 
-## Outcome and completion rule
+## Outcome and priority
 
-One ordinary Gentle AI TUI must offer **Install Gentle Shell → Configure experience → Destination → Ready**. It must install the reviewed selection after the owning `tea.Program` restores the terminal. Cancel returns to Welcome without installing. The ordinary `NewModel` remains unchanged unless explicitly opted in. CLI and TUI reuse the same selection, physical consent, backend and recovery contracts.
+Deliver **Install Gentle Shell → Configure experience → Destination → two-panel Ready → physical confirmation → actual installation → launch** from one ordinary Gentle AI TUI on Linux amd64, Darwin arm64/macOS14+ and Windows11 x64.
 
-Every offered item needs a real effect, canonical readback, preservation checks and target-platform evidence. A checkbox, source merge, cross-build or green generic CI is not proof of an installed feature. Unsupported actions must remain explicit, effect-free refusals until implemented and qualified.
+**Finish the whole principal flow first; harden additional cases afterward.**
+Reuse the working components and existing contracts. A task belongs on the delivery path only if it connects this flow, verifies an offered effect, preserves an essential guarantee, or fixes an observed blocker. Do not create a new framework or expand a negative-case matrix merely because another failure is imaginable.
 
-## Verified baseline
+Ready is the pre-install review of the exact selection, not a claim that installation or tool health has already succeeded. Installation runs only after the owning `tea.Program` successfully returns and fully restores the terminal. Escape/Ctrl-C returns to Welcome without installing. Ordinary `NewModel` changes only through `WithShellInstaller()`.
 
-| Surface | Observed source/evidence | What it does not prove |
+Separate is the required complete experience on each target. Preserve existing supported Shared behavior and disclose its real limitations; do not add Windows Shared or silently drop an unsupported Shared choice. A refusal preserves safety but does not qualify the required Separate feature.
+
+## In scope for the first complete delivery
+
+| Surface | Required behavior and evidence |
+|---|---|
+| Common TUI | Welcome entry; all experience controls; destination/mode; two-panel Ready; reachable confirm/back/cancel and usable resize/scroll. One parent program, no nested installer TUI. |
+| Selection | One immutable complete profile reaches existing inspection, physical consent and the matching backend. Keep nil/historical JSON, confirmation hashes, 256-byte input and platform argument compatibility. |
+| Persona/background | Gentleman or neutral and on/off affect only the selected private runtime. Unmanaged performs no persona lookup/write/replacement, including malformed historical files. |
+| Strict TDD | The installed SDK consumes the additional applicable test-first instruction policy; OFF retains ordinary discipline. No hard write gate or claim of model compliance. |
+| Global RDD | Compatible installed native setter/status reads the selected runtime's `TARGET/home/.gentle-ai` without Git discovery. Source API alone is insufficient. |
+| CodeGraph | Opt-in authenticated private executable/library, launcher/SDK discovery and real version/status readback. No automatic project indexing or copied personal binary. |
+| Context7 | Canonical `TARGET/agent/mcp.json`, fixed `https://mcp.context7.com/mcp`, real installed Pi MCP registration and observable availability/health. Disclose project precedence; never invent model-call provenance or permission. |
+| Main preview | Explicit opt-in exact frozen compatible snapshot, consent and effective channel readback; stable default remains. Do not substitute a local version label for authenticated acquisition. |
+| Optional GGA | Available only when enabled and configured according to its documentation. Verify private CLI/config/launch exposure; OFF/absence has no provisioning. Provider installation/authentication and `gga init`/`gga install` remain separately consented, not automatic hooks or an invented Pi bridge. |
+| SDD retirement | No new SDD/OpenSpec installation, UI offer or management. Preserve historical files/profiles byte-for-byte. |
+| Installation/launch | Actual backend effects, truthful success/failure and canonical installed readback; both owned command bindings launch the selected runtime/config and settle without changing personal Pi/projects. |
+| Delivery | Compatible authentic native/SDK artifacts and bounded reviewable slices. Source-only or private-fixture success is not an available release. Remote publication/activation requires fresh exact authority. |
+
+## Delivery TODO — execute in this order
+
+Each milestone is an outcome, not a demand for another component research campaign.
+Implement it through independently meaningful local units of at most400 additions plus deletions, including tests/docs; never compress code or publish the cumulative feature as one PR.
+
+| Order / TODO | Outcome | Completion gate |
 |---|---|---|
-| Native Main | `8ae991148db783459efa311252e014956af96585` | New experience controls are not present |
-| SDK Main | `8a7aa1c9b313c79a70f5d9f3f8071816f0c9e124` | Packed/install lifecycle qualification |
-| Linux | #5242 merged; amd64/systemd user manager backend | All new choices or installed release parity |
-| Windows | #5279 merged `ddf5a48aae0dfa19c90dd3df89fd0a26bd92ae1f` | Win11 x64 actual acceptance; Shared/update/force/recover |
-| Darwin | #5407 merged; Apple silicon, macOS14+, Separate/Shared/recover | New experience controls or every supported OS version |
-| Publication | Latest native and SDK releases remain `v4.0.0` | Main source changes are not in those artifacts |
-| Global RDD prerequisite | #5411 at `b8bbea5`, fresh review/ACK, hosted checks green, still open | No repository-free global mode in published4.0.0 |
-| Retired routing/migration | #1956 at `93158f1`, fresh review/ACK, hosted checks green, still open | Companion ownership or release qualification |
-| Retired ownership | #1952 remote378 lines; local reshape review is STOP | Do not bypass, reset or invent recovery inputs |
+| E1 / #72 | Complete the common configure/destination/Ready flow and profile handoff | Model/navigation and real terminal-boundary proof; all offered choices survive unchanged; no worker during review/cancel. |
+| E2 / #53 | Connect all selected effects to the real backends and compatible installed SDK/native artifacts | Admission only with actual producers/consumers/readbacks; replace refusals on the required Separate path, not with bypasses. Reuse existing persona/BG/TDD/C7/GGA/CodeGraph work. |
+| E3 / #84 | Run the whole installed Linux Separate happy path | One coherent artifact set, all offered effects/readbacks, both launchers, terminal/process settlement and personal preservation. Resolve only blockers actually preventing this run. |
+| E4 / #85 | Run the same complete flow on native Apple silicon/macOS14+ | Actual installation/launch/readback, not cross-compilation or an unfetched prior CI artifact. Obtain access authority before native execution. |
+| E5 / #86 | Run the same complete flow on native Windows11 x64, unelevated/local NTFS | Actual new-profile installation/launch/readback and settled cancellation; cross-builds/WSL/Server are not substitutes. Fresh exact VM/access authority required. |
+| E6 / #87 | Close acceptance and prepare authorized incremental delivery | Evidence per offered item on all three OS, human visual acceptance, exact artifact identities and no unresolved principal-flow blocker. Request publication/release authority at that boundary. |
 
-At the acquired baseline, native entry is `internal/cli/shell_install.go`; ordinary Welcome has no shell-installer entry and Windows runs its worker inside its own program. Units01–03 now provide an opt-in common parent selection and post-terminal handoff in this dedicated branch. The installed release and personal preview are not changed by those source commits.
+The active TODO mirrors E1–E6 first. Older pending IDs are retained as subordinate traceability or deferred work, not an alternative execution order. Completed tasks keep their original identities and evidence.
 
-## Architecture boundaries
+## Proportionate functional verification
 
-- One common UI and selection contract; OS adapters supply supported actions and native effects, not another planner/frontend.
-- `tui` may import `cli`; `cli` must not import `tui`. Installation belongs after parent `runTUI`, never a nested program.
-- Preserve byte-identical nil-profile legacy protocol and physical-selection hashes. Windows channel arguments must not be mistaken for experience JSON.
-- Explicit experience choices require a new empty target. Never overwrite preferences of an existing installation.
-- Persona/background belong to the new runtime's configuration. Native RDD belongs to `TARGET/home/.gentle-ai`, including Shared; disclose that scope.
-- Do not mutate personal Pi, projects, PATH, shell initialization, global Git controls or unselected Shared assets.
-- Preserve retired SDD/OpenSpec file bytes and profiles; stop management, do not delete user history.
-- Keep acquisition frozen: exact versions/commits, authenticated hashes/SRIs, full platform graphs, minimum three-day release age and unchanged custody/preimages/consent safeguards.
+For each behavior-changing unit: relevant deterministic behavioral RED where applicable, minimal change, focused GREEN, pertinent regression and functional proof. Compiler RED, observer errors and infrastructure failures are not behavioral RED. Passive scope documentation needs structural readback, not invented tests.
 
-## Item acceptance matrix
+For each required OS, exercise the actual ordinary TUI, configure the profile, inspect the fresh destination, review/physically confirm, install, launch and read the installed effects. Cover selected ON/OFF behavior and the three persona/two background choices where pertinent; do not require an exhaustive Cartesian product before delivery.
 
-| Item | Intended real effect/readback | Implementation dependency and negative control |
+Minimum alternate controls protect cancellation/back, rejected unsupported input before effects, authenticated input rejection, personal preservation and settled failure. Preserve existing custody/recovery contracts and run their relevant regressions when touched. A model test, callback fixture, inert worker, cross-build or green generic CI never replaces the integrated installed run.
+
+Record exact source/artifact identities, scenario/command, result and limitations. Do not hide a failed check or count SKIP, forced kill, missing artifact or a no-tests command as PASS. An unrelated benchmark failure remains visible but does not become a detour when ordinary operation works.
+
+## Essential guarantees — not deferred
+
+- Reuse physical consent, inspection, acquisition, custody, manager, process/cancellation and recovery contracts; validate the full selection before effects.
+- Keep authenticated fixed inputs, release-age rules and32MiB per-file custody. No silent bound widening, fake ownership, copied stock helper or relaxed Guest limits.
+- Preserve personal Pi, projects, credentials, preferences, PATH, shell initialization and unselected Shared assets.
+- Keep configuration in its real private scope: RDD in target home; persona/BG/TDD and GGA in target config; MCP in target agent home. Disclose trusted-project/environment precedence.
+- Do not claim readiness, health, authentic distribution or installed acceptance from source/component evidence.
+- Keep `tui → cli`, never the reverse; one terminal owner and installation only after successful restoration.
+- Follow fresh native assessment for each candidate; when review is required, its exact ACK precedes the source commit. Consumed reviews are never reopened or borrowed for later edits.
+
+## Deferred until after the principal flow
+
+| Deferred work | Rule for returning it to scope |
+|---|---|
+| #142 CodeGraph partial-stage advisory R3-001 | Receipt `review-3e637e2d3c47a950` stands. Resume only after delivery or evidence that existing stage disposal blocks the real flow; reuse existing cleanup. |
+| #89/#94/#96/#103/#113 extra observer, negative-case and advisory hardening | Not independent delivery gates without an observed principal-flow or essential-guarantee defect. |
+| #111 auxiliary startup benchmark diagnosis | Preserve its failed evidence; fix only if it reproduces a blocker in ordinary operation. |
+| #105 additional genuine-model permission qualification | No fabricated assistant provenance; does not authorize provider credentials or broaden install integration into model-policy research. Actual MCP availability/health remains in scope. |
+| New Shared/platform modes, Windows update/force/recover and rare recovery permutations | Do not add unsupported capabilities to finish this install feature; preserve existing supported behavior. |
+| GGA provider bridge, automatic hooks, MCP clients, tool repairs and indexing | Not this installer's job. Documented opt-in prerequisites remain explicit. |
+
+A genuinely blocking failure may re-enter E1–E6 with a short description, direct evidence and the smallest existing-contract fix. Hypothetical failures alone do not justify reprioritization.
+
+## Current evidence and real blockers
+
+Latest native component-chain source: `cdfa5bd44ce132dc5e2af67bcdcd7a02ebe50d64`; common-TUI integration source: `77fc62dc495e7fb4dc0ba24d667c1c7e09739dba`.
+SDK Strict TDD/cleanup source: `1fb0cc1749c7055f8d199ae2db094064890dcdd6` / `27ae302542bce7c22f70e0bd00ec89e396956194`.
+These are local source boundaries, not compatible installed release identities.
+
+| Target/surface | What works within recorded evidence | Still needed |
 |---|---|---|
-| Welcome entry | Opens existing installer selector in the owning TUI | Opt-in API; ordinary Welcome unchanged; Escape returns Welcome |
-| Persona | Gentleman/neutral written using the SDK's `{mode}` contract; unmanaged means no installer write, not a third SDK mode | Global/project precedence and files preserved; omission currently defaults to Gentleman, disclose it |
-| Background | Target-global canonical on/off policy and resolver readback | Project policy wins; malformed winning policy fails closed; no personal policy changes |
-| Strict TDD | A real SDK-consumed TDD policy with observable runtime behavior | Current assets are guidance, not an enforcement switch; implement canonical interface before enabling UI |
-| Global RDD | Installed native global-only setter/status, independent of ancestor clone | Merge/publication prerequisite5411; damaged-clone continuation; ordinary clone-off precedence unchanged |
-| CodeGraph | Authenticated private provisioning plus actual executable/tool health | Workspace indexing is a separate explicit action; no `@latest` or invented global-index toggle |
-| Context7 | Real Pi MCP registration and server health in the new runtime | Frozen Pi1.0.0 has built-in MCP;10a characterizes its actual CLI, not session readiness or remote service health |
-| Main preview | Exact acquired snapshot and persisted SDK channel contract/readback | Native Windows stable/main differs from SDK release/main; POSIX currently refuses channel selection; stable default preserved |
-| GGA | Private CLI availability and truthful project-hook capability/readback | No SDK GGA interface established; no unsolicited hooks or project changes |
-| Destination/mode | Existing inspection, visible bindings, fresh physical selection token | Separate all supported targets; Shared only where implemented; collisions/refusals have no effects |
-| Ready | Two-panel selection plus explicit changes, scopes and command bindings | Full resize/scroll/key reachability; confirm changes bind to the same inspected selection |
-| Install/cancel | Exactly one terminal owner; settled cancellation, reap, preserved failure evidence | No worker during embedded review; no uncertain cleanup or inferred completion |
-| Launch | Both owned command bindings launch correct runtime/agent/config | Personal runtime unchanged; restored terminal/CWD and actual settled exit |
-| Update/force/recover | Only actions the backend can actually qualify | Preserve Shared preimages and failure journals; unsupported Windows actions remain refused until separate implementation/approval |
+| Linux | Existing backend; common entry/selector/cancel and real terminal boundary; private component effects | Complete new-profile install from the common TUI and installed launch. Guest stock `/usr/bin/setpriv` owner65534 is a real qualification prerequisite, not GGA RED; no custody bypass. |
+| Darwin | Existing backend, source tests and cross-builds | Native new-experience installation and launch on Apple silicon/macOS14+. |
+| Windows | Existing Separate backend/source/cross-builds | Native new-profile packet and complete flow; prior VM/media/network lease is closed/restored and not replayable. |
+| Experience/SDK | Persona/BG, Strict TDD, C7 registration/CLI and optional GGA private proofs; CodeGraph selection/library/real CLI | Connect the actual UI/profile/backend/launcher/SDK chain. Public profiles and real CodeGraph preparer still refuse; never call this installed admission. |
+| Distribution | Global-only RDD source and SDD retirement groundwork | Compatible authentic packed distribution/channel binding. #1952 STOP remains unresolved; no invented recovery disposition or signing/pin substitution. |
 
-## Ordered work units
+Component evidence stays useful: `e2e/shell-codegraph-{selection,library,shared-node}.md`, `e2e/shell-strict-tdd-stage.md`, `e2e/shell-gga-{selection,stage,cli}.md` and `docs/gentle-shell-common-selection.md`. Their narrower scopes do not close E1–E6.
 
-Each unit includes its meaningful tests/docs and stays at or below400 additions plus deletions. Forecast before edits; split by behavior, never by file type or code compression. Existing chain choice is bounded independently reviewed units; do not publish one cumulative oversized feature PR.
+## Authority and closure
 
-| Order | Unit | Completion evidence |
-|---|---|---|
-| 01 | Export a common CLI selection/outcome API; opt-in selection-only Windows | Public defaults/outcome/cancel/confirmation; no worker started; native builds all targets |
-| 02 | Two bounded subunits:02a opt-in Welcome embedding;02b parent post-`runTUI` handoff | One `tea.Program`; cancel/back; execution occurs after terminal restoration |
-| 03 | Common configure/destination/Ready rendering and navigation | Behavioral model tests and real PTY resize/review/cancel, without backend duplication |
-| 04 | Bounded subunits:04a codec;04b request/hash/refusal guard;04c transport only with consumers05/06 before UI enablement | Nil bytes identical; invalid/oversized choices fail before writes; Windows channel not decoded as profile |
-| 05 | 05a writer;05b POSIX wiring;05c frozen-package consumer proof | Full installed/lifecycle qualification remains; public profiles refused until transport/platform support |
-| 06 | 06a shared bytes;06b private Windows writer/pre-acquisition wiring | Native Windows tests and Win11 installed proof pending; public profiles remain refused |
-| 07 | Resolve RDD publication prerequisite and bind installed artifact | Authentic compatible native version; global-only effect/readback and no Git discovery |
-| 08 | SDK Strict TDD canonical policy consumer | Observable runtime behavior and ordinary/off negative controls; not prompt-only enablement |
-| 09 | Private frozen CodeGraph provisioning and tool health | Version/graph integrity, executable/tool health, no automatic project indexing |
-| 10 | Canonical Pi Context7 integration | Real MCP schema, registration, readiness and failure readback on each target |
-| 11 | Private GGA provisioning and explicit hook boundary | CLI health, no incidental project hooks; selected project behavior independently verified |
-| 12 | Common Main channel acquisition/consent/readback | Frozen snapshot, stable default, age/signature/hash qualification; no implicit activation |
-| 13 | Finish SDD retirement across startup/migration/ownership | Legitimate1952 authority continuation; unchanged user bytes/history and ordinary-agent controls |
-| 14 | Compatible native/SDK packed publication and frozen graph binding | Complete prepack/packed lifecycle, authentic provenance/signatures/SRIs/age; no version invented |
-| 15 | Linux actual matrix | All available choices, both launchers, cancel/invalid/update/force/recovery/manager and preservation |
-| 16 | Darwin actual matrix | Native Apple silicon/macOS14+ installation and available Shared/recovery plus all choices |
-| 17 | Windows actual matrix | Native Win11 x64 Separate, all choices, both launchers, custody/cancellation/preservation; Server/WSL not substitutes |
-| 18 | Release-facing acceptance/readiness | Exact artifacts, complete per-item receipts, human visual acceptance and no unresolved failures |
+Local implementation/tests/native reviews/commits are authorized only in isolated Gentle AI/Gentle Pi worktrees. No host source SDK/compiler/test/formatter/CodeGraph execution; reuse the existing offline credentialless Guest. Children, if useful, are read-only and explicitly forbidden from CodeGraph indexing/execution.
 
-## Verification and current blockers
+`main-current`, active preview, personal package registration and binaries remain unchanged. Sync grants are spent. No new push, PR, release/signing/pin, personal install/activation, credential change, VM action or cross-orchestrator contact is granted by this replan. Request the concrete missing authority only when it blocks the next real milestone.
 
-Tests are test-first where applicable: distinguish behavioral RED from unsupported-interface/compiler RED and infrastructure failure. Run relevant suites, negative controls, normalization and functional checks before exact-candidate native review/ACK. An approved receipt cannot approve future edits. Independent read-only verification is required for high-risk changes and source delivery follows repository policy.
+No Main merge, Main push, auto-merge or merge API without current explicit repository/action approval. Do not close #4935 or claim the feature delivered while any required OS, offered effect or distribution gate remains unqualified.
 
-No host source SDK/compiler/test/formatter execution. Reuse the existing offline credentialless asserted Guest, without sudo, Docker, a new lab, copied stock helpers, fake ownership or relaxed limits. Source execution summaries and physical unit completion are separate evidence.
-
-- The existing Linux Guest has an independently diagnosed systemd cgroup inotify ENOSPC → stop timeout, despite some test children exiting0. Do not call that full Guest PASS; restoring host capacity requires an authorized operator action, not a source workaround.
-- The existing VM is manually reported as Windows11 x64 build26300.9457, Medium token and healthy local NTFS. The narrow test packet is prepared, but no Windows source test ran: the attempted media/network window was aborted and both devices restored after management/interop failures. This is not installed acceptance.
-- Darwin qualification CI succeeded on the prior source; its artifact fetch failed with a network error and no receipt contents have been admitted. Preserve the failed fetch; do not infer every new item passed.
-- Published4.0.0 lacks the new RDD interface and pending SDK fixes. Source-only progress does not authorize signing, release, pins or a preview activation.
-- #1952's prior review STOP has no negotiated disposition/continuation; do not bypass it with another lineage or invent the six recovery inputs.
-
-## Delivery and progress
-
-Only dedicated isolated worktrees are used. `main-current`, active preview, official hardlinks, Pi package registration and personal preferences stay unchanged. Every reviewed unit records parent/commit/tree, changed lines, commands, exact results, omissions and rollback boundary.
-
-No Main merge, auto-merge, Main push, release/tag/signing/pin or runtime activation is inferred from implementation authorization. Request exact current authority when a real delivery boundary needs it. Do not close any umbrella issue until all claimed items have named target-platform evidence.
-
-- [x] Actual merged source acquired in isolated native/SDK worktrees; source revisions recorded.
-- [x] Common UI/consumer gaps mapped, not inferred from merge status.
-- [ ] Work units01–14 implemented, tested, independently checked where required and exact-reviewed.
-- [ ] Platform matrices15–17 admitted against the same authentic installed artifacts.
-- [ ] Human acceptance and distribution gate18 complete.
-
-Unit01 source groundwork: `e0b0a773`,249 changed lines including this roadmap; unit02a opt-in embedding: `4abda8b6`,204 lines; both exact reviewed/ACKed, with retained Guest controller failures. Unit02b connects the ordinary application to guarded execution only after its TUI returns; newer source checks have observed controller exit0, not an authorized lab repair or closure of prior failures. Unit03a adds Linux real-PTY public selection/confirm/cancel and physical terminal-restoration coverage with an inert worker-boundary spy; no acquisition or installed-platform acceptance is inferred. Actual common experience controls, packed distribution and installed-platform qualification remain open.
-
-Unit07a integrates the corrected #5411 global-only CLI source contract into this branch, with fresh tests/review rather than an inherited receipt. Explicit global status/mutation/repair avoid cwd-based mode resolution; ordinary clone-off precedence remains. This provides no support in published4.0.0 and does not enable the refused public experience profiles. Unit07b (`c0796639`) characterizes zero Git invocation and fail-closed unreadable-file preservation on Linux; this is not native Darwin/Windows qualification. Private RDD wiring and authentic artifact binding remain open.
-
-Unit10a characterizes the checksum-matched published Pi1.0.0 CLI against an offline HTTP fixture: real initialization/tool discovery, disabled zero-contact, disconnected/invalid exit1 and unchanged private canonical config. Its disabled-built-in control proves CLI health is insufficient for session readiness. No actual Context7 service request, runtime tool call, private installer wiring or platform acceptance is claimed.
+- [ ] E1 — common experience flow complete.
+- [ ] E2 — real selected effects and compatible artifact chain connected.
+- [ ] E3 — complete installed Linux flow accepted.
+- [ ] E4 — complete installed Darwin flow accepted.
+- [ ] E5 — complete installed Windows flow accepted.
+- [ ] E6 — human acceptance and authorized delivery gates complete.
