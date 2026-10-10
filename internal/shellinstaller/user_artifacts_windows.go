@@ -34,32 +34,7 @@ func userWindowsMainSnapshot(ctx context.Context) (userWindowsArtifact, []byte, 
 }
 
 func userWindowsMainFiles(ctx context.Context, data []byte, artifact userWindowsArtifact) (map[string]*zip.File, error) {
-	if _, err := userWindowsZIP(ctx, data, artifact, "", artifact.Prefix+"/package.json"); err != nil {
-		return nil, err
-	}
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, err
-	}
-	files := map[string]*zip.File{}
-	for _, file := range reader.File {
-		name := strings.TrimSuffix(file.Name, "/")
-		if name == artifact.Prefix {
-			continue
-		}
-		relative := strings.TrimPrefix(name, artifact.Prefix+"/")
-		first := strings.ToLower(strings.Split(relative, "/")[0])
-		if first == "node_modules" || first == ".gentle-ai" {
-			return nil, errors.New("Main archive may not replace native/dependency custody")
-		}
-		files[relative] = file
-		for parent := filepath.ToSlash(filepath.Dir(relative)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
-			if _, exists := files[parent]; !exists {
-				files[parent] = nil // Implicit archive directory.
-			}
-		}
-	}
-	return files, nil
+	return userMainSourceFiles(ctx, data, artifact)
 }
 
 func userWindowsCompareMain(ctx context.Context, data []byte, artifact userWindowsArtifact, destination string) error {
@@ -171,39 +146,9 @@ func userWindowsAcquire(ctx context.Context, artifact userWindowsArtifact, targe
 // ZIP names, link modes, duplicates and aggregate inflation are checked before
 // publishing any extracted object. Archives remain retained for later readback.
 func userWindowsZIP(ctx context.Context, data []byte, artifact userWindowsArtifact, destination, member string) ([]byte, error) {
-	if int64(len(data)) > artifact.Bound || userWindowsSHA(data) != artifact.SHA || ctx.Err() != nil {
-		return nil, errors.New("Windows archive authority differs")
-	}
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil || len(reader.File) > 32768 {
-		return nil, errors.Join(err, errors.New("Windows archive entry bound"))
-	}
-	seen := map[string]bool{}
-	var total uint64
-	for _, file := range reader.File {
-		name := strings.TrimSuffix(file.Name, "/")
-		key := strings.ToLower(name)
-		if ctx.Err() != nil || name == "" || (name == artifact.Prefix && !file.FileInfo().IsDir()) || seen[key] || file.Mode()&os.ModeSymlink != 0 || strings.ContainsAny(name, "\\:\x00\r\n") || (name != artifact.Prefix && !strings.HasPrefix(name, artifact.Prefix+"/")) || (!file.Mode().IsRegular() && !file.FileInfo().IsDir()) {
-			return nil, errors.New("Windows archive path/type/duplicate refused")
-		}
-		seen[key] = true
-		for _, part := range strings.Split(name, "/") {
-			base := strings.ToUpper(strings.SplitN(part, ".", 2)[0])
-			if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") || base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" || (len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '0' && base[3] <= '9') {
-				return nil, errors.New("Windows archive noncanonical component")
-			}
-		}
-		memberBound := uint64(32 << 20)
-		if artifact.Archive == "node.zip" || artifact.Archive == "go.zip" {
-			memberBound = 128 << 20 // Authenticated Node/compiler executables.
-		}
-		if file.UncompressedSize64 > memberBound {
-			return nil, errors.New("Windows archive member byte bound")
-		}
-		total += file.UncompressedSize64
-		if total > 1<<30 {
-			return nil, errors.New("Windows archive aggregate byte bound")
-		}
+	reader, err := userSnapshotZIP(ctx, data, artifact)
+	if err != nil {
+		return nil, err
 	}
 	var selected []byte
 	for _, file := range reader.File {
