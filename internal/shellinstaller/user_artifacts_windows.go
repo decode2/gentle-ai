@@ -6,7 +6,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,72 +17,20 @@ import (
 	"time"
 )
 
-type userWindowsArtifact struct {
-	URL, SHA, Archive, Prefix string
-	Bound, Size               int64
-}
+// Preserve the Windows artifact/retained JSON ABI while sharing the fixed
+// canonical Main producer. ZIP/custody/provision/activation stay platform-owned.
+type userWindowsArtifact = userSnapshotArtifact
 
-// Descriptor construction alone does not authenticate or resolve Main source.
 func userWindowsMainArtifact(commit, archiveSHA string) (userWindowsArtifact, error) {
-	if !userWindowsLowerHex(commit, 40) || !userWindowsLowerHex(archiveSHA, 64) {
-		return userWindowsArtifact{}, errors.New("invalid frozen Gentle Shell Main commit/archive digest")
-	}
-	return userWindowsArtifact{URL: "https://codeload.github.com/Gentleman-Programming/gentle-shell/zip/" + commit, SHA: archiveSHA, Archive: "main.zip", Prefix: "gentle-shell-" + commit, Bound: 32 << 20}, nil
+	return userMainDescriptor(commit, archiveSHA)
 }
 
 func userWindowsLowerHex(value string, length int) bool {
-	_, err := hex.DecodeString(value)
-	return len(value) == length && err == nil && value == strings.ToLower(value)
+	return userSnapshotLowerHex(value, length)
 }
 
-// One fixed-publisher ref lookup; no redirects, proxy, credentials or retries.
 func userWindowsMainSnapshot(ctx context.Context) (userWindowsArtifact, []byte, error) {
-	if ctx == nil || ctx.Err() != nil {
-		return userWindowsArtifact{}, nil, errors.New("Main acquisition canceled before requests")
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy, transport.DisableCompression = nil, true
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 90 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return errors.New("Main publisher redirect refused")
-	}}
-	get := func(url string, bound int64) ([]byte, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Accept-Encoding", "identity")
-		req.Header.Set("User-Agent", "gentle-shell-windows-installer")
-		response, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK || response.ContentLength > bound || (response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity") {
-			return nil, errors.New("Main publisher status/encoding/bound refused")
-		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, bound+1))
-		if err != nil || int64(len(data)) > bound {
-			return nil, errors.Join(err, errors.New("Main publisher response bound"))
-		}
-		return data, nil
-	}
-	metadata, err := get("https://api.github.com/repos/Gentleman-Programming/gentle-shell/commits/main", 256<<10)
-	var record struct {
-		SHA string `json:"sha"`
-	}
-	if err != nil {
-		return userWindowsArtifact{}, nil, err
-	}
-	if err := json.Unmarshal(metadata, &record); err != nil || !userWindowsLowerHex(record.SHA, 40) {
-		return userWindowsArtifact{}, nil, errors.Join(err, errors.New("canonical Main ref identity refused"))
-	}
-	data, err := get("https://codeload.github.com/Gentleman-Programming/gentle-shell/zip/"+record.SHA, 32<<20)
-	if err != nil {
-		return userWindowsArtifact{}, nil, err
-	}
-	artifact, err := userWindowsMainArtifact(record.SHA, userWindowsSHA(data))
-	return artifact, data, err
+	return userMainSnapshot(ctx)
 }
 
 func userWindowsMainFiles(ctx context.Context, data []byte, artifact userWindowsArtifact) (map[string]*zip.File, error) {
