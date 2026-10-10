@@ -32,7 +32,7 @@ func ShellInstallOutcome(model tea.Model) (ShellInstallSelection, error) {
 	if !ok {
 		return ShellInstallSelection{}, errors.New("installer selection is unavailable; run gentle-ai shell install to review a new selection")
 	}
-	return ShellInstallSelection{Request: selection.req, Confirmed: selection.confirmed}, selection.err
+	return ShellInstallSelection{Request: shellInstallRequestSnapshot(selection.req), Confirmed: selection.confirmed}, selection.err
 }
 
 // ShellInstallArguments preserves the backend's existing entry protocol.
