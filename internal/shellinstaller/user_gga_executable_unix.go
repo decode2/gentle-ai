@@ -21,11 +21,18 @@ const userGGASourcePrefix = "gentleman-guardian-angel-1124c3672f082c56b033c4e23a
 // Fixed acquisition into an unpublished stage only. Public profile admission
 // stays refused; managed launch/readback and provider setup are separate gates.
 func userGGAProvision(ctx context.Context, root, mode string, profile *UserExperience) error {
-	if err := userValidateStagePreferences(profile); err != nil {
+	if profile == nil {
+		return nil
+	}
+	if err := profile.Validate(); err != nil {
 		return err
 	}
-	if profile == nil || profile.GGA != "on" {
+	// A disabled optional producer must not veto another qualified selection.
+	if profile.GGA != "on" {
 		return nil
+	}
+	if err := userValidateStagePreferences(profile); err != nil {
+		return err
 	}
 	if mode != "separate" || ctx == nil || ctx.Err() != nil {
 		return experienceError("GGA provisioning requires a live private Separate stage")
