@@ -53,7 +53,7 @@ function writeExclusive(absolute, bytes, permissions = 0o600) {
 for (const value of [root, prefix, agent, finalPrefix, finalRoot]) {
   if (typeof value !== 'string' || !/^\/[A-Za-z0-9_./-]+$/.test(value) || path.resolve(value) !== value) reject('unsafe selection');
 }
-if (process.argv.length !== (requestedAction === 'restore' ? 10 : 9) || !['separate', 'shared'].includes(mode) || !['install', 'verify', 'verify-main-source', 'restore', 'prepare-prior'].includes(requestedAction) || uid === 0) reject('arguments or UID');
+if (process.argv.length !== (requestedAction === 'restore' ? 10 : 9) || !['separate', 'shared'].includes(mode) || !['install', 'verify', 'verify-main-source', 'verify-main-sdk-source', 'restore', 'prepare-prior'].includes(requestedAction) || uid === 0) reject('arguments or UID');
 physical(root, true);
 const state = path.join(root, 'state');
 physical(state, true);
@@ -195,7 +195,7 @@ if (action === 'restore') {
     if (check.error || check.signal || check.status !== 0) reject('fixture prior requires verified existing installation');
   }
   const prior = preparing || (fs.existsSync(priorGraph) && JSON.parse(read(path.join(modules, '@earendil-works/pi-coding-agent/package.json'))).version === '0.99.2');
-  if (action === 'verify-main-source' && (mode !== 'separate' || prior)) reject('Main preflight requires modern Separate stock');
+  if (['verify-main-source', 'verify-main-sdk-source'].includes(action) && (mode !== 'separate' || prior)) reject('Main preflight requires modern Separate stock');
   if (prior) source = path.join(root, 'runtime/prior');
   const graphPath = prior ? priorGraph : path.join(state, 'global-graph.json');
   const lockBytes = read(path.join(root, 'user-locks', prior ? 'prior' : 'modern', 'package-lock.json'));
@@ -522,15 +522,21 @@ if (action === 'restore') {
     }
   }
   if (!read(lockPath).equals(lockBytes)) reject('acquired lock changed');
-  if (action === 'verify-main-source') {
-    // All original stock checks above remain mandatory. This only checks
-    // declarations/native supplier bytes; it neither loads nor activates Main.
-    const { assertMainBindings, mainBindingFiles } = await import(pathToFileURL(path.join(root, 'user-main-bindings.mjs')).href);
+  if (['verify-main-source', 'verify-main-sdk-source'].includes(action)) {
+    // All original stock checks above remain mandatory, including exact stock
+    // supplier pins. These actions neither load Main nor change installation.
+    const { assertMainBindings, assertMainSDKPreviewBindings, mainBindingFiles } = await import(pathToFileURL(path.join(root, 'user-main-bindings.mjs')).href);
     const acquired = authority.get(`gentle-pi@${pins['gentle-pi'][0]}`);
     if (!acquired) reject('Main preflight lacks authenticated stock');
     const bindings = directory => Object.fromEntries(mainBindingFiles.map(name => [name, read(path.join(directory, name))]));
-    assertMainBindings(bindings(path.join(root, 'runtime/main-source')), bindings(acquired.source));
-    console.log('Main declared stock bindings verified; source API/runtime unqualified; activated=false');
+    const main = bindings(path.join(root, 'runtime/main-source')), stock = bindings(acquired.source);
+    if (action === 'verify-main-sdk-source') {
+      const preserved = assertMainSDKPreviewBindings(main, stock);
+      console.log(`Main SDK composition bindings verified; preserve authenticated stock=${preserved.join(',')}; activated=false`);
+    } else {
+      assertMainBindings(main, stock);
+      console.log('Main declared stock bindings verified; source API/runtime unqualified; activated=false');
+    }
   }
   console.log(`Global readback verified; authenticated packages=${observed.length}; functional Ready=false`);
 }

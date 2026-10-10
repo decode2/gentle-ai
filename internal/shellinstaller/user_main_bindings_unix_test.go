@@ -40,8 +40,12 @@ func TestUserMainBindingsRefusesBeforeProcess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := userVerifyMainBindings(ctx, root, filepath.Join(filepath.Dir(root), "selected-final"), artifact); err == nil {
-				t.Fatal("unbound Main accepted")
+			for _, verify := range []func(context.Context, string, string, userSnapshotArtifact) error{
+				userVerifyMainBindings, userVerifyMainSDKPreviewBindings,
+			} {
+				if err := verify(ctx, root, filepath.Join(filepath.Dir(root), "selected-final"), artifact); err == nil {
+					t.Fatal("unbound Main accepted")
+				}
 			}
 			after, err := userTreeStamp(root)
 			if err != nil || before != after {
