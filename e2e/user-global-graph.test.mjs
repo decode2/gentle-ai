@@ -12,14 +12,14 @@ import { projectGlobalGraph } from '../scripts/user-global-graph.mjs';
 // Execute the current provisioner's last comparison with semantic evidence in
 // memory. No acquisition, supplier code, native execution or physical proof.
 const helperSource = fs.readFileSync(new URL('../scripts/provision-gentle-shell-private-global.mjs', import.meta.url), 'utf8');
-const comparison = helperSource.slice(helperSource.indexOf('    const declaration = settings.packages?'),
+const comparison = helperSource.slice(helperSource.indexOf('    const selectedPackageRoot ='),
   helperSource.lastIndexOf('\n  }\n  if (!read(lockPath)'));
 async function compareGraph(observed, expected, lock, retainedPaths) {
   const root = fileURLToPath(new URL('../scripts/', import.meta.url));
   const finalPrefix = '/fixture/prefix', finalRoot = '/fixture/root', packageRoot = '/fixture/prefix/lib/node_modules/gentle-pi';
   const witness = Buffer.from(`${JSON.stringify(expected)}\n`);
   const context = vm.createContext({
-    root, finalPrefix, finalRoot, packageRoot, path, pathToFileURL, Buffer,
+    root, finalPrefix, finalRoot, packageRoot, path, pathToFileURL, Buffer, verifyingSelectedSDK: false,
     observed, lock, retained: { paths: retainedPaths }, preparing: false,
     settings: { packages: [packageRoot], npmCommand: [path.join(finalRoot, 'runtime/node/bin/node'),
       path.join(finalRoot, 'runtime/node/lib/node_modules/npm/bin/npm-cli.js'), '--prefix', finalPrefix] },
