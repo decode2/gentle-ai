@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"runtime"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,14 +44,17 @@ func (m Model) configureShellExperience(msg tea.Msg) (tea.Model, tea.Cmd) {
 	} else {
 		switch key.String() {
 		case "up", "k":
-			config.cursor = (config.cursor + 8) % 9
+			config.cursor = (config.cursor + 9) % 10
 		case "down", "j", "tab":
-			config.cursor = (config.cursor + 1) % 9
+			config.cursor = (config.cursor + 1) % 10
 		case "home":
 			config.cursor = 0
 		case "end":
-			config.cursor = 8
+			config.cursor = 9
 		case "backspace":
+			if config.cursor == 8 {
+				config.profile.SDKSource = ""
+			}
 			if config.cursor == 7 && len(config.profile.GGAProvider) > 0 {
 				config.profile.GGAProvider = config.profile.GGAProvider[:len(config.profile.GGAProvider)-1]
 			}
@@ -71,7 +76,22 @@ func (m Model) configureShellExperience(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case 7: // Provider is typed explicitly, never inferred from Pi.
 			case 8:
-				if config.err = config.profile.Validate(); config.err == nil {
+				switch config.profile.SDKSource {
+				case "":
+					config.profile.SDKSource = "stable"
+				case "stable":
+					if config.err = shellMainSDKChoiceError(config.profile); config.err == nil {
+						config.profile.SDKSource = "main-preview"
+					}
+				default:
+					config.profile.SDKSource = ""
+				}
+			case 9:
+				config.err = config.profile.Validate()
+				if config.err == nil && config.profile.SDKSource == "main-preview" {
+					config.err = shellMainSDKChoiceError(config.profile)
+				}
+				if config.err == nil {
 					state, _ := cli.ShellInstallPresentationOf(m.shellInstallModel)
 					state.Request.Experience = &config.profile
 					m.shellInstallModel = cli.NewShellInstallModelWithRequest(nil, state.Request)
@@ -141,4 +161,15 @@ func (m Model) shellExperienceNavigation(key tea.KeyMsg) (Model, bool) {
 	}
 	m.shellReadyOffset = min(max(0, m.shellReadyOffset), screens.ShellReadyLastOffset(state.Request, state.Preview, m.Width, m.Height))
 	return m, true
+}
+
+// This visible choice gate never grants worker or physical-selection authority.
+func shellMainSDKChoiceError(p shellinstaller.UserExperience) error {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return errors.New("SDK Main + stock provider requires Linux amd64 fresh Separate")
+	}
+	if p.StrictTDD != "" || p.GlobalRDD != "" || p.CodeGraph != "" || p.Context7 != "" || p.GGA != "" {
+		return errors.New("Main SDK combinations are not qualified; preserve or edit your explicit choices")
+	}
+	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,11 @@ type shellPTYModel struct{ tea.Model }
 func (shellPTYModel) Init() tea.Cmd { return nil }
 
 func TestShellInstallParentPhysicalPTY(t *testing.T) {
-	for _, scenario := range []string{"confirm", "cancel-target", "cancel-review"} {
+	scenarios := []string{"confirm", "cancel-target", "cancel-review"}
+	if runtime.GOARCH == "amd64" {
+		scenarios = append(scenarios, "confirm-main")
+	}
+	for _, scenario := range scenarios {
 		t.Run(scenario, func(t *testing.T) {
 			master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY, 0)
 			if err != nil {
@@ -91,7 +96,11 @@ func TestShellInstallParentPhysicalPTY(t *testing.T) {
 					return fmt.Errorf("worker hook before terminal restoration: %v", err)
 				}
 				fresh, err := shellinstaller.InspectUserInstall(selection.Request)
-				if err != nil || !selection.Confirmed || selection.Request.Destination != target || selection.Request.Confirmation != fresh {
+				wantSDK := ""
+				if scenario == "confirm-main" {
+					wantSDK = "main-preview"
+				}
+				if err != nil || !selection.Confirmed || selection.Request.Destination != target || selection.Request.Confirmation != fresh || selection.Request.Experience.SDKSource != wantSDK {
 					return fmt.Errorf("public interaction lost physical selection: %+v, %v", selection, err)
 				}
 				return nil // Inert boundary spy: no acquisition or installation authority.
@@ -147,13 +156,19 @@ func TestShellInstallParentPhysicalPTY(t *testing.T) {
 			waitFor("Install Gentle Shell")
 			send(strings.Repeat("\x1b[B", 11) + "\r")
 			waitFor("Configure experience")
-			send(strings.Repeat("\x1b[B", 8) + "\r")
+			if scenario == "confirm-main" {
+				send(strings.Repeat("\x1b[B", 8) + "\r\r")
+				waitFor("SDK Main + stock provider")
+				send("\x1b[B\r")
+			} else {
+				send(strings.Repeat("\x1b[B", 9) + "\r")
+			}
 			waitFor("Target:")
 			if scenario != "cancel-target" {
 				send(target + "\r")
 				waitFor("Ready — review before installation")
 			}
-			if scenario == "confirm" {
+			if strings.HasPrefix(scenario, "confirm") {
 				send("y")
 			} else {
 				mu.Lock()
@@ -165,7 +180,7 @@ func TestShellInstallParentPhysicalPTY(t *testing.T) {
 			}
 			select {
 			case err := <-done:
-				if err != nil || programs != 1 || (workers == 1) != (scenario == "confirm") {
+				if err != nil || programs != 1 || (workers == 1) != strings.HasPrefix(scenario, "confirm") {
 					t.Fatalf("programs=%d workers=%d error=%v", programs, workers, err)
 				}
 			case <-time.After(10 * time.Second):
