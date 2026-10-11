@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 const [root, prefix, agent, finalPrefix, finalRoot, mode, requestedAction = 'install', recoveryAuthority] = process.argv.slice(2);
 const preparing = requestedAction === 'prepare-prior';
 const action = preparing ? 'install' : requestedAction;
+const mainActions = ['verify-main-source', 'verify-main-sdk-source', 'materialize-main-sdk-source', 'verify-main-sdk-composition'];
 const uid = process.getuid();
 const reject = message => { throw Error(`global provision refused: ${message}`); };
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -53,7 +54,7 @@ function writeExclusive(absolute, bytes, permissions = 0o600) {
 for (const value of [root, prefix, agent, finalPrefix, finalRoot]) {
   if (typeof value !== 'string' || !/^\/[A-Za-z0-9_./-]+$/.test(value) || path.resolve(value) !== value) reject('unsafe selection');
 }
-if (process.argv.length !== (requestedAction === 'restore' ? 10 : 9) || !['separate', 'shared'].includes(mode) || !['install', 'verify', 'verify-main-source', 'verify-main-sdk-source', 'restore', 'prepare-prior'].includes(requestedAction) || uid === 0) reject('arguments or UID');
+if (process.argv.length !== (requestedAction === 'restore' ? 10 : 9) || !['separate', 'shared'].includes(mode) || !['install', 'verify', 'restore', 'prepare-prior', ...mainActions].includes(requestedAction) || uid === 0) reject('arguments or UID');
 physical(root, true);
 const state = path.join(root, 'state');
 physical(state, true);
@@ -195,7 +196,7 @@ if (action === 'restore') {
     if (check.error || check.signal || check.status !== 0) reject('fixture prior requires verified existing installation');
   }
   const prior = preparing || (fs.existsSync(priorGraph) && JSON.parse(read(path.join(modules, '@earendil-works/pi-coding-agent/package.json'))).version === '0.99.2');
-  if (['verify-main-source', 'verify-main-sdk-source'].includes(action) && (mode !== 'separate' || prior)) reject('Main preflight requires modern Separate stock');
+  if (mainActions.includes(action) && (mode !== 'separate' || prior)) reject('Main preflight requires modern Separate stock');
   if (prior) source = path.join(root, 'runtime/prior');
   const graphPath = prior ? priorGraph : path.join(state, 'global-graph.json');
   const lockBytes = read(path.join(root, 'user-locks', prior ? 'prior' : 'modern', 'package-lock.json'));
@@ -522,16 +523,81 @@ if (action === 'restore') {
     }
   }
   if (!read(lockPath).equals(lockBytes)) reject('acquired lock changed');
-  if (['verify-main-source', 'verify-main-sdk-source'].includes(action)) {
+  if (mainActions.includes(action)) {
     // All original stock checks above remain mandatory, including exact stock
-    // supplier pins. These actions neither load Main nor change installation.
+    // supplier pins. Composition is unpublished DATA, not installation/activation.
     const { assertMainBindings, assertMainSDKPreviewBindings, mainBindingFiles } = await import(pathToFileURL(path.join(root, 'user-main-bindings.mjs')).href);
     const acquired = authority.get(`gentle-pi@${pins['gentle-pi'][0]}`);
     if (!acquired) reject('Main preflight lacks authenticated stock');
     const bindings = directory => Object.fromEntries(mainBindingFiles.map(name => [name, read(path.join(directory, name))]));
     const main = bindings(path.join(root, 'runtime/main-source')), stock = bindings(acquired.source);
-    if (action === 'verify-main-sdk-source') {
+    if (action !== 'verify-main-source') {
       const preserved = assertMainSDKPreviewBindings(main, stock);
+      if (action !== 'verify-main-sdk-source') {
+        // The Go caller binds main-source to the retained archive on both sides.
+        // No Main module is imported; only bounded source bytes are copied.
+        const mainRoot = path.join(root, 'runtime/main-source');
+        const composed = path.join(root, 'runtime/main-sdk');
+        const writing = action === 'materialize-main-sdk-source';
+        physical(path.dirname(composed), true);
+        if (writing) absent(composed);
+        const expected = new Map();
+        let bytes = 0;
+        function sourceMembers(directory, relative = '') {
+          const before = physical(directory, true);
+          if ((before.mode & 0o7777) !== 0o700) reject('Main source directory custody');
+          if (expected.size >= 32768) reject('Main composition member bound');
+          expected.set(relative, null);
+          for (const name of fs.readdirSync(directory).sort()) {
+            const original = path.join(directory, name), key = path.posix.join(relative, name);
+            if (fs.lstatSync(original).isDirectory()) sourceMembers(original, key);
+            else {
+              const info = physical(original);
+              if (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600) reject('Main source file custody');
+              const originalBytes = read(original);
+              const content = preserved.includes(key) ? stock[key] : originalBytes;
+              bytes += originalBytes.length + (preserved.includes(key) ? content.length : 0);
+              if (expected.size >= 32768 || bytes > 1073741824) reject('Main composition byte/member bound');
+              expected.set(key, content);
+            }
+          }
+          const after = physical(directory, true);
+          if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) reject('Main source directory changed');
+        }
+        sourceMembers(mainRoot);
+        for (const name of preserved) if (!expected.has(name) || expected.get(name) === null) reject('Main binding member absent');
+        if (writing) {
+          for (const [name, content] of expected) {
+            const target = path.join(composed, name);
+            if (content === null) {
+              fs.mkdirSync(target, { mode: 0o700 });
+              sync(target);
+              sync(path.dirname(target));
+            } else writeExclusive(target, content);
+          }
+        }
+        const remaining = new Map(expected);
+        function compare(directory, relative = '') {
+          const before = physical(directory, true);
+          if ((before.mode & 0o7777) !== 0o700 || !remaining.has(relative) || remaining.get(relative) !== null) reject('Main composition directory differs');
+          remaining.delete(relative);
+          for (const name of fs.readdirSync(directory).sort()) {
+            const target = path.join(directory, name), key = path.posix.join(relative, name);
+            if (!remaining.has(key)) reject('Main composition extra member');
+            if (fs.lstatSync(target).isDirectory()) compare(target, key);
+            else {
+              const info = physical(target), content = remaining.get(key);
+              if (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || content === null || !read(target).equals(content)) reject('Main composition file differs');
+              remaining.delete(key);
+            }
+          }
+          const after = physical(directory, true);
+          if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) reject('Main composition directory changed');
+        }
+        compare(composed);
+        if (remaining.size !== 0) reject('Main composition missing member');
+        console.log(`Main SDK composition exact readback; materialized=${writing}; activated=false`);
+      }
       console.log(`Main SDK composition bindings verified; preserve authenticated stock=${preserved.join(',')}; activated=false`);
     } else {
       assertMainBindings(main, stock);

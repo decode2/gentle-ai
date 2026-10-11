@@ -147,6 +147,40 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	write(graph, []byte("[]\n"), 0600)
 	refused(userVerifyMainSDKPreviewBindings(ctx, root, root, artifact), "original stock graph witness")
 	write(graph, witness, 0600)
+	// Explicit composition is unpublished DATA, never a prefix replacement.
+	composition := filepath.Join(root, "runtime/main-sdk")
+	if _, err := os.Lstat(composition); !os.IsNotExist(err) {
+		t.Fatal("preflight unexpectedly materialized a composition", err)
+	}
+	if err := userVerifyMainBindingsAction(ctx, root, root, artifact, "materialize-main-sdk-source"); err != nil {
+		t.Fatal("owned stock composition materialization refused", err)
+	}
+	for _, name := range []string{"package.json", "scripts/gentle-ai-installer.mjs", "runtime/gentle-ai-binary.mjs"} {
+		if string(read(filepath.Join(composition, name))) != string(read(filepath.Join(modules, "gentle-pi", name))) {
+			t.Fatal("composition did not preserve exact stock binding", name)
+		}
+	}
+	verifyComposition := func() error {
+		return userVerifyMainBindingsAction(ctx, root, root, artifact, "verify-main-sdk-composition")
+	}
+	if err := verifyComposition(); err != nil {
+		t.Fatal("complete composition readback refused", err)
+	}
+	refused(userVerifyMainBindingsAction(ctx, root, root, artifact, "materialize-main-sdk-source"), "occupied composition")
+	extra := filepath.Join(composition, "unexpected")
+	write(extra, nil, 0600)
+	refused(verifyComposition(), "extra composition member")
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	installer := filepath.Join(composition, "scripts/gentle-ai-installer.mjs")
+	stockInstaller := read(installer)
+	write(installer, read(filepath.Join(root, "runtime/main-source/scripts/gentle-ai-installer.mjs")), 0600)
+	refused(verifyComposition(), "changed Main installer in composition")
+	write(installer, stockInstaller, 0600)
+	if err := verifyComposition(); err != nil {
+		t.Fatal("restored composition readback refused", err)
+	}
 	for _, directory := range protected {
 		after, err := userTreeStamp(directory)
 		if err != nil || after != before[directory] {
