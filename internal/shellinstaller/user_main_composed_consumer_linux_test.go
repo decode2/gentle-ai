@@ -18,8 +18,8 @@ import (
 	"time"
 )
 
-// Qualification-only native/dependency exposure. Not an installed profile or
-// selector: the composition source is verified again after removing overlays.
+// Consume the production DATA placement; selection and activation remain
+// separate. Runtime closure and preservation are checked after the consumer.
 func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact) {
 	t.Helper()
 	t.Cleanup(func() { userMainComposedAgentReadback(t, root) })
@@ -33,28 +33,54 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 		}
 	}
 	defer func() {
-		if err := os.RemoveAll(native); err != nil {
-			t.Error(err)
-		}
-		if err := os.Remove(dependency); err != nil && !os.IsNotExist(err) {
-			t.Error(err)
-		}
-		// Retain any consumer timeout failure, but reserve bounded readback
-		// time independently, including setup refusal or partial DATA copies.
+		// Independent verification survives consumer timeout. The production
+		// DATA placement is retained, never removed to hide runtime drift.
 		verifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := userVerifyMainBindingsAction(verifyCtx, root, root, artifact, "verify-main-sdk-composition"); err != nil {
-			t.Error("source-only composition readback after SDK", err)
+		if err := userVerifyMainBindingsAction(verifyCtx, root, root, artifact, "verify-main-sdk-runtime"); err != nil {
+			t.Error("production runtime readback after SDK", err)
 		}
 	}()
-	cmd := exec.CommandContext(ctx, "/usr/bin/cp", "-R", "--preserve=mode", "--no-dereference", filepath.Join(modules, "gentle-pi/.gentle-ai"), native)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatal("authenticated stock native DATA overlay", err, string(output))
+	if err := userVerifyMainBindingsAction(ctx, root, root, artifact, "materialize-main-sdk-runtime"); err != nil {
+		// Read-only diagnostic of retained partial output. Never replay a
+		// failed materializer, repair drift or treat this as success proof.
+		diagnosticCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(diagnosticCtx, filepath.Join(root, "runtime/node/bin/node"), filepath.Join(root, "provision.mjs"), root, filepath.Join(root, "prefix"), filepath.Join(root, "agent"), filepath.Join(root, "prefix"), root, "separate", "verify-main-sdk-runtime")
+		cmd.Dir, cmd.Env = filepath.Join(root, "project"), userEnvironment(root, filepath.Join(root, "prefix"), filepath.Join(root, "agent"))
+		output, diagnosticErr := userOwnedRun(diagnosticCtx, cmd, cancel)
+		t.Log("read-only runtime failure diagnostic", string(output), diagnosticErr)
+		t.Fatal("production composed runtime placement", err)
 	}
 	if err := userNativeReadback(ctx, native); err != nil {
 		t.Fatal("composed package-local native readback", err)
 	}
-	if err := os.Symlink(filepath.Join(modules, "gentle-pi/node_modules"), dependency); err != nil {
+	linkText := "../prefix/lib/node_modules"
+	if target, err := os.Readlink(dependency); err != nil || target != linkText {
+		t.Fatal("rename-safe dependency binding", target, err)
+	}
+	refuse := func(action string) {
+		t.Helper()
+		err := userVerifyMainBindingsAction(ctx, root, root, artifact, action)
+		if failure, ok := err.(*PrivateRuntimeError); !ok || failure.Kind != "nonzero" {
+			t.Fatal("runtime refusal did not settle nonzero", action, err)
+		}
+	}
+	refuse("materialize-main-sdk-runtime") // Never overwrite occupied runtime.
+	if err := os.Remove(dependency); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".", dependency); err != nil {
+		t.Fatal(err)
+	}
+	refuse("verify-main-sdk-runtime")
+	if target, err := os.Readlink(dependency); err != nil || target != "." {
+		t.Fatal("verifier repaired dependency drift", target, err)
+	}
+	if err := os.Remove(dependency); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(linkText, dependency); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"project", "home", "config"} {
@@ -68,7 +94,7 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 			t.Fatal(err)
 		}
 	}
-	cmd = exec.CommandContext(ctx, "/usr/bin/git", "init", "--quiet", "--template=", project)
+	cmd := exec.CommandContext(ctx, "/usr/bin/git", "init", "--quiet", "--template=", project)
 	cmd.Env = []string{"HOME=" + filepath.Join(root, "home"), "PATH=/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1"}
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatal(err, string(output))
@@ -102,6 +128,27 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 	if runErr != nil {
 		t.Fatal("actual composed SDK consumer refused", runErr)
 	}
+	// The literal dependency binding must survive a physical whole-root
+	// rename. Keep the selected settings scope: no publication or activation.
+	renamed := root + "-renamed"
+	if _, err := os.Lstat(renamed); !os.IsNotExist(err) {
+		t.Fatal("rename fixture destination occupied", err)
+	}
+	if err := os.Rename(root, renamed); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Rename(renamed, root); err != nil {
+			t.Error("restore renamed qualification root", err)
+		}
+	}()
+	if target, err := filepath.EvalSymlinks(filepath.Join(renamed, "runtime/node_modules")); err != nil || target != filepath.Join(renamed, "prefix/lib/node_modules") {
+		t.Fatal("physical final-rename dependency resolution", target, err)
+	}
+	if err := userVerifyMainBindingsAction(ctx, renamed, root, artifact, "verify-main-sdk-runtime"); err != nil {
+		t.Fatal("renamed runtime full readback", err)
+	}
+	t.Log("MAIN_SDK_RUNTIME_RENAME_READBACK stock_native=true dependency_relative=true activated=false")
 }
 
 // Readback also runs after setup refusal or a killed consumer and fails closed

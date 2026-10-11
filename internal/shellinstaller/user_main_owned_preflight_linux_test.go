@@ -85,7 +85,13 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 			}
 		}
 		for command, relative := range bins {
-			if err := os.Symlink(filepath.Join(modules, name, relative), filepath.Join(prefix, "bin", command)); err != nil {
+			// Match stock npm's relative bins so physical whole-root rename is
+			// not obstructed by an absolute test-only stage pointer.
+			target, err := filepath.Rel(filepath.Join(prefix, "bin"), filepath.Join(modules, name, relative))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(prefix, "bin", command)); err != nil {
 				t.Fatal(err)
 			}
 		}

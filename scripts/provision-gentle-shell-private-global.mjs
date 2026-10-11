@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url';
 const [root, prefix, agent, finalPrefix, finalRoot, mode, requestedAction = 'install', recoveryAuthority] = process.argv.slice(2);
 const preparing = requestedAction === 'prepare-prior';
 const action = preparing ? 'install' : requestedAction;
-const mainActions = ['verify-main-source', 'verify-main-sdk-source', 'materialize-main-sdk-source', 'verify-main-sdk-composition'];
+const mainRuntimeActions = ['materialize-main-sdk-runtime', 'verify-main-sdk-runtime'];
+const mainActions = ['verify-main-source', 'verify-main-sdk-source', 'materialize-main-sdk-source', 'verify-main-sdk-composition', ...mainRuntimeActions];
 const uid = process.getuid();
 const reject = message => { throw Error(`global provision refused: ${message}`); };
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -373,12 +374,17 @@ if (action === 'restore') {
     const nested = path.join(directory, 'node_modules');
     if (fs.existsSync(nested)) packages(nested);
   }
-  function nativeState() {
-    const native = path.join(modules, 'gentle-pi/.gentle-ai');
-    if (!fs.existsSync(native)) return;
+  function nativeState(native = path.join(modules, 'gentle-pi/.gentle-ai'), required = false) {
+    if (!fs.existsSync(native)) {
+      if (required) reject('required stock native absent');
+      return;
+    }
     physical(native, true);
     const entries = fs.readdirSync(native).sort();
-    if (entries.length === 0) return;
+    if (entries.length === 0) {
+      if (required) reject('required stock native empty');
+      return;
+    }
     if (JSON.stringify(entries) !== '["v4.0.0"]') reject('foreign native recovery state');
     const version = path.join(native, 'v4.0.0');
     physical(version, true);
@@ -539,6 +545,9 @@ if (action === 'restore') {
         const mainRoot = path.join(root, 'runtime/main-source');
         const composed = path.join(root, 'runtime/main-sdk');
         const writing = action === 'materialize-main-sdk-source';
+        const runtime = mainRuntimeActions.includes(action);
+        const writingRuntime = action === 'materialize-main-sdk-runtime';
+        if (runtime && (process.platform !== 'linux' || process.arch !== 'x64' || prefix !== path.join(root, 'prefix'))) reject('Main SDK runtime requires Linux amd64 private Separate');
         physical(path.dirname(composed), true);
         if (writing) absent(composed);
         const expected = new Map();
@@ -577,6 +586,7 @@ if (action === 'restore') {
           }
         }
         const remaining = new Map(expected);
+        const nativeBinary = '.gentle-ai/v4.0.0/gentle-ai';
         function compare(directory, relative = '') {
           const before = physical(directory, true);
           if ((before.mode & 0o7777) !== 0o700 || !remaining.has(relative) || remaining.get(relative) !== null) reject('Main composition directory differs');
@@ -587,16 +597,67 @@ if (action === 'restore') {
             if (fs.lstatSync(target).isDirectory()) compare(target, key);
             else {
               const info = physical(target), content = remaining.get(key);
-              if (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || content === null || !read(target).equals(content)) reject('Main composition file differs');
+              const permissions = runtime && key === nativeBinary ? 0o700 : 0o600;
+              if (info.nlink !== 1 || (info.mode & 0o7777) !== permissions || content === null || !read(target).equals(content)) reject('Main composition file differs');
               remaining.delete(key);
             }
           }
           const after = physical(directory, true);
           if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) reject('Main composition directory changed');
         }
+        if (runtime) {
+          // Source composition is already materialized. Admit only the pinned
+          // stock native subtree and this one rename-safe dependency link.
+          if (expected.has('.gentle-ai')) reject('Main source collides with stock native');
+          const nativeSource = path.join(supplier, '.gentle-ai');
+          const nativeTarget = path.join(composed, '.gentle-ai');
+          const dependency = path.join(root, 'runtime/node_modules');
+          const linkText = '../prefix/lib/node_modules';
+          const dependencyTarget = modules; // Authenticated stock is hoisted here.
+          physical(dependencyTarget, true);
+          if (writingRuntime) {
+            absent(nativeTarget);
+            absent(dependency);
+            compare(composed);
+            if (remaining.size !== 0) reject('Main composition missing member');
+          }
+          nativeState(nativeSource, true); // Existing independent pins, mandatory.
+          const nativeMembers = new Map([
+            ['.gentle-ai', null], ['.gentle-ai/v4.0.0', null],
+            [nativeBinary, read(path.join(nativeSource, 'v4.0.0/gentle-ai'))],
+            ['.gentle-ai/v4.0.0/integrity.json', read(path.join(nativeSource, 'v4.0.0/integrity.json'))],
+          ]);
+          const nativeBytes = [...nativeMembers.values()].reduce((sum, content) => sum + (content?.length ?? 0), 0);
+          if (expected.size + nativeMembers.size > 32768 || bytes + nativeBytes > 1073741824) reject('Main runtime byte/member bound');
+          for (const [name, content] of nativeMembers) {
+            if (expected.has(name)) reject('Main native member collision');
+            expected.set(name, content);
+            if (content !== null && physical(path.join(supplier, name)).nlink !== 1) reject('stock native link custody');
+          }
+          if (writingRuntime) {
+            for (const [name, content] of nativeMembers) {
+              const target = path.join(composed, name);
+              if (content === null) {
+                fs.mkdirSync(target, { mode: 0o700 });
+                sync(target);
+                sync(path.dirname(target));
+              } else writeExclusive(target, content, name === nativeBinary ? 0o700 : 0o600);
+            }
+            fs.symlinkSync(linkText, dependency);
+            sync(path.dirname(dependency));
+          }
+          const link = fs.lstatSync(dependency);
+          if (!link.isSymbolicLink() || link.uid !== uid || link.nlink !== 1 || (link.mode & 0o7777) !== 0o777 || fs.readlinkSync(dependency) !== linkText || fs.realpathSync(dependency) !== dependencyTarget) reject('Main SDK dependency binding differs');
+          nativeState(nativeSource, true);
+          for (const [name, content] of nativeMembers) {
+            if (content !== null && !read(path.join(supplier, name)).equals(content)) reject('stock native changed during placement');
+          }
+          remaining.clear();
+          for (const [name, content] of expected) remaining.set(name, content);
+        }
         compare(composed);
         if (remaining.size !== 0) reject('Main composition missing member');
-        console.log(`Main SDK composition exact readback; materialized=${writing}; activated=false`);
+        console.log(`Main SDK composition exact readback; materialized=${writing || writingRuntime}; activated=false`);
       }
       console.log(`Main SDK composition bindings verified; preserve authenticated stock=${preserved.join(',')}; activated=false`);
     } else {
