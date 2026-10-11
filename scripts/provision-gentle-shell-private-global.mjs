@@ -9,7 +9,9 @@ import { pathToFileURL } from 'node:url';
 const [root, prefix, agent, finalPrefix, finalRoot, mode, requestedAction = 'install', recoveryAuthority] = process.argv.slice(2);
 const preparing = requestedAction === 'prepare-prior';
 const action = preparing ? 'install' : requestedAction;
-const mainRuntimeActions = ['materialize-main-sdk-runtime', 'verify-main-sdk-runtime'];
+const selectingSDK = action === 'select-main-sdk-package';
+const verifyingSelectedSDK = action === 'verify-main-sdk-selected';
+const mainRuntimeActions = ['materialize-main-sdk-runtime', 'verify-main-sdk-runtime', 'select-main-sdk-package', 'verify-main-sdk-selected'];
 const mainActions = ['verify-main-source', 'verify-main-sdk-source', 'materialize-main-sdk-source', 'verify-main-sdk-composition', ...mainRuntimeActions];
 const uid = process.getuid();
 const reject = message => { throw Error(`global provision refused: ${message}`); };
@@ -324,6 +326,21 @@ if (action === 'restore') {
   const settings = priorSettings ? JSON.parse(priorSettings) : {};
   if (!settings || typeof settings !== 'object' || Array.isArray(settings) || (settings.packages !== undefined && !Array.isArray(settings.packages))) reject('malformed settings');
   const packageRoot = path.join(finalPrefix, 'lib/node_modules/gentle-pi');
+  const mainPackageRoot = path.join(finalRoot, 'runtime/main-sdk');
+  let selectedAgentIdentity;
+  if (selectingSDK || verifyingSelectedSDK) {
+    if (process.platform !== 'linux' || process.arch !== 'x64' || mode !== 'separate' || prefix !== path.join(root, 'prefix') || agent !== path.join(root, 'agent') || finalPrefix !== path.join(finalRoot, 'prefix')) reject('Main SDK selection requires Linux amd64 private Separate');
+    selectedAgentIdentity = physical(agent, true);
+    if ((selectedAgentIdentity.mode & 0o7777) !== 0o700) reject('Main SDK agent custody');
+    const info = physical(settingsPath);
+    if (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600) reject('Main SDK settings custody');
+    const stockDeclarations = settings.packages?.filter(entry => (typeof entry === 'string' ? entry : entry?.source) === packageRoot) ?? [];
+    const mainDeclarations = settings.packages?.filter(entry => (typeof entry === 'string' ? entry : entry?.source) === mainPackageRoot) ?? [];
+    if (selectingSDK) {
+      absent(path.join(root, 'installation.json')); // Unpublished stage only.
+      if (stockDeclarations.length !== 1 || stockDeclarations[0] !== packageRoot || mainDeclarations.length !== 0) reject('Main SDK selection requires one plain stock declaration');
+    } else if (stockDeclarations.length !== 0 || mainDeclarations.length !== 1 || mainDeclarations[0] !== mainPackageRoot) reject('Main SDK selected declaration differs');
+  }
   if (action === 'install' && !preparing) {
     if (settings.npmCommand !== undefined) reject('foreign npm override');
     for (const entry of settings.packages ?? []) {
@@ -512,7 +529,8 @@ if (action === 'restore') {
     sync(agent); // Complete settings publication before persisting its graph witness.
     writeExclusive(path.join(state, 'global-graph.json'), `${JSON.stringify(observed)}\n`);
   } else {
-    const declaration = settings.packages?.some(entry => (typeof entry === 'string' ? entry : entry?.source) === packageRoot);
+    const selectedPackageRoot = verifyingSelectedSDK ? mainPackageRoot : packageRoot;
+    const declaration = settings.packages?.some(entry => (typeof entry === 'string' ? entry : entry?.source) === selectedPackageRoot);
     const command = [path.join(finalRoot, 'runtime/node/bin/node'), path.join(finalRoot, 'runtime/node/lib/node_modules/npm/bin/npm-cli.js'), '--prefix', finalPrefix];
     if (!declaration || JSON.stringify(settings.npmCommand) !== JSON.stringify(command)) reject('selected settings bindings changed');
     if (preparing) {
@@ -658,6 +676,27 @@ if (action === 'restore') {
         compare(composed);
         if (remaining.size !== 0) reject('Main composition missing member');
         console.log(`Main SDK composition exact readback; materialized=${writing || writingRuntime}; activated=false`);
+        if (selectingSDK) {
+          // Only after every stock/source/native/dependency check. Preserve all
+          // other settings and declarations; never mutate the stock prefix.
+          const freshAgent = physical(agent, true);
+          if (freshAgent.dev !== selectedAgentIdentity.dev || freshAgent.ino !== selectedAgentIdentity.ino || (freshAgent.mode & 0o7777) !== 0o700) reject('Main SDK agent changed before selection');
+          if (!read(settingsPath).equals(priorSettings)) reject('Main SDK settings changed before selection');
+          settings.packages = settings.packages.map(entry => entry === packageRoot ? mainPackageRoot : entry);
+          const selectedBytes = Buffer.from(`${JSON.stringify(settings, null, 2)}\n`);
+          const stage = path.join(agent, `.gentle-shell-settings-${process.pid}`);
+          writeExclusive(stage, selectedBytes);
+          fs.renameSync(stage, settingsPath);
+          sync(agent);
+          const afterAgent = physical(agent, true);
+          if (afterAgent.dev !== selectedAgentIdentity.dev || afterAgent.ino !== selectedAgentIdentity.ino || (afterAgent.mode & 0o7777) !== 0o700) reject('Main SDK selected agent changed');
+          const info = physical(settingsPath);
+          if (info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || !read(settingsPath).equals(selectedBytes)) reject('Main SDK selected settings readback');
+          console.log('SDK Main + stock provider private package selected; personal_activated=false');
+        } else if (verifyingSelectedSDK) {
+          const afterAgent = physical(agent, true), info = physical(settingsPath);
+          if (afterAgent.dev !== selectedAgentIdentity.dev || afterAgent.ino !== selectedAgentIdentity.ino || (afterAgent.mode & 0o7777) !== 0o700 || info.nlink !== 1 || (info.mode & 0o7777) !== 0o600 || !read(settingsPath).equals(priorSettings)) reject('Main SDK selected settings changed during verification');
+        }
       }
       console.log(`Main SDK composition bindings verified; preserve authenticated stock=${preserved.join(',')}; activated=false`);
     } else {

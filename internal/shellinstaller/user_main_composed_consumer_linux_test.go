@@ -18,9 +18,9 @@ import (
 	"time"
 )
 
-// Consume the production DATA placement; selection and activation remain
-// separate. Runtime closure and preservation are checked after the consumer.
-func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact) {
+// Consume production placement, optionally through actual private selection.
+// Runtime closure and preservation follow the consumer; no persistent install.
+func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact, selected bool, stockSettings, expectedSettings []byte) {
 	t.Helper()
 	t.Cleanup(func() { userMainComposedAgentReadback(t, root) })
 	main := filepath.Join(root, "runtime/main-sdk")
@@ -32,12 +32,13 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 			t.Fatal("fixture overlay destination occupied", path, err)
 		}
 	}
+	verificationAction := "verify-main-sdk-runtime"
 	defer func() {
 		// Independent verification survives consumer timeout. The production
 		// DATA placement is retained, never removed to hide runtime drift.
 		verifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := userVerifyMainBindingsAction(verifyCtx, root, root, artifact, "verify-main-sdk-runtime"); err != nil {
+		if err := userVerifyMainBindingsAction(verifyCtx, root, root, artifact, verificationAction); err != nil {
 			t.Error("production runtime readback after SDK", err)
 		}
 	}()
@@ -83,6 +84,76 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 	if err := os.Symlink(linkText, dependency); err != nil {
 		t.Fatal(err)
 	}
+	if selected {
+		settingsPath := filepath.Join(root, "agent/settings.json")
+		// Selection is a separate production write, after exact runtime proof.
+		refuse("verify-main-sdk-selected")
+		for _, packages := range [][]string{{filepath.Join(modules, "gentle-pi"), filepath.Join(modules, "gentle-pi")}, {main}} {
+			var values map[string]any
+			if err := json.Unmarshal(stockSettings, &values); err != nil {
+				t.Fatal(err)
+			}
+			values["packages"] = packages
+			data, err := json.Marshal(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(settingsPath, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			refuse("select-main-sdk-package")
+			if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, data) {
+				t.Fatal("selection repaired or overwrote malformed declaration", err)
+			}
+		}
+		if err := os.WriteFile(settingsPath, stockSettings, 0600); err != nil {
+			t.Fatal(err)
+		}
+		agent := filepath.Join(root, "agent")
+		if err := os.Chmod(agent, 0770); err != nil {
+			t.Fatal(err)
+		}
+		refuse("select-main-sdk-package")
+		if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, stockSettings) {
+			t.Fatal("selection changed settings in a nonprivate agent", err)
+		}
+		if info, err := os.Stat(agent); err != nil || info.Mode().Perm() != 0770 {
+			t.Fatal("selection repaired nonprivate agent mode", err)
+		}
+		if err := os.Chmod(agent, 0700); err != nil {
+			t.Fatal(err)
+		}
+		published := filepath.Join(root, "installation.json")
+		if err := os.WriteFile(published, []byte("{}\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		refuse("select-main-sdk-package")
+		if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, stockSettings) {
+			t.Fatal("selection changed published fixture settings", err)
+		}
+		if err := os.Remove(published); err != nil {
+			t.Fatal(err)
+		}
+		if err := userVerifyMainBindingsAction(ctx, root, root, artifact, "select-main-sdk-package"); err != nil {
+			t.Fatal("production private SDK package selection", err)
+		}
+		verificationAction = "verify-main-sdk-selected"
+		if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, expectedSettings) {
+			t.Fatal("selection changed unrelated settings or package declaration", err)
+		}
+		refuse("select-main-sdk-package") // No repeated publication.
+		refuse("verify")                  // Ordinary stock verification is not silently widened.
+		if err := os.WriteFile(settingsPath, stockSettings, 0600); err != nil {
+			t.Fatal(err)
+		}
+		refuse(verificationAction)
+		if after, err := os.ReadFile(settingsPath); err != nil || !bytes.Equal(after, stockSettings) {
+			t.Fatal("selected verifier repaired the package declaration", err)
+		}
+		if err := os.WriteFile(settingsPath, expectedSettings, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, name := range []string{"project", "home", "config"} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)
@@ -109,7 +180,11 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 			t.Fatal(err)
 		}
 	}
-	cmd = exec.CommandContext(ctx, filepath.Join(root, "runtime/node/bin/node"), "/source/e2e/shell-main-sdk-composed.mjs", root, filepath.Join(modules, "@earendil-works/pi-coding-agent"))
+	consumerArgs := []string{"/source/e2e/shell-main-sdk-composed.mjs", root, filepath.Join(modules, "@earendil-works/pi-coding-agent")}
+	if selected {
+		consumerArgs = append(consumerArgs, "selected")
+	}
+	cmd = exec.CommandContext(ctx, filepath.Join(root, "runtime/node/bin/node"), consumerArgs...)
 	cmd.Dir = project
 	cmd.Env = []string{"HOME=" + filepath.Join(root, "home"), "PATH=" + filepath.Join(root, "runtime/node/bin") + ":/usr/bin:/bin",
 		"PI_CODING_AGENT_DIR=" + filepath.Join(root, "agent"), "GENTLE_PI_CONFIG_HOME=" + filepath.Join(root, "config"),
@@ -145,10 +220,10 @@ func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string,
 	if target, err := filepath.EvalSymlinks(filepath.Join(renamed, "runtime/node_modules")); err != nil || target != filepath.Join(renamed, "prefix/lib/node_modules") {
 		t.Fatal("physical final-rename dependency resolution", target, err)
 	}
-	if err := userVerifyMainBindingsAction(ctx, renamed, root, artifact, "verify-main-sdk-runtime"); err != nil {
+	if err := userVerifyMainBindingsAction(ctx, renamed, root, artifact, verificationAction); err != nil {
 		t.Fatal("renamed runtime full readback", err)
 	}
-	t.Log("MAIN_SDK_RUNTIME_RENAME_READBACK stock_native=true dependency_relative=true activated=false")
+	t.Logf("MAIN_SDK_RUNTIME_RENAME_READBACK stock_native=true dependency_relative=true private_package_selected=%t persistent_installation=false", selected)
 }
 
 // Readback also runs after setup refusal or a killed consumer and fails closed

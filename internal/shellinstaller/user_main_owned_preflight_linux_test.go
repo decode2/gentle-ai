@@ -4,8 +4,10 @@ package shellinstaller
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,8 +16,17 @@ import (
 )
 
 // Qualify the actual owned stock helper, not the isolated binding comparator.
-// All retained inputs are offline DATA; no Main installer or SDK is executed.
+// Retained inputs are offline DATA. The composed SDK consumer runs only after
+// authenticated placement; the Main installer is never executed.
 func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
+	userMainSDKOwnedStockPreflight(t, false)
+}
+
+func TestUserMainSDKSelectedPackage(t *testing.T) {
+	userMainSDKOwnedStockPreflight(t, true)
+}
+
+func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
 	if testing.Short() {
 		t.Skip("external retained full stock preflight qualification")
 	}
@@ -110,14 +121,22 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	if err := userNativeReadback(ctx, native); err != nil {
 		t.Fatal(err)
 	}
-	settings, err := json.MarshalIndent(map[string]any{
+	settingsValues := map[string]any{
 		"packages":   []string{filepath.Join(modules, "gentle-pi")},
 		"npmCommand": []string{node, filepath.Join(root, "runtime/node/lib/node_modules/npm/bin/npm-cli.js"), "--prefix", prefix},
-	}, "", "  ")
+	}
+	if selected {
+		settingsValues["extensions"] = []string{"-builtin:mcp"}
+		settingsValues["compaction"] = map[string]any{"enabled": false}
+	}
+	settings, err := json.MarshalIndent(settingsValues, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(filepath.Join(agent, "settings.json"), append(settings, '\n'), 0600)
+	settings = append(settings, '\n')
+	settingsPath := filepath.Join(agent, "settings.json")
+	write(settingsPath, settings, 0600)
+	expectedSettings := settings
 	graph := filepath.Join(root, "state/global-graph.json")
 	witness := read("/stock-global-graph.json")
 	write(graph, witness, 0600)
@@ -131,10 +150,13 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	if err := userStageMainSource(ctx, root, artifact); err != nil {
 		t.Fatal(err)
 	}
-	// Main legitimately installs private package assets into agent. Preserve
-	// its existing settings exactly; the SDK probe checks every prior entry
-	// and the complete independently enumerated package-owned additions.
-	protected := []string{prefix, filepath.Join(agent, "settings.json"), filepath.Join(root, "runtime/main"), filepath.Join(root, "runtime/main-source"), filepath.Join(root, "runtime/project")}
+	// Main legitimately installs private package assets into agent. The selected
+	// variant permits only its explicit package replacement; other settings,
+	// prior entries and independently enumerated additions remain checked.
+	protected := []string{prefix, filepath.Join(root, "runtime/main"), filepath.Join(root, "runtime/main-source"), filepath.Join(root, "runtime/project")}
+	if !selected {
+		protected = append(protected, settingsPath)
+	}
 	before := map[string]string{}
 	for _, directory := range protected {
 		before[directory], err = userTreeStamp(directory)
@@ -154,8 +176,13 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 		if _, err := privateNativeFile(verifyCtx, node, 0700, privateNativeNodeSize, privateNativeNodeSHA); err != nil {
 			t.Error("preflight changed pinned Shell Node", err)
 		}
+		if selected {
+			if _, err := privateNativeFile(verifyCtx, settingsPath, 0600, int64(len(expectedSettings)), fmt.Sprintf("%x", sha256.Sum256(expectedSettings))); err != nil {
+				t.Error("private selected settings exact readback", err)
+			}
+		}
 		if !t.Failed() {
-			t.Log("MAIN_SDK_OWNED_PREFLIGHT_PASS original_stock_checks=true full_main_refused=true graph_bypass_refused=true activated=false")
+			t.Logf("MAIN_SDK_OWNED_PREFLIGHT_PASS original_stock_checks=true full_main_refused=true graph_bypass_refused=true private_package_selected=%t persistent_installation=false", selected)
 		}
 	})
 	if err := userVerifyMainSDKPreviewBindings(ctx, root, root, artifact); err != nil {
@@ -206,7 +233,15 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	if err := verifyComposition(); err != nil {
 		t.Fatal("restored composition readback refused", err)
 	}
-	userMainComposedSDKConsumer(t, ctx, root, artifact)
+	if selected {
+		settingsValues["packages"] = []string{composition}
+		expectedSettings, err = json.MarshalIndent(settingsValues, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedSettings = append(expectedSettings, '\n')
+	}
+	userMainComposedSDKConsumer(t, ctx, root, artifact, selected, settings, expectedSettings)
 	if err := ctx.Err(); err != nil {
 		t.Fatal("owned preflight did not settle", err)
 	}
