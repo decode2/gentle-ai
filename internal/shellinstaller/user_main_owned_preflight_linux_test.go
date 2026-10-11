@@ -125,7 +125,10 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	if err := userStageMainSource(ctx, root, artifact); err != nil {
 		t.Fatal(err)
 	}
-	protected := []string{prefix, agent, filepath.Join(root, "runtime/main"), filepath.Join(root, "runtime/main-source"), filepath.Join(root, "runtime/project")}
+	// Main legitimately installs private package assets into agent. Preserve
+	// its existing settings exactly; the SDK probe checks every prior entry
+	// and the complete independently enumerated package-owned additions.
+	protected := []string{prefix, filepath.Join(agent, "settings.json"), filepath.Join(root, "runtime/main"), filepath.Join(root, "runtime/main-source"), filepath.Join(root, "runtime/project")}
 	before := map[string]string{}
 	for _, directory := range protected {
 		before[directory], err = userTreeStamp(directory)
@@ -133,6 +136,22 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	t.Cleanup(func() {
+		for _, directory := range protected {
+			after, err := userTreeStamp(directory)
+			if err != nil || after != before[directory] {
+				t.Errorf("preflight changed protected DATA %s: %v", directory, err)
+			}
+		}
+		verifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := privateNativeFile(verifyCtx, node, 0700, privateNativeNodeSize, privateNativeNodeSHA); err != nil {
+			t.Error("preflight changed pinned Shell Node", err)
+		}
+		if !t.Failed() {
+			t.Log("MAIN_SDK_OWNED_PREFLIGHT_PASS original_stock_checks=true full_main_refused=true graph_bypass_refused=true activated=false")
+		}
+	})
 	if err := userVerifyMainSDKPreviewBindings(ctx, root, root, artifact); err != nil {
 		t.Fatal("actual owned SDK composition preflight refused", err)
 	}
@@ -181,17 +200,8 @@ func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
 	if err := verifyComposition(); err != nil {
 		t.Fatal("restored composition readback refused", err)
 	}
-	for _, directory := range protected {
-		after, err := userTreeStamp(directory)
-		if err != nil || after != before[directory] {
-			t.Errorf("preflight changed protected DATA %s: %v", directory, err)
-		}
-	}
-	if _, err := privateNativeFile(ctx, node, 0700, privateNativeNodeSize, privateNativeNodeSHA); err != nil {
-		t.Error("preflight changed pinned Shell Node", err)
-	}
+	userMainComposedSDKConsumer(t, ctx, root, artifact)
 	if err := ctx.Err(); err != nil {
 		t.Fatal("owned preflight did not settle", err)
 	}
-	t.Log("MAIN_SDK_OWNED_PREFLIGHT_PASS original_stock_checks=true full_main_refused=true graph_bypass_refused=true activated=false")
 }
