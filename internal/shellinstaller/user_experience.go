@@ -19,6 +19,7 @@ type UserExperience struct {
 	GGA                 string `json:"gga,omitempty"`
 	GGAProvider         string `json:"gga_provider,omitempty"`
 	CodeGraph           string `json:"codegraph,omitempty"`
+	SDKSource           string `json:"sdk_source,omitempty"`
 }
 
 func DefaultUserExperience() UserExperience {
@@ -43,6 +44,9 @@ func (p UserExperience) Validate() error {
 	}
 	if p.CodeGraph != "" && p.CodeGraph != "on" && p.CodeGraph != "off" {
 		return experienceError("choose on or off for CodeGraph, or omit it to inherit")
+	}
+	if p.SDKSource != "" && p.SDKSource != "stable" && p.SDKSource != "main-preview" {
+		return experienceError("choose stable or main-preview for SDK source, or omit it for stock")
 	}
 	return userValidateGGASelection(p.GGA, p.GGAProvider)
 }
@@ -75,6 +79,7 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		"gga":                  &profile.GGA,
 		"gga_provider":         &profile.GGAProvider,
 		"codegraph":            &profile.CodeGraph,
+		"sdk_source":           &profile.SDKSource,
 	}
 	seen := make(map[string]bool)
 	for decoder.More() {
@@ -90,6 +95,9 @@ func DecodeUserExperience(raw string) (UserExperience, error) {
 		seen[key] = true
 		if err := decoder.Decode(field); err != nil {
 			return UserExperience{}, err
+		}
+		if key == "sdk_source" && *field == "" {
+			return UserExperience{}, experienceError("an explicit SDK source must be stable or main-preview")
 		}
 		if key == "global_rdd" && *field == "" {
 			return UserExperience{}, experienceError("an explicit global RDD choice must be on or off")

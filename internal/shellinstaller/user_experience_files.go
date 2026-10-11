@@ -27,6 +27,9 @@ func userValidateStagePreferences(profile *UserExperience) error {
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if profile.SDKSource == "main-preview" {
+		return experienceError("Main SDK requires its authenticated runtime producer")
+	}
 	if profile.CodeGraph != "" {
 		return experienceError("explicit CodeGraph requires a qualified private library/runtime stage")
 	}

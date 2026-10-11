@@ -18,10 +18,58 @@ import (
 	"time"
 )
 
+func TestUserMainSDKExperienceWire(t *testing.T) {
+	legacy := `{"persona":"neutral","background_subagents":"off"}`
+	base, err := DecodeUserExperience(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded, err := base.Encode(); err != nil || encoded != legacy {
+		t.Fatal("legacy experience bytes changed", encoded, err)
+	}
+	for _, source := range []string{"stable", "main-preview"} {
+		t.Run(source, func(t *testing.T) {
+			raw := strings.TrimSuffix(legacy, "}") + `,"sdk_source":"` + source + `"}`
+			args := []string{"/fixture/target", "separate", "", "", "physical-token", "--experience", raw}
+			req, err := UserInstallFromEntry(args)
+			if err != nil || req.Experience == nil {
+				t.Fatal("explicit SDK source did not reach worker request", err)
+			}
+			encoded, err := req.Experience.Encode()
+			if err != nil || encoded != raw || req.Confirmation != "physical-token" {
+				t.Fatal("SDK source or original arguments changed", encoded, err)
+			}
+			original := req
+			original.Experience = &base
+			if userConfirmation(req, "physical-identity") == userConfirmation(original, "physical-identity") {
+				t.Fatal("SDK source edit kept stale physical confirmation")
+			}
+		})
+	}
+	for _, key := range []string{"codegraph", "context7", "gga", "global_rdd", "strict_tdd"} {
+		profile, err := DecodeUserExperience(`{"persona":"neutral","background_subagents":"off","sdk_source":"main-preview","` + key + `":"off"}`)
+		if err != nil || userExperienceSupported(&profile) == nil {
+			t.Fatal("unqualified Main SDK combination", key, err)
+		}
+	}
+	for _, choice := range []string{`null`, `""`, `"main"`, `"on"`, `true`, `[]`, `"main-preview","sdk_source":"stable"`, `"main-preview","sdk_\u0073ource":"stable"`} {
+		t.Run("refuse-"+choice, func(t *testing.T) {
+			raw := strings.TrimSuffix(legacy, "}") + `,"sdk_source":` + choice + `}`
+			if _, err := DecodeUserExperience(raw); err == nil {
+				t.Fatal("malformed or duplicate explicit SDK source admitted", raw)
+			}
+		})
+	}
+}
+
 // Consume production placement, optionally through actual private selection.
 // Runtime closure and preservation follow the consumer; no persistent install.
-func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact, selected bool, stockSettings, expectedSettings []byte) {
+func userMainComposedSDKConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact, selected, worker bool, stockSettings, expectedSettings []byte) {
 	t.Helper()
+	if worker {
+		userMainSDKWorkerConsumer(t, ctx, root, artifact, expectedSettings)
+		return
+	}
 	t.Cleanup(func() { userMainComposedAgentReadback(t, root) })
 	main := filepath.Join(root, "runtime/main-sdk")
 	modules := filepath.Join(root, "prefix/lib/node_modules")
@@ -297,4 +345,68 @@ func userMainComposedAgentReadback(t *testing.T, root string) {
 	if err != nil {
 		t.Error("failure-safe agent readback", err)
 	}
+}
+
+func userMainSDKWorkerConsumer(t *testing.T, ctx context.Context, root string, artifact userSnapshotArtifact, expectedSettings []byte) {
+	t.Helper()
+	defer userMainComposedAgentReadback(t, root)
+	manifest := userManifest{Mode: "separate", Destination: root, Prefix: filepath.Join(root, "prefix"), Agent: filepath.Join(root, "agent"), MainSDK: &artifact}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "installation.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(filepath.Join(root, "installation.json"))
+	if err != nil {
+		t.Fatal("persisted SDK selection metadata read", err)
+	}
+	var retained userManifest
+	if err := json.Unmarshal(data, &retained); err != nil || retained.MainSDK == nil || *retained.MainSDK != artifact {
+		t.Fatal("retained SDK selection metadata", err)
+	}
+	defer func() {
+		verifyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := userVerifyInstalledGlobal(verifyCtx, root, manifest); err != nil {
+			t.Error("independent selected runtime readback", err)
+		}
+	}()
+	if err := userVerifyInstalledGlobal(ctx, root, retained); err != nil {
+		t.Fatal("published selected SDK readback", err)
+	}
+	retained.Mode = "shared"
+	if err := userVerifyInstalledGlobal(ctx, root, retained); err == nil {
+		t.Fatal("Main SDK Shared metadata admitted")
+	}
+	retained.Mode = "separate"
+	retained.MainSDK.Bound++
+	if err := userVerifyInstalledGlobal(ctx, root, retained); err == nil {
+		t.Fatal("changed retained SDK descriptor admitted")
+	}
+	for _, name := range []string{"project", "home", "config"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	main := filepath.Join(root, "runtime/main-sdk")
+	before, err := userTreeStamp(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, filepath.Join(root, "runtime/node/bin/node"), "/source/e2e/shell-main-sdk-composed.mjs", root, filepath.Join(root, "prefix/lib/node_modules/@earendil-works/pi-coding-agent"), "worker")
+	cmd.Dir, cmd.Env = filepath.Join(root, "project"), userEnvironment(root, manifest.Prefix, manifest.Agent)
+	output, runErr := cmd.CombinedOutput()
+	t.Log(string(output))
+	if runErr != nil || ctx.Err() != nil {
+		t.Fatal("published fixture file-backed SDK consumer", runErr, ctx.Err())
+	}
+	if after, err := userTreeStamp(main); err != nil || after != before {
+		t.Fatal("published SDK changed composition", err)
+	}
+	if after, err := os.ReadFile(filepath.Join(root, "agent/settings.json")); err != nil || !bytes.Equal(after, expectedSettings) {
+		t.Fatal("worker or installed verifier changed unrelated settings", err)
+	}
+	t.Log("MAIN_SDK_WORKER_READBACK final_paths=true file_backed=true manifest_dispatch=true installed_acceptance=false")
 }

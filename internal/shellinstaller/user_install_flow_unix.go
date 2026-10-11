@@ -171,7 +171,7 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 		if err != nil {
 			return result, err
 		}
-		if err = userVerifyGlobal(ctx, req.Destination, manifest.Prefix, manifest.Agent, manifest.Prefix, req.Destination, req.Mode); err != nil {
+		if err = userVerifyInstalledGlobal(ctx, req.Destination, manifest); err != nil {
 			return result, userGraphRepairError(req.Destination, req.Mode, err)
 		}
 		if err = userNativeReadback(ctx, filepath.Join(manifest.Prefix, "lib/node_modules/gentle-pi/.gentle-ai")); err != nil {
@@ -256,6 +256,10 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 	if err = userVerifyGlobal(ctx, root, prefix, agent, finalPrefix, req.Destination, req.Mode); err != nil {
 		return result, fmt.Errorf("post-native global readback: %w", err)
 	}
+	mainSDK, err := userInstallMainSDK(ctx, root, req.Destination, req.Experience)
+	if err != nil {
+		return result, fmt.Errorf("Main SDK + stock provider: %w", err)
+	}
 	// A bind refusal here follows Shared provisioning: it stays uncertain and
 	// keeps the staged recovery root instead of claiming an atomic rollback.
 	if err = userTools(ctx, root, agent, true); err != nil {
@@ -270,6 +274,7 @@ func userRunInstall(ctx context.Context, req UserInstallRequest) (result UserIns
 		return result, fmt.Errorf("supervisor provenance: %w", err)
 	}
 	manifest := userManifest{Schema: userSchema, Destination: req.Destination, Prefix: finalPrefix, Agent: finalAgent, Mode: req.Mode, SupervisorSHA: selfSHA, NodeSHA: privateNativeNodeSHA}
+	manifest.MainSDK = mainSDK
 	manifest.GGA = req.Experience != nil && req.Experience.GGA == "on"
 	manifest.CodeGraph = req.Experience != nil && req.Experience.CodeGraph == "on"
 	manifest.PrefixIdentity, err = userIdentity(prefix)
@@ -691,6 +696,11 @@ func userReadManifest(ctx context.Context, root string) (userManifest, error) {
 	if err := userTools(ctx, root, manifest.Agent, false); err != nil {
 		return manifest, privateError("source", err)
 	}
+	if manifest.MainSDK != nil {
+		if err := userVerifyInstalledGlobal(ctx, root, manifest); err != nil {
+			return manifest, err
+		}
+	}
 	return manifest, nil
 }
 
@@ -736,7 +746,7 @@ func userLaunch(ctx context.Context, root string, args []string, stdin io.Reader
 	if _, err := userSourceFile(ctx, cli, -1, ""); err != nil {
 		return userGraphRepairError(root, manifest.Mode, err)
 	}
-	if err := userVerifyGlobal(ctx, root, manifest.Prefix, manifest.Agent, manifest.Prefix, root, manifest.Mode); err != nil {
+	if err := userVerifyInstalledGlobal(ctx, root, manifest); err != nil {
 		return userGraphRepairError(root, manifest.Mode, err)
 	}
 	if err := userNativeReadback(ctx, filepath.Join(manifest.Prefix, "lib/node_modules/gentle-pi/.gentle-ai")); err != nil {
@@ -764,7 +774,7 @@ func userLaunch(ctx context.Context, root string, args []string, stdin io.Reader
 				return failure
 			}
 		}
-		if readbackErr := userVerifyGlobal(context.Background(), root, manifest.Prefix, manifest.Agent, manifest.Prefix, root, manifest.Mode); readbackErr != nil {
+		if readbackErr := userVerifyInstalledGlobal(context.Background(), root, manifest); readbackErr != nil {
 			failure := privateError("uncertain", errors.Join(err, readbackErr))
 			failure.Workspace, failure.Destination = root, manifest.Prefix
 			return failure

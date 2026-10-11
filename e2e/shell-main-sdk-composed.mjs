@@ -8,7 +8,8 @@ import { pathToFileURL } from "node:url";
 // Stock native/installer modules are authenticated; no installation, native
 // process, model prompt, tool call, dev override or child mode.
 const [root, sdk, selection] = process.argv.slice(2);
-assert.ok(selection === undefined || selection === "selected");
+assert.ok(selection === undefined || selection === "selected" || selection === "worker");
+if (selection === "worker") assert.equal(process.env.GENTLE_PI_NO_SKILL_REGISTRY, "1");
 const main = join(root, "runtime/main-sdk");
 const { resolveGentleAiBinary, gentleAiBinaryPath, PackageLocalGentleAiBinaryMissingError } =
   await import(pathToFileURL(join(main, "runtime/gentle-ai-binary.mjs")).href);
@@ -40,11 +41,11 @@ const agentBefore = projectInventory(agentDir);
 assert.equal(JSON.parse(readFileSync(join(sdk, "package.json"))).version, "1.0.0");
 const { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } =
   await import(pathToFileURL(join(sdk, "dist/index.js")).href);
-const settingsManager = selection === "selected" ? SettingsManager.create(cwd, agentDir) :
+const settingsManager = selection !== undefined ? SettingsManager.create(cwd, agentDir) :
   SettingsManager.inMemory({ packages: [main], extensions: ["-builtin:mcp"] });
 assert.deepEqual(settingsManager.getPackages(), [main]);
 assert.deepEqual(settingsManager.drainErrors(), []);
-if (selection === "selected") {
+if (selection !== undefined) {
   assert.deepEqual(settingsManager.getGlobalSettings(), JSON.parse(readFileSync(join(agentDir, "settings.json"))));
   console.log("COMPOSED_SDK_SELECTED_SETTINGS_READBACK file_backed=true package_override=false");
 }
@@ -126,11 +127,15 @@ for (const [path, record] of Object.entries(projectBefore)) {
   assert.deepEqual(projectAfter[path], record, `Main changed existing private project entry ${path}`);
 }
 const created = Object.keys(projectAfter).filter((path) => !(path in projectBefore)).sort();
-assert.deepEqual(created, [".atl", ".atl/.gitignore", ".atl/.skill-registry.cache.json", ".atl/skill-registry.md"]);
-assert.equal(projectAfter[".atl"].mode & 0o177777, 0o40700);
-for (const path of created.slice(1)) {
-  assert.equal(projectAfter[path].mode & 0o177777, 0o100600);
+if (selection === "worker") {
+  assert.deepEqual(created, [], "owned worker disabled project skill-registry writes");
+} else {
+  assert.deepEqual(created, [".atl", ".atl/.gitignore", ".atl/.skill-registry.cache.json", ".atl/skill-registry.md"]);
+  assert.equal(projectAfter[".atl"].mode & 0o177777, 0o40700);
+  for (const path of created.slice(1)) {
+    assert.equal(projectAfter[path].mode & 0o177777, 0o100600);
+  }
+  assert.equal(readFileSync(join(cwd, ".atl/.gitignore"), "utf8"), "*\n");
+  assert.doesNotThrow(() => JSON.parse(readFileSync(join(cwd, ".atl/.skill-registry.cache.json"))));
 }
-assert.equal(readFileSync(join(cwd, ".atl/.gitignore"), "utf8"), "*\n");
-assert.doesNotThrow(() => JSON.parse(readFileSync(join(cwd, ".atl/.skill-registry.cache.json"))));
 console.log("COMPOSED_SDK_PROJECT_READBACK_PASS existing_entries_unchanged=true", JSON.stringify({ created }));

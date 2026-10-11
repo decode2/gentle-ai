@@ -20,6 +20,17 @@ func userPrepareInstallStage(ctx context.Context, root, mode string, profile *Us
 		return experienceError("installation stage requires separate or shared mode")
 	}
 	preferences := profile
+	if profile != nil && profile.SDKSource == "main-preview" {
+		if err := userExperienceSupported(profile); err != nil {
+			return err
+		}
+		if mode != "separate" {
+			return experienceError("Main SDK requires a fresh Separate stage")
+		}
+		base := *profile
+		base.SDKSource = "" // The worker, not a preference file, consumes this choice.
+		preferences = &base
+	}
 	if profile != nil && profile.CodeGraph != "" {
 		if err := profile.Validate(); err != nil {
 			return err

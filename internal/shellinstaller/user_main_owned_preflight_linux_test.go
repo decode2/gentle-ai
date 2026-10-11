@@ -19,23 +19,31 @@ import (
 // Retained inputs are offline DATA. The composed SDK consumer runs only after
 // authenticated placement; the Main installer is never executed.
 func TestUserMainSDKOwnedStockPreflight(t *testing.T) {
-	userMainSDKOwnedStockPreflight(t, false)
+	userMainSDKOwnedStockPreflight(t, false, false)
 }
 
 func TestUserMainSDKSelectedPackage(t *testing.T) {
-	userMainSDKOwnedStockPreflight(t, true)
+	userMainSDKOwnedStockPreflight(t, true, false)
 }
 
-func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
+func TestUserMainSDKWorker(t *testing.T) {
+	userMainSDKOwnedStockPreflight(t, true, true)
+}
+
+func userMainSDKOwnedStockPreflight(t *testing.T, selected, worker bool) {
 	if testing.Short() {
 		t.Skip("external retained full stock preflight qualification")
 	}
 	if os.Getuid() != 1000 {
 		t.Fatal("qualification requires the bounded native UID1000 guest")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 210*time.Second)
 	defer cancel()
 	root := userMainCustodyStage(t)
+	finalRoot := root
+	if worker {
+		finalRoot = root + "-published"
+	}
 	if err := userProvisionAssets(ctx, root, true); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +130,8 @@ func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
 		t.Fatal(err)
 	}
 	settingsValues := map[string]any{
-		"packages":   []string{filepath.Join(modules, "gentle-pi")},
-		"npmCommand": []string{node, filepath.Join(root, "runtime/node/lib/node_modules/npm/bin/npm-cli.js"), "--prefix", prefix},
+		"packages":   []string{filepath.Join(finalRoot, "prefix/lib/node_modules/gentle-pi")},
+		"npmCommand": []string{filepath.Join(finalRoot, "runtime/node/bin/node"), filepath.Join(finalRoot, "runtime/node/lib/node_modules/npm/bin/npm-cli.js"), "--prefix", filepath.Join(finalRoot, "prefix")},
 	}
 	if selected {
 		settingsValues["extensions"] = []string{"-builtin:mcp"}
@@ -185,7 +193,7 @@ func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
 			t.Logf("MAIN_SDK_OWNED_PREFLIGHT_PASS original_stock_checks=true full_main_refused=true graph_bypass_refused=true private_package_selected=%t persistent_installation=false", selected)
 		}
 	})
-	if err := userVerifyMainSDKPreviewBindings(ctx, root, root, artifact); err != nil {
+	if err := userVerifyMainSDKPreviewBindings(ctx, root, finalRoot, artifact); err != nil {
 		t.Fatal("actual owned SDK composition preflight refused", err)
 	}
 	refused := func(err error, label string) {
@@ -195,10 +203,36 @@ func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
 			t.Fatal("expected settled owned stock refusal", label, err)
 		}
 	}
-	refused(userVerifyMainBindings(ctx, root, root, artifact), "full Main changed installer")
+	refused(userVerifyMainBindings(ctx, root, finalRoot, artifact), "full Main changed installer")
 	write(graph, []byte("[]\n"), 0600)
-	refused(userVerifyMainSDKPreviewBindings(ctx, root, root, artifact), "original stock graph witness")
+	refused(userVerifyMainSDKPreviewBindings(ctx, root, finalRoot, artifact), "original stock graph witness")
 	write(graph, witness, 0600)
+	if selected {
+		settingsValues["packages"] = []string{filepath.Join(finalRoot, "runtime/main-sdk")}
+		expectedSettings, err = json.MarshalIndent(settingsValues, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedSettings = append(expectedSettings, '\n')
+	}
+	if worker {
+		if err := userComposeMainSDK(ctx, root, finalRoot, artifact); err != nil {
+			t.Fatal("worker SDK composition/selection", err)
+		}
+		if err := os.Rename(root, finalRoot); err != nil {
+			t.Fatal("publish worker fixture", err)
+		}
+		defer func() {
+			if err := os.Rename(finalRoot, root); err != nil {
+				t.Error("restore published fixture for parent readbacks", err)
+			}
+		}()
+		userMainComposedSDKConsumer(t, ctx, finalRoot, artifact, selected, worker, settings, expectedSettings)
+		if err := ctx.Err(); err != nil {
+			t.Fatal("worker did not settle", err)
+		}
+		return
+	}
 	// Explicit composition is unpublished DATA, never a prefix replacement.
 	composition := filepath.Join(root, "runtime/main-sdk")
 	if _, err := os.Lstat(composition); !os.IsNotExist(err) {
@@ -233,15 +267,7 @@ func userMainSDKOwnedStockPreflight(t *testing.T, selected bool) {
 	if err := verifyComposition(); err != nil {
 		t.Fatal("restored composition readback refused", err)
 	}
-	if selected {
-		settingsValues["packages"] = []string{composition}
-		expectedSettings, err = json.MarshalIndent(settingsValues, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		expectedSettings = append(expectedSettings, '\n')
-	}
-	userMainComposedSDKConsumer(t, ctx, root, artifact, selected, settings, expectedSettings)
+	userMainComposedSDKConsumer(t, ctx, root, artifact, selected, worker, settings, expectedSettings)
 	if err := ctx.Err(); err != nil {
 		t.Fatal("owned preflight did not settle", err)
 	}

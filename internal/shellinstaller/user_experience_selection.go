@@ -42,6 +42,14 @@ func userExperienceSupported(profile *UserExperience) error {
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if profile.SDKSource == "main-preview" {
+		if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+			return experienceError("SDK Main + stock provider requires Linux amd64 Separate")
+		}
+		if profile.CodeGraph != "" || profile.Context7 != "" || profile.GGA != "" {
+			return experienceError("Main SDK optional combinations require a compatible installed runtime")
+		}
+	}
 	if profile.CodeGraph != "" && (runtime.GOOS != "linux" || runtime.GOARCH != "amd64") {
 		return experienceError("explicit CodeGraph requires Linux amd64 Separate")
 	}
