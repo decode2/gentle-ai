@@ -141,7 +141,7 @@ func (w *NativeInstallerRuntime) invokeWithEnvironment(ctx context.Context, oper
 	// Existing bounded output, process-group kill, wait/reap and error taxonomy.
 	output, err := userOwnedRun(child, cmd, cancel)
 	if err != nil {
-		return nil, err
+		return nil, nativeRuntimeError(ctx, err)
 	}
 	data := json.RawMessage(output)
 	if !json.Valid(data) {
@@ -162,6 +162,10 @@ func (w *NativeInstallerRuntime) nativeEnvironment() []string {
 }
 
 func nativeRuntimeError(ctx context.Context, err error) error {
+	var failure *PrivateRuntimeError
+	if errors.As(err, &failure) && failure.Kind == "uncertain" {
+		return err // Context cannot downgrade unknown process-group settlement.
+	}
 	if ctx == nil {
 		return privateError("canceled", err)
 	}
