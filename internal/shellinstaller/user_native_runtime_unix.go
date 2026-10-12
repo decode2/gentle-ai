@@ -26,8 +26,9 @@ type NativeInstallerRuntime struct {
 // NativeInstallerPlan retains the exact release plan for this private client.
 // A copy for display cannot mutate the reviewed snapshot.
 type NativeInstallerPlan struct {
-	owner *NativeInstallerRuntime
-	data  json.RawMessage
+	owner        *NativeInstallerRuntime
+	data         json.RawMessage
+	bootstrapEnv []string
 }
 
 func (p NativeInstallerPlan) JSON() []byte { return append([]byte(nil), p.data...) }
@@ -75,7 +76,10 @@ func (w *NativeInstallerRuntime) Run(ctx context.Context, plan NativeInstallerPl
 	if plan.owner != w || len(plan.data) == 0 {
 		return NativeInstallerResult{}, privateError("refused", nil)
 	}
-	data, err := w.invoke(ctx, "run", plan.data, consent)
+	if len(plan.bootstrapEnv) != 0 && !consent {
+		return NativeInstallerResult{}, privateError("refused", nil)
+	}
+	data, err := w.invokeWithEnvironment(ctx, "run", plan.data, consent, plan.bootstrapEnv)
 	if err != nil {
 		return NativeInstallerResult{}, err
 	}
@@ -88,6 +92,10 @@ func (w *NativeInstallerRuntime) Run(ctx context.Context, plan NativeInstallerPl
 }
 
 func (w *NativeInstallerRuntime) invoke(ctx context.Context, operation string, plan json.RawMessage, consent bool) (json.RawMessage, error) {
+	return w.invokeWithEnvironment(ctx, operation, plan, consent, nil)
+}
+
+func (w *NativeInstallerRuntime) invokeWithEnvironment(ctx context.Context, operation string, plan json.RawMessage, consent bool, env []string) (json.RawMessage, error) {
 	if err := nativeRuntimeError(ctx, nil); err != nil {
 		return nil, err
 	}
@@ -110,7 +118,8 @@ func (w *NativeInstallerRuntime) invoke(ctx context.Context, operation string, p
 		Operation string          `json:"operation"`
 		Plan      json.RawMessage `json:"plan,omitempty"`
 		Consent   bool            `json:"consent"`
-	}{operation, plan, consent}
+		Bootstrap bool            `json:"bootstrap,omitempty"`
+	}{operation, plan, consent, len(env) != 0}
 	input, err := json.Marshal(request)
 	if err != nil || len(input) > 4096 {
 		return nil, privateError("refused", err)
@@ -120,13 +129,9 @@ func (w *NativeInstallerRuntime) invoke(ctx context.Context, operation string, p
 	cmd := exec.CommandContext(child, w.node, "--liftoff-only", "--input-type=module", "-e", nativeRuntimeClient, w.source)
 	cmd.Dir = filepath.Join(w.root, "project")
 	cmd.Stdin = bytes.NewReader(input)
-	cmd.Env = []string{
-		"HOME=" + filepath.Join(w.root, "home"), "TMPDIR=" + filepath.Join(w.root, "tmp"),
-		"XDG_CONFIG_HOME=" + filepath.Join(w.root, "config"), "XDG_STATE_HOME=" + filepath.Join(w.root, "state"),
-		"XDG_DATA_HOME=" + filepath.Join(w.root, "home/.local/share"), "PNPM_HOME=" + filepath.Join(w.root, "pnpm"),
-		"PI_CODING_AGENT_DIR=" + filepath.Join(w.root, "agent"), "GENTLE_PI_CONFIG_ROOT=" + filepath.Join(w.root, "config"),
-		"NPM_CONFIG_USERCONFIG=" + filepath.Join(w.root, "config/user.npmrc"), "NPM_CONFIG_GLOBALCONFIG=" + filepath.Join(w.root, "config/global.npmrc"),
-		"PATH=" + filepath.Dir(w.node) + ":" + filepath.Join(w.root, "pnpm") + ":/usr/bin:/bin",
+	cmd.Env = w.nativeEnvironment()
+	if len(env) != 0 {
+		cmd.Env = append([]string(nil), env...)
 	}
 	// Existing bounded output, process-group kill, wait/reap and error taxonomy.
 	output, err := userOwnedRun(child, cmd, cancel)
@@ -138,6 +143,17 @@ func (w *NativeInstallerRuntime) invoke(ctx context.Context, operation string, p
 		return nil, privateError("output", nil)
 	}
 	return data, nil
+}
+
+func (w *NativeInstallerRuntime) nativeEnvironment() []string {
+	return []string{
+		"HOME=" + filepath.Join(w.root, "home"), "TMPDIR=" + filepath.Join(w.root, "tmp"),
+		"XDG_CONFIG_HOME=" + filepath.Join(w.root, "config"), "XDG_STATE_HOME=" + filepath.Join(w.root, "state"),
+		"XDG_DATA_HOME=" + filepath.Join(w.root, "home/.local/share"), "PNPM_HOME=" + filepath.Join(w.root, "pnpm"),
+		"PI_CODING_AGENT_DIR=" + filepath.Join(w.root, "agent"), "GENTLE_PI_CONFIG_ROOT=" + filepath.Join(w.root, "config"),
+		"NPM_CONFIG_USERCONFIG=" + filepath.Join(w.root, "config/user.npmrc"), "NPM_CONFIG_GLOBALCONFIG=" + filepath.Join(w.root, "config/global.npmrc"),
+		"PATH=" + filepath.Dir(w.node) + ":" + filepath.Join(w.root, "pnpm") + ":/usr/bin:/bin",
+	}
 }
 
 func nativeRuntimeError(ctx context.Context, err error) error {
@@ -155,10 +171,10 @@ func nativeRuntimeError(ctx context.Context, err error) error {
 }
 
 func nativeRuntimePaths(root string) error {
-	for _, name := range []string{"", "home", "tmp", "config", "state", "agent", "project", "pnpm", "home/.local", "home/.local/share"} {
+	for _, name := range []string{"", "home", "tmp", "config", "state", "agent", "project", "pnpm", "home/.local", "home/.local/share", "runtime", "runtime/native-bootstrap", "runtime/native-bootstrap/pnpm", "runtime/native-bootstrap/pnpm/bin", "runtime/native-bootstrap/pnpm/package"} {
 		path := filepath.Join(root, name)
 		_, err := os.Lstat(path)
-		if os.IsNotExist(err) && (name == "pnpm" || strings.HasPrefix(name, "home/.local")) {
+		if os.IsNotExist(err) && (name == "pnpm" || strings.HasPrefix(name, "home/.local") || name == "runtime" || strings.HasPrefix(name, "runtime/native-bootstrap")) {
 			continue
 		}
 		if _, err := privateDirectory(path); err != nil {
@@ -186,19 +202,26 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const request = JSON.parse(readFileSync(0, "utf8"));
 const { createInstallerRuntime } = await import(pathToFileURL(join(process.argv[1], "scripts/installer-runtime.mjs")).href);
-const runtime = createInstallerRuntime({ env: process.env });
-const fresh = await runtime.collectPlan("release");
-let reply;
-if (request.operation === "collect") {
-  reply = fresh.plan;
-} else if (request.operation === "run") {
+async function consume(env) {
+  const runtime = createInstallerRuntime({ env });
+  const fresh = await runtime.collectPlan("release");
+  if (request.operation === "prepare") return { plan: fresh.plan, env };
+  if (request.operation === "collect") return fresh.plan;
+  if (request.operation !== "run") throw new Error("Unsupported native runtime operation");
   if (JSON.stringify(request.plan) !== JSON.stringify(fresh.plan)) {
-    reply = { outcome: "blocked", reason: "selection-changed", completed: [] };
-  } else {
-    reply = await runtime.runInstall({ plan: fresh.plan, consent: request.consent });
+    return { outcome: "blocked", reason: "selection-changed", completed: [] };
   }
+  return await runtime.runInstall({ plan: fresh.plan, consent: request.consent });
+}
+let reply;
+if (request.bootstrap) {
+  if (request.consent !== true) throw new Error("Physical consent required before bootstrap");
+  const { bootstrap } = await import(pathToFileURL(join(process.argv[1], "scripts/installer-downloads.mjs")).href);
+  reply = await bootstrap(process.argv[1], join(process.env.HOME, "../runtime/native-bootstrap"), {
+    env: process.env, run: async ({ env }) => await consume(env),
+  });
 } else {
-  throw new Error("Unsupported native runtime operation");
+  reply = await consume(process.env);
 }
 process.stdout.write(JSON.stringify(reply));
 `
