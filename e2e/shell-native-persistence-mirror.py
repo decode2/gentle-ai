@@ -51,7 +51,7 @@ class ClosedMirror(legacy.Mirror):
         url = 'https://' + host + self.path
         if url not in by_url:
             record(refused, url)
-            self.send_error(502, 'non-inventoried request')
+            self.send_error(404, 'non-inventoried request')
             return  # Refuse before public_bytes/DirectTLS/upstream_ip.
         try:
             status, headers, data = frozen_bytes(host, self.path)

@@ -141,7 +141,7 @@ console.log(JSON.stringify({status:response.status,size:bytes.length,sha256:crea
 	}
 	t.Run("unknown-refused", func(t *testing.T) {
 		status, _, _, err := read("https://nodejs.org/download/release/not-in-inventory")
-		if err != nil || status != 502 {
+		if err != nil || status != 404 {
 			t.Errorf("unknown response not refused: %d %v", status, err)
 		}
 	})

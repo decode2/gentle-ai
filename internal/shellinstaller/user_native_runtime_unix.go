@@ -158,6 +158,8 @@ func (w *NativeInstallerRuntime) nativeEnvironment() []string {
 		"PI_CODING_AGENT_DIR=" + filepath.Join(w.root, "agent"), "GENTLE_PI_CONFIG_ROOT=" + filepath.Join(w.root, "config"),
 		"NPM_CONFIG_USERCONFIG=" + filepath.Join(w.root, "config/user.npmrc"), "NPM_CONFIG_GLOBALCONFIG=" + filepath.Join(w.root, "config/global.npmrc"),
 		"NODE_USE_SYSTEM_CA=1",
+		// An explicit private store avoids pnpm probing cwd with a temporary file.
+		"PNPM_CONFIG_STORE_DIR=" + filepath.Join(w.root, "pnpm/store"),
 		"PATH=" + filepath.Dir(w.node) + ":" + filepath.Join(w.root, "pnpm") + ":/usr/bin:/bin",
 	}
 }
@@ -181,10 +183,10 @@ func nativeRuntimeError(ctx context.Context, err error) error {
 }
 
 func nativeRuntimePaths(root string) error {
-	for _, name := range []string{"", "home", "tmp", "config", "state", "agent", "project", "pnpm", "home/.local", "home/.local/share", "runtime", "runtime/native-bootstrap", "runtime/native-bootstrap/pnpm", "runtime/native-bootstrap/pnpm/bin", "runtime/native-bootstrap/pnpm/package"} {
+	for _, name := range []string{"", "home", "tmp", "config", "state", "agent", "project", "pnpm", "pnpm/store", "pnpm/store/v11", "home/.local", "home/.local/share", "runtime", "runtime/native-bootstrap", "runtime/native-bootstrap/pnpm", "runtime/native-bootstrap/pnpm/bin", "runtime/native-bootstrap/pnpm/package"} {
 		path := filepath.Join(root, name)
 		_, err := os.Lstat(path)
-		if os.IsNotExist(err) && (name == "pnpm" || strings.HasPrefix(name, "home/.local") || name == "runtime" || strings.HasPrefix(name, "runtime/native-bootstrap")) {
+		if os.IsNotExist(err) && (name == "pnpm" || strings.HasPrefix(name, "pnpm/store") || strings.HasPrefix(name, "home/.local") || name == "runtime" || strings.HasPrefix(name, "runtime/native-bootstrap")) {
 			continue
 		}
 		if _, err := privateDirectory(path); err != nil {

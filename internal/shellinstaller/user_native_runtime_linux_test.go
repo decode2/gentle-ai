@@ -145,14 +145,17 @@ func TestUserNativeInstallerRuntime(t *testing.T) {
 	if got, err := os.ReadFile(canary); err != nil || string(got) != "preserve\n" {
 		t.Fatal("caller project canary changed", err)
 	}
-	for _, name := range []string{"pnpm", "config/user.npmrc"} {
+	for _, name := range []string{"pnpm", "pnpm/store", "pnpm/store/v11", "config/user.npmrc"} {
 		t.Run("refuse-escape-"+name, func(t *testing.T) {
 			fixture := filepath.Join(t.TempDir(), "stage")
 			if err := userPrepareInstallStage(ctx, fixture, "separate", nil); err != nil {
 				t.Fatal(err)
 			}
 			path := filepath.Join(fixture, name)
-			if name != "pnpm" {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if name == "config/user.npmrc" {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
