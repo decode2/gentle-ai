@@ -157,6 +157,7 @@ func (w *NativeInstallerRuntime) nativeEnvironment() []string {
 		"XDG_DATA_HOME=" + filepath.Join(w.root, "home/.local/share"), "PNPM_HOME=" + filepath.Join(w.root, "pnpm"),
 		"PI_CODING_AGENT_DIR=" + filepath.Join(w.root, "agent"), "GENTLE_PI_CONFIG_ROOT=" + filepath.Join(w.root, "config"),
 		"NPM_CONFIG_USERCONFIG=" + filepath.Join(w.root, "config/user.npmrc"), "NPM_CONFIG_GLOBALCONFIG=" + filepath.Join(w.root, "config/global.npmrc"),
+		"NODE_USE_SYSTEM_CA=1",
 		"PATH=" + filepath.Dir(w.node) + ":" + filepath.Join(w.root, "pnpm") + ":/usr/bin:/bin",
 	}
 }
