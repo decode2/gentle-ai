@@ -21,6 +21,7 @@ import (
 // This transport does not replace the qualified npm backend or publish roots.
 type NativeInstallerRuntime struct {
 	root, source, node, sourceStamp string
+	sourceSnapshot                  *userSnapshotArtifact
 }
 
 // NativeInstallerPlan retains the exact release plan for this private client.
@@ -99,8 +100,12 @@ func (w *NativeInstallerRuntime) invokeWithEnvironment(ctx context.Context, oper
 	if err := nativeRuntimeError(ctx, nil); err != nil {
 		return nil, err
 	}
+	// A snapshot-bound client refuses complete-tree drift before any process.
+	// The caller still owns source authorization and the immutable mount.
+	if err := w.nativeSourceCheck(ctx); err != nil {
+		return nil, err
+	}
 	// Recheck owned paths/Node and the source entry before every process.
-	// Transitively authenticated immutable source remains the caller's duty.
 	if err := nativeRuntimePaths(w.root); err != nil {
 		return nil, err
 	}

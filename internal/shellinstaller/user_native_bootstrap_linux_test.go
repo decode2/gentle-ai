@@ -27,7 +27,26 @@ func TestUserNativeInstallerBootstrap(t *testing.T) {
 	if err := userPrepareInstallStage(ctx, root, "separate", nil); err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewNativeInstallerRuntime(ctx, root, "/alan-source")
+	// Whole reviewed local source DATA, not the unmodified Main archive or a
+	// published supplier. The Guest carrier is frozen outside this worker.
+	data, err := os.ReadFile("/native-source.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := userMainDescriptor("73960fcf003b37e612a7b18960d6acf75f33a517", "feed2eb9961c6ab3b3a3d55ea314bfca881a5d901c44f97493231d72e0326453")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "runtime"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := userStageMainArchive(ctx, root, artifact, data); err != nil {
+		t.Fatal(err)
+	}
+	if err := userStageMainSource(ctx, root, artifact); err != nil {
+		t.Fatal(err)
+	}
+	w, err := userNativeRuntimeFromSnapshot(ctx, root, artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +132,7 @@ func TestUserNativeInstallerBootstrap(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	t.Log("NATIVE_BOOTSTRAP_READBACK original_bootstrap=true authentic_pnpm=true supplied_tools_retained=true stale_plan_blocked=true installed_acceptance=false")
+	t.Log("NATIVE_BOOTSTRAP_READBACK original_bootstrap=true authentic_pnpm=true supplied_tools_retained=true stale_plan_blocked=true complete_local_source=true installed_acceptance=false")
 }
 
 const nativeBootstrapFixture = `

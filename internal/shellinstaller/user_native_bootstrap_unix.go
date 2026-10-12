@@ -22,6 +22,9 @@ func (w *NativeInstallerRuntime) Prepare(ctx context.Context, consent bool) (Nat
 	if !consent {
 		return NativeInstallerPlan{}, privateError("refused", nil)
 	}
+	if err := w.nativeSourceCheck(ctx); err != nil {
+		return NativeInstallerPlan{}, err
+	}
 	if err := nativeRuntimePaths(w.root); err != nil {
 		return NativeInstallerPlan{}, err
 	}
