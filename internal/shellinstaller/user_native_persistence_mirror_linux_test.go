@@ -194,6 +194,10 @@ func userPersistenceReport(workspace string) ([]byte, error) {
 }
 
 func userPersistenceMirror(t *testing.T, ctx context.Context, workspace string, env []string) func() {
+	return userNativeMirror(t, ctx, workspace, env, "shell-native-persistence-mirror.py", "/persistence-fixture")
+}
+
+func userNativeMirror(t *testing.T, ctx context.Context, workspace string, env []string, script, fixture string) func() {
 	t.Helper()
 	ready, report := filepath.Join(workspace, "mirror-ready"), filepath.Join(workspace, "mirror-report.json")
 	input, owner, err := os.Pipe()
@@ -201,7 +205,7 @@ func userPersistenceMirror(t *testing.T, ctx context.Context, workspace string, 
 		t.Fatal(err)
 	}
 	serverCtx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(serverCtx, "/usr/bin/python3", "-I", "/source/e2e/shell-native-persistence-mirror.py", "/persistence-fixture", ready, report)
+	cmd := exec.CommandContext(serverCtx, "/usr/bin/python3", "-I", filepath.Join("/source/e2e", script), fixture, ready, report)
 	cmd.Stdin, cmd.Dir = input, workspace
 	cmd.Env = append(append([]string(nil), env...), "PYTHONDONTWRITEBYTECODE=1")
 	done := make(chan error, 1)
