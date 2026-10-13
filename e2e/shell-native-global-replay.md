@@ -18,3 +18,20 @@ header connections at owner stop. It rechecks Node/project preservation and
 retains failures. The seven-response persistence oracle remains separate.
 Run `-tags=shell_native_runtime -run '^TestUserNativeGlobalMirror$'` in the
 qualified Guest. Full original installation is the next independent unit.
+
+## Reuse persistence bodies without duplicating storage
+
+An optional fourth mirror argument supplies an absolute, canonical secondary
+fixture directory. Its regular, single-link `requests.json` must contain exactly
+seven unique URLs already in the global index, with identical file, size and
+SHA256 fields. The global index remains the sole route authority.
+
+Only these bodies use secondary storage; authentication failure never falls back
+to the primary directory. Both roots require immutable RO custody in real runs.
+`TestUserNativeGlobalMirrorShared` checks seven shared bodies plus one primary,
+same-size corruption and body aliases (502), unknown URLs (404), and specific
+startup refusals for conflicting metadata and an aliased secondary index.
+Run `-tags=shell_native_runtime` with
+`-run '^TestUserNative(GlobalMirror(Shared)?|PersistenceMirror)$'` in the same
+qualified Guest to include both existing replay regressions. This does not
+qualify an installer run or publication.

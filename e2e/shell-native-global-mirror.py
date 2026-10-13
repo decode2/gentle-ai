@@ -11,7 +11,10 @@ import stat
 import sys
 import threading
 
-fixture, ready, report = map(Path, sys.argv[1:])
+if len(sys.argv) not in (4, 5):
+    raise ValueError('expected global fixture, ready, report and optional shared fixture')
+fixture, ready, report = map(Path, sys.argv[1:4])
+secondary = Path(sys.argv[4]) if len(sys.argv) == 5 else None
 lock = threading.Lock()
 samples = {'requests': [], 'refused': [], 'errors': []}
 counts = {name: 0 for name in samples}
@@ -56,6 +59,28 @@ rows = json.loads(index.read_bytes(), object_pairs_hook=unique)
 require(7 < len(rows) <= 512, 'global inventory count bound')
 by_url = {canonical(row['url']): row for row in rows}
 require(len(by_url) == len(rows), 'duplicate response URL')
+body_roots = {}
+if secondary is not None:
+    try:
+        require(secondary.is_absolute() and secondary.resolve() == secondary
+                and secondary.is_dir(), 'shared inventory physical')
+        fd = os.open(secondary / 'requests.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+                    and 0 < info.st_size <= 256 * 1024, 'shared inventory physical')
+            data = stream.read(info.st_size + 1)
+            require(len(data) == info.st_size, 'shared inventory physical')
+        shared = json.loads(data, object_pairs_hook=unique)
+    except OSError as error:
+        raise RuntimeError('shared inventory physical') from error
+    require(len(shared) == 7, 'shared inventory count')
+    for row in shared:
+        key = canonical(row['url'])
+        require(key in by_url and key not in body_roots
+                and all(row[field] == by_url[key][field] for field in ('file', 'size', 'sha256')),
+                'shared inventory conflict')
+        body_roots[key] = secondary
 
 
 class ClosedMirror(http.server.BaseHTTPRequestHandler):
@@ -75,7 +100,7 @@ class ClosedMirror(http.server.BaseHTTPRequestHandler):
         try:
             name = row['file']
             require(name not in ('', '.', '..') and '/' not in name and '\\' not in name, 'fixture basename')
-            fd = os.open(fixture / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = os.open(body_roots.get(url, fixture) / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as stream:
                 before = os.fstat(stream.fileno())
                 require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
