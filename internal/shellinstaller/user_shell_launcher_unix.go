@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // userShellLauncherNames are the commands published on the standard user PATH
@@ -49,6 +50,32 @@ func userLauncherDirOnPath(dir string) bool {
 		}
 	}
 	return false
+}
+
+// userShellLauncherNote renders the publication report for the completion
+// output. It is empty only when the report is empty.
+func userShellLauncherNote(report userShellLauncherReport) string {
+	var lines []string
+	var published []string
+	for _, outcome := range report.Outcomes {
+		link, err := userShellLauncherPath(outcome.Name)
+		if err != nil {
+			continue
+		}
+		switch outcome.State {
+		case userShellLauncherPublished, userShellLauncherExisting:
+			published = append(published, link)
+		case userShellLauncherOccupied:
+			lines = append(lines, fmt.Sprintf("Command %q is occupied by %s; map it manually if you want it to open gentle-shell.", outcome.Name, outcome.OccupiedBy))
+		}
+	}
+	if len(published) > 0 {
+		lines = append([]string{fmt.Sprintf("Commands: %s", strings.Join(published, " and "))}, lines...)
+	}
+	if report.LauncherDir != "" && !report.DirOnPath {
+		lines = append(lines, fmt.Sprintf("%s is not on this session's PATH; open a new login session or run: export PATH=\"$HOME/.local/bin:$PATH\"", report.LauncherDir))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // PublishUserShellLauncher exposes the Separate target as `gentle-shell` and

@@ -57,6 +57,12 @@ func TestPublishUserShellLauncherPublishesBothCommands(t *testing.T) {
 	if report.DirOnPath {
 		t.Fatal("launcher dir unexpectedly on PATH")
 	}
+	note := userShellLauncherNote(report)
+	for _, want := range []string{launcherLink(t, "gentle-shell"), launcherLink(t, "gs"), "is not on this session's PATH", "export PATH="} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note misses %q: %s", want, note)
+		}
+	}
 	// A republication reports the same launchers as already owned.
 	repeat, err := PublishUserShellLauncher(target)
 	if err != nil {
@@ -99,6 +105,10 @@ func TestPublishUserShellLauncherReportsOccupiedNames(t *testing.T) {
 	}
 	if _, err := os.Lstat(launcherLink(t, "gs")); err != nil {
 		t.Fatalf("foreign gs launcher was touched: %v", err)
+	}
+	note := userShellLauncherNote(report)
+	if !strings.Contains(note, `"gs" is occupied by`) {
+		t.Fatalf("note misses the gs conflict: %s", note)
 	}
 
 	// A foreign symlink pointing elsewhere occupies gentle-shell the same way.
@@ -156,6 +166,21 @@ func TestPublishUserShellLauncherReportsPATHCommandConflicts(t *testing.T) {
 		if _, err := os.Lstat(launcherLink(t, "gs")); !os.IsNotExist(err) {
 			t.Fatalf("gs launcher was created over the PATH command: %v", err)
 		}
+	}
+}
+
+func TestPublishUserShellLauncherOmitsHintWhenDirOnPath(t *testing.T) {
+	target := launcherTestTarget(t)
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "nothing")+string(os.PathListSeparator)+filepath.Dir(launcherLink(t, "gentle-shell")))
+	report, err := PublishUserShellLauncher(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.DirOnPath {
+		t.Fatal("launcher dir not detected on PATH")
+	}
+	if strings.Contains(userShellLauncherNote(report), "is not on this session's PATH") {
+		t.Fatal("remediation hint emitted while the launcher dir is on PATH")
 	}
 }
 
