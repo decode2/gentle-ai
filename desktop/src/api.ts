@@ -14,6 +14,9 @@ export interface SessionCard {
 	agent: string;
 	branch: string;
 	pr?: number;
+	running?: boolean;
+	status?: string;
+	question?: string;
 }
 
 export type Board = Record<Lane, SessionCard[] | null>;

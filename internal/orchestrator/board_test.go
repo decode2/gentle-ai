@@ -19,6 +19,7 @@ func TestFleetBoardGroupsCardsByLane(t *testing.T) {
 	}
 	if _, err := fleet.Update("invoice", func(f *Facts) {
 		f.Activity.AwaitingHuman = true
+		f.Activity.Question = "¿Postmark o SES para el email de factura?"
 	}); err != nil {
 		t.Fatalf("Update(invoice): %v", err)
 	}
@@ -39,8 +40,15 @@ func TestFleetBoardGroupsCardsByLane(t *testing.T) {
 	if cards[0].PR != 331 || cards[0].Agent != "codex" {
 		t.Fatalf("card = %+v, want PR 331 by codex", cards[0])
 	}
+	if cards[0].Status != "Aprobado" {
+		t.Fatalf("chart status = %q, want Aprobado", cards[0].Status)
+	}
 	if len(board[LaneNeedsYou]) != 1 || board[LaneNeedsYou][0].ID != "invoice" {
 		t.Fatalf("needs-you cards = %+v, want only invoice", board[LaneNeedsYou])
+	}
+	invoice := board[LaneNeedsYou][0]
+	if invoice.Status != "Esperándote" || invoice.Question == "" {
+		t.Fatalf("invoice card = %+v, want Esperándote with the question", invoice)
 	}
 	if len(board[LaneWorking]) != 1 || board[LaneWorking][0].ID != "metering" {
 		t.Fatalf("working cards = %+v, want only metering", board[LaneWorking])

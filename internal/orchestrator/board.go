@@ -9,11 +9,14 @@ import (
 // SessionCard is the board's projection of one session: what a card shows,
 // nothing else.
 type SessionCard struct {
-	ID     string `json:"id"`
-	Task   string `json:"task"`
-	Agent  string `json:"agent"`
-	Branch string `json:"branch"`
-	PR     int    `json:"pr,omitempty"`
+	ID       string `json:"id"`
+	Task     string `json:"task"`
+	Agent    string `json:"agent"`
+	Branch   string `json:"branch"`
+	PR       int    `json:"pr,omitempty"`
+	Running  bool   `json:"running,omitempty"`
+	Status   string `json:"status,omitempty"`
+	Question string `json:"question,omitempty"`
 }
 
 // Board groups every session's card by its fact-derived lane. All four lanes
@@ -28,10 +31,13 @@ func (f *Fleet) Board() map[Lane][]SessionCard {
 	defer f.mu.RUnlock()
 	for id, s := range f.sessions {
 		card := SessionCard{
-			ID:     string(id),
-			Task:   s.Task,
-			Agent:  s.Agent,
-			Branch: s.Branch,
+			ID:       string(id),
+			Task:     s.Task,
+			Agent:    s.Agent,
+			Branch:   s.Branch,
+			Running:  s.Facts.Activity.Running,
+			Status:   cardStatus(&s.Facts),
+			Question: s.Facts.Activity.Question,
 		}
 		if p := s.Facts.PR; p != nil {
 			card.PR = p.Number
@@ -45,6 +51,45 @@ func (f *Fleet) Board() map[Lane][]SessionCard {
 		sort.Slice(cards, func(i, j int) bool { return cards[i].ID < cards[j].ID })
 	}
 	return groups
+}
+
+// cardStatus derives the one-line live status a card shows, from facts only.
+func cardStatus(f *Facts) string {
+	if f.Activity.AwaitingHuman {
+		return "Esperándote"
+	}
+	if f.Activity.Detail != "" {
+		return f.Activity.Detail
+	}
+	if p := f.PR; p != nil && p.Open {
+		if p.MergeConflict {
+			return "Conflicto con la base"
+		}
+		for _, c := range p.Checks {
+			if c.Status == CheckFailed {
+				return "CI roto: " + c.Name
+			}
+		}
+		runningChecks := false
+		for _, c := range p.Checks {
+			if c.Status == CheckRunning {
+				runningChecks = true
+			}
+		}
+		for _, r := range p.Reviews {
+			if r.State == ReviewApproved {
+				if runningChecks {
+					return "Checks corriendo"
+				}
+				return "Aprobado"
+			}
+		}
+		return "En revisión"
+	}
+	if f.Activity.Running {
+		return "Trabajando"
+	}
+	return "En espera"
 }
 
 // RenderBoard draws the lanes as a plain-text board. It is the headless
