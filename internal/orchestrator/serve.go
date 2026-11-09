@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"time"
 )
 
@@ -25,6 +26,11 @@ type ServeOptions struct {
 	PollInterval time.Duration
 	// Source replaces the default GhPullSource; used by tests.
 	Source PullSource
+	// RepoPath is the local checkout used to create worker worktrees. When
+	// set, POST /sessions accepts launch:true and spawns agent CLIs.
+	RepoPath string
+	// BaseBranch is what worker worktrees branch from (default main).
+	BaseBranch string
 	// PrintBoard renders the text board to stdout on every poll.
 	PrintBoard bool
 }
@@ -54,13 +60,29 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 	}
 	watcher := NewWatcher(fleet, router, source, interval)
 
+	journal := NewJournal()
+	var launcher *Launcher
+	if opts.RepoPath != "" {
+		base := opts.BaseBranch
+		if base == "" {
+			base = "main"
+		}
+		launcher = &Launcher{
+			Fleet:     fleet,
+			Router:    router,
+			Journal:   journal,
+			Worktrees: &WorktreeManager{Repo: opts.RepoPath, Parent: filepath.Join(opts.RepoPath, ".orchestrator-worktrees")},
+			Base:      base,
+		}
+	}
+
 	ln, err := net.Listen("tcp", opts.ListenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: listen %s: %w", opts.ListenAddr, err)
 	}
 
 	handle := &ServeHandle{Addr: ln.Addr().String(), Done: make(chan error, 1)}
-	server := &http.Server{Handler: NewDaemonHTTP(fleet)}
+	server := &http.Server{Handler: NewDaemonServer(fleet, journal, launcher)}
 	go func() {
 		serveErr := server.Serve(ln)
 		if serveErr != nil && serveErr != http.ErrServerClosed {

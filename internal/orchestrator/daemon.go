@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 // DaemonHTTP serves the fleet over local HTTP. It is the read/write surface
 // for desktop, web, and mobile clients: one protocol, localhost bound.
 type DaemonHTTP struct {
-	fleet *Fleet
+	fleet    *Fleet
+	journal  *Journal
+	launcher *Launcher
 }
 
 // corsAllowedOrigins are the desktop shell origins allowed to call the
@@ -53,11 +56,20 @@ func withCORS(next http.Handler) http.Handler {
 
 // NewDaemonHTTP returns the fleet's HTTP handler.
 func NewDaemonHTTP(fleet *Fleet) http.Handler {
-	d := &DaemonHTTP{fleet: fleet}
+	return NewDaemonServer(fleet, nil, nil)
+}
+
+// NewDaemonServer returns the handler with journal and launch support: the
+// surface the desktop app and the CLI use. A nil journal or launcher keeps
+// their endpoints inert (events read empty, launch/stop report 400).
+func NewDaemonServer(fleet *Fleet, journal *Journal, launcher *Launcher) http.Handler {
+	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("POST /sessions", d.startSession)
+	mux.HandleFunc("GET /sessions/{id}/events", d.sessionEvents)
+	mux.HandleFunc("POST /sessions/{id}/stop", d.stopSession)
 	return withCORS(mux)
 }
 
@@ -109,6 +121,9 @@ type startSessionRequest struct {
 	Agent    string `json:"agent"`
 	Branch   string `json:"branch"`
 	Worktree string `json:"worktree"`
+	// Launch asks the daemon to create the worktree and spawn the agent
+	// CLI instead of registering an externally-managed session.
+	Launch bool `json:"launch"`
 }
 
 func (d *DaemonHTTP) startSession(w http.ResponseWriter, r *http.Request) {
@@ -122,6 +137,26 @@ func (d *DaemonHTTP) startSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Launch {
+		if d.launcher == nil {
+			http.Error(w, "launch requires a local repository path (daemon --repo-path)", http.StatusBadRequest)
+			return
+		}
+		launchCtx := context.WithoutCancel(r.Context())
+		err := d.launcher.StartTask(launchCtx, Session{
+			ID:     SessionID(req.ID),
+			Task:   req.Task,
+			Agent:  req.Agent,
+			Branch: req.Branch,
+		})
+		if err != nil {
+			writeStartError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, fleetCard(d.fleet, SessionID(req.ID)))
+		return
+	}
+
 	err := d.fleet.Start(Session{
 		ID:       SessionID(req.ID),
 		Task:     req.Task,
@@ -129,15 +164,53 @@ func (d *DaemonHTTP) startSession(w http.ResponseWriter, r *http.Request) {
 		Branch:   req.Branch,
 		Worktree: req.Worktree,
 	})
+	if err != nil {
+		writeStartError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, fleetCard(d.fleet, SessionID(req.ID)))
+}
+
+func writeStartError(w http.ResponseWriter, err error) {
 	switch {
-	case err == nil:
-		card := fleetCard(d.fleet, SessionID(req.ID))
-		writeJSON(w, http.StatusCreated, card)
 	case errors.Is(err, ErrDuplicateSession):
 		http.Error(w, "session already registered", http.StatusConflict)
+	case errors.Is(err, ErrProtectedBranch), errors.Is(err, ErrInvalidBranch):
+		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// sessionEvents returns the session journal: the worker's recorded life.
+func (d *DaemonHTTP) sessionEvents(w http.ResponseWriter, r *http.Request) {
+	id := SessionID(r.PathValue("id"))
+	var entries []JournalEntry
+	if d.journal != nil {
+		entries = d.journal.Get(id)
+	}
+	if entries == nil {
+		entries = []JournalEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// stopSession kills a running worker spawned by the daemon.
+func (d *DaemonHTTP) stopSession(w http.ResponseWriter, r *http.Request) {
+	id := SessionID(r.PathValue("id"))
+	if d.launcher == nil {
+		http.Error(w, "stop requires the daemon launcher", http.StatusBadRequest)
+		return
+	}
+	if err := d.launcher.Stop(id); err != nil {
+		if errors.Is(err, ErrUnknownSession) {
+			http.Error(w, "no running worker for that session", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // fleetCard snapshots one session as its card; used for the 201 response.

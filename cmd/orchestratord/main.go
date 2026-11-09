@@ -17,6 +17,7 @@ import (
 
 func main() {
 	repo := flag.String("repo", "", "OWNER/REPOSITORY the watcher polls via gh (required)")
+	repoPath := flag.String("repo-path", "", "local checkout path; enables launching workers in their own worktrees")
 	listen := flag.String("listen", "127.0.0.1:8094", "host:port for the local daemon")
 	poll := flag.Duration("poll", orchestrator.DefaultPollInterval, "watcher poll cadence")
 	printBoard := flag.Bool("print-board", false, "print the text board to stdout on every poll")
@@ -32,6 +33,7 @@ func main() {
 
 	handle, err := orchestrator.Serve(ctx, orchestrator.ServeOptions{
 		Repo:         *repo,
+		RepoPath:     *repoPath,
 		ListenAddr:   *listen,
 		PollInterval: *poll,
 		PrintBoard:   *printBoard,
