@@ -14,6 +14,43 @@ type DaemonHTTP struct {
 	fleet *Fleet
 }
 
+// corsAllowedOrigins are the desktop shell origins allowed to call the
+// daemon from a webview. Unknown origins (arbitrary websites) get no CORS
+// headers, so a drive-by page cannot create sessions on the local daemon.
+// Non-browser clients send no Origin and are never blocked.
+var corsAllowedOrigins = []string{
+	"tauri://localhost",
+	"http://tauri.localhost",
+	"https://tauri.localhost",
+	"http://localhost:5173", // vite dev server
+}
+
+// withCORS answers preflights and echoes the allow-listed origin. It is
+// localhost confinement by allow-list, not by wildcard.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := false
+		for _, candidate := range corsAllowedOrigins {
+			if origin == candidate {
+				allowed = true
+				break
+			}
+		}
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewDaemonHTTP returns the fleet's HTTP handler.
 func NewDaemonHTTP(fleet *Fleet) http.Handler {
 	d := &DaemonHTTP{fleet: fleet}
@@ -21,7 +58,7 @@ func NewDaemonHTTP(fleet *Fleet) http.Handler {
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("POST /sessions", d.startSession)
-	return mux
+	return withCORS(mux)
 }
 
 // liveBoard streams the board as Server-Sent Events: one snapshotted board
