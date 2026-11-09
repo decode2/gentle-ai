@@ -23,9 +23,10 @@ func main() {
 	printBoard := flag.Bool("print-board", false, "print the text board to stdout on every poll")
 	flag.Parse()
 
+	// The repo is optional: without it the board still serves and sessions
+	// can be registered; PR polling stays disabled until a repo is given.
 	if *repo == "" {
-		fmt.Fprintln(os.Stderr, "orchestratord: --repo OWNER/REPOSITORY is required")
-		os.Exit(2)
+		fmt.Println("orchestratord: no --repo given; serving the board without PR polling")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
