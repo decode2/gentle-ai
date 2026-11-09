@@ -66,3 +66,10 @@ El target `x86_64-pc-windows-gnu` enlaza `WebView2Loader.dll` dinámicamente:
 el `.exe` requiere esa DLL al lado (está en el zip portable y sale del
 paquete NuGet `Microsoft.Web.WebView2`, `build/native/x64`). El target
 `windows-msvc` (CI) la enlaza estática y no la necesita.
+
+## Al cambiar el daemon, resincronizá los sidecars
+
+El zip y `src-tauri/binaries/` guardan copias del binario Go: después de
+tocar `cmd/orchestratord`, volvé a correr `bash scripts/sync-sidecar.sh`
+(y su equivalente con `GOOS=windows` para el zip portable). Un sidecar
+viejo junto a un shell nuevo produce desconexiones silenciosas.
