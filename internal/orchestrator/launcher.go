@@ -30,6 +30,8 @@ type Launcher struct {
 	// Command builds the worker process; tests replace it. The default
 	// spawns the agent CLI with the task text.
 	Command func(ctx context.Context, s Session, dir string) *workProcess
+	// Engram publishes fleet memory when set (PRD F5); failures degrade.
+	Engram *EngramBridge
 
 	mu       sync.Mutex
 	running  map[SessionID]*workProcess
@@ -76,6 +78,9 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 		return err
 	}
 	l.Journal.Append(session.ID, "launched", path)
+	if l.Engram != nil {
+		_ = l.Engram.StartSession(ctx, session)
+	}
 
 	l.mu.Lock()
 	if l.running == nil {
@@ -104,7 +109,7 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 
 	if stopping {
 		l.Journal.Append(session.ID, "stopped", "stopped before launch")
-		l.finish(session)
+		l.finish(session, "worker stopped before launch")
 		return
 	}
 
@@ -114,7 +119,7 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 	}
 	if err != nil {
 		l.Journal.Append(session.ID, "exited", fmt.Sprintf("launch failed: %v", err))
-		l.finish(session)
+		l.finish(session, fmt.Sprintf("worker launch failed: %v", err))
 		return
 	}
 
@@ -160,18 +165,23 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 	l.mu.Unlock()
 	if wasStopping {
 		l.Journal.Append(session.ID, "stopped", text)
+		l.finish(session, "worker stopped: "+text)
 	} else {
 		l.Journal.Append(session.ID, "exited", text)
+		l.finish(session, "worker exited ("+text+"); task: "+session.Task+"; branch: "+session.Branch)
 	}
-	l.finish(session)
 }
 
-// finish marks the worker idle in the fleet.
-func (l *Launcher) finish(session Session) {
+// finish marks the worker idle in the fleet and records the outcome in
+// fleet memory when the bridge is configured.
+func (l *Launcher) finish(session Session, summary string) {
 	_, _ = l.Fleet.Update(session.ID, func(f *Facts) {
 		f.Activity.Running = false
 		f.Activity.Detail = ""
 	})
+	if l.Engram != nil {
+		_ = l.Engram.PublishOutcome(context.Background(), session.ID, session.Task, summary)
+	}
 }
 
 // Stop kills a running worker. If the process has not started yet, the
