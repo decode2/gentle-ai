@@ -59,3 +59,10 @@ entorno; queda como paso de release del PRD (F7).
   dev server de vite pueden llamarlo; un sitio arbitrario no puede crear
   sesiones en el daemon local.
 - El shell no expone comandos al webview; toda la lógica vive en el daemon.
+
+## Nota de cross-compile a Windows
+
+El target `x86_64-pc-windows-gnu` enlaza `WebView2Loader.dll` dinámicamente:
+el `.exe` requiere esa DLL al lado (está en el zip portable y sale del
+paquete NuGet `Microsoft.Web.WebView2`, `build/native/x64`). El target
+`windows-msvc` (CI) la enlaza estática y no la necesita.
