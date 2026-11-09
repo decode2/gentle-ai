@@ -35,15 +35,23 @@ Para apuntar la UI a otro daemon: `VITE_ORCH_BASE=http://127.0.0.1:PUERTO`.
 ## Build de la app
 
 ```bash
-../../scripts/... (desde la raíz del repo)
 bash scripts/sync-sidecar.sh      # compila orchestratord al lado esperado
-pnpm build                        # UI a dist/
-cargo tauri build                 # bundle por OS (app/deb/rpm; dmg/msi en sus OS)
+npm run build                     # UI a dist/
+cargo build --release             # (desde src-tauri/) binario de la app con la UI embebida
+# Bundle por OS (deb/appimage/dmg/msi): cargo tauri build — paso de release,
+# requiere tauri-cli y firmas por OS; ver PRD-ORCHESTRATOR.md sección 11.
 ```
 
-El sidecar se declara en `src-tauri/tauri.conf.json` (`externalBin`) y el
-shell lo busca junto a su propio binario al arrancar; si no está, la UI
-muestra el tablero como desconectado en lugar de fallar.
+El binario release ya es la app ejecutable: Tauri v2 embebe `dist/` en el
+binario, el sidecar vive al lado y el shell lo spawnea al arrancar.
+
+## Móvil (Fase 2, preparado)
+
+La misma UI sirve para los shells Tauri iOS/Android: el CSS es responsive
+(lanes apiladas y drawer full-width bajo 900px), la UI consume el daemon por
+HTTP/SSE, y el pairing sería con el daemon del desktop vía LAN/túnel. El
+build móvil requiere toolchains Xcode/Android SDK, que no existen en este
+entorno; queda como paso de release del PRD (F7).
 
 ## Seguridad
 

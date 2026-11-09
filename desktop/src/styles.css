@@ -288,3 +288,25 @@ body {
 	padding: 8px;
 	cursor: pointer;
 }
+
+/* Mobile / narrow viewport: lanes stack, the drawer goes full-width. The
+   same UI codebase serves the Tauri iOS/Android shells (PRD F7). */
+@media (max-width: 900px) {
+	.lanes {
+		grid-template-columns: 1fr;
+	}
+
+	.lane {
+		min-height: auto;
+	}
+
+	.drawer {
+		width: 100vw;
+		max-width: 100vw;
+	}
+
+	.session-form {
+		width: calc(100vw - 40px);
+		max-width: 320px;
+	}
+}
