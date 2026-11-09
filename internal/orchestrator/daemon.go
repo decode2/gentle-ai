@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 )
 
 // DaemonHTTP serves the fleet over local HTTP. It is the read/write surface
@@ -17,8 +19,46 @@ func NewDaemonHTTP(fleet *Fleet) http.Handler {
 	d := &DaemonHTTP{fleet: fleet}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /board", d.board)
+	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("POST /sessions", d.startSession)
 	return mux
+}
+
+// liveBoard streams the board as Server-Sent Events: one snapshotted board
+// per tick until the client disconnects or the request context ends. It is
+// the zero-dependency live channel for the spike; a WebSocket transport can
+// replace it in the Tauri phase without changing the payload.
+func (d *DaemonHTTP) liveBoard(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	ticker := time.NewTicker(DefaultPollInterval)
+	defer ticker.Stop()
+
+	writeBoard := func() {
+		payload, err := json.Marshal(d.fleet.Board())
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(w, "event: board\ndata: %s\n\n", payload)
+		flusher.Flush()
+	}
+
+	writeBoard()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			writeBoard()
+		}
+	}
 }
 
 func (d *DaemonHTTP) board(w http.ResponseWriter, _ *http.Request) {
