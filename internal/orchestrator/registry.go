@@ -80,6 +80,19 @@ func (f *Fleet) Lane(id SessionID) (Lane, error) {
 	return DeriveLane(s.Facts), nil
 }
 
+// SessionByBranch returns the id of the session that owns branch.
+func (f *Fleet) SessionByBranch(branch string) (SessionID, bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	for id, s := range f.sessions {
+		if s.Branch == branch {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // ByLane groups registered session ids by their current lane. Lanes without
 // sessions are present as empty slices, so a board can render all four lanes.
 func (f *Fleet) ByLane() map[Lane][]SessionID {
