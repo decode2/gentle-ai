@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { DAEMON_BASE, LANES, fetchBoard, openLiveBoard, startSession, type Board, type SessionCard } from "./api";
+import {
+	DAEMON_BASE,
+	LANES,
+	fetchBoard,
+	fetchSessionEvents,
+	openLiveBoard,
+	startSession,
+	stopSession,
+	type Board,
+	type JournalEntry,
+	type SessionCard,
+} from "./api";
 
 const EMPTY_BOARD: Board = { working: null, "needs-you": null, "in-review": null, "ready-to-merge": null };
 
@@ -14,6 +25,7 @@ export default function App() {
 	const [board, setBoard] = useState<Board>(EMPTY_BOARD);
 	const [connected, setConnected] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [selected, setSelected] = useState<SessionCard | null>(null);
 
 	const markDisconnected = useCallback(() => setConnected(false), []);
 
@@ -52,15 +64,16 @@ export default function App() {
 			{error && <p className="banner" role="alert">{error}</p>}
 			<section className="lanes">
 				{LANES.map((lane) => (
-					<LaneColumn key={lane} lane={lane} cards={board[lane] ?? []} />
+					<LaneColumn key={lane} lane={lane} cards={board[lane] ?? []} onSelect={setSelected} />
 				))}
 			</section>
+			{selected && <SessionDrawer card={selected} onClose={() => setSelected(null)} />}
 			<SessionForm />
 		</main>
 	);
 }
 
-function LaneColumn({ lane, cards }: { lane: string; cards: SessionCard[] }) {
+function LaneColumn({ lane, cards, onSelect }: { lane: string; cards: SessionCard[]; onSelect: (card: SessionCard) => void }) {
 	return (
 		<div className={`lane lane-${lane}`}>
 			<h2>
@@ -68,7 +81,7 @@ function LaneColumn({ lane, cards }: { lane: string; cards: SessionCard[] }) {
 			</h2>
 			{cards.length === 0 && <p className="empty">(empty)</p>}
 			{cards.map((card) => (
-				<article key={card.id} className="card">
+				<article key={card.id} className="card" onClick={() => onSelect(card)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onSelect(card)}>
 					<header>
 						<strong>{card.id}</strong>
 						<span className="agent">{card.agent}</span>
@@ -84,6 +97,62 @@ function LaneColumn({ lane, cards }: { lane: string; cards: SessionCard[] }) {
 	);
 }
 
+function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => void }) {
+	const [entries, setEntries] = useState<JournalEntry[]>([]);
+	const [stopError, setStopError] = useState<string | null>(null);
+
+	useEffect(() => {
+		let cancelled = false;
+		const load = async () => {
+			try {
+				const fresh = await fetchSessionEvents(card.id);
+				if (!cancelled) setEntries(fresh);
+			} catch {
+				/* the badge already shows daemon problems */
+			}
+		};
+		load();
+		const timer = setInterval(load, 2000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [card.id]);
+
+	const stop = async () => {
+		setStopError(null);
+		try {
+			await stopSession(card.id);
+		} catch (cause) {
+			setStopError(cause instanceof Error ? cause.message : String(cause));
+		}
+	};
+
+	return (
+		<aside className="drawer" role="dialog" aria-label={`Sesión ${card.id}`}>
+			<header>
+				<h3>{card.id}</h3>
+				<button onClick={onClose}>✕</button>
+			</header>
+			<p className="task">{card.task}</p>
+			<p>
+				<code>{card.branch}</code> {card.pr ? <span className="pr">#{card.pr}</span> : null}
+			</p>
+			<h4>Journal</h4>
+			<div className="journal">
+				{entries.length === 0 && <p className="empty">(sin eventos)</p>}
+				{entries.map((entry, index) => (
+					<p key={index} className={`entry entry-${entry.kind}`}>
+						<span className="kind">{entry.kind}</span> {entry.text}
+					</p>
+				))}
+			</div>
+			{stopError && <p className="banner" role="alert">{stopError}</p>}
+			<button className="danger" onClick={stop}>Detener worker</button>
+		</aside>
+	);
+}
+
 function SessionForm() {
 	const [open, setOpen] = useState(false);
 	const [fields, setFields] = useState({ id: "", task: "", agent: "pi", branch: "" });
@@ -93,8 +162,8 @@ function SessionForm() {
 		event.preventDefault();
 		setFeedback(null);
 		try {
-			await startSession(fields);
-			setFeedback(`Sesión "${fields.id}" registrada.`);
+			await startSession({ ...fields, launch: true });
+			setFeedback(`Worker "${fields.id}" lanzado.`);
 			setFields({ id: "", task: "", agent: "pi", branch: "" });
 			setOpen(false);
 		} catch (cause) {

@@ -205,3 +205,86 @@ body {
 	border-color: #f095c8;
 	font-weight: 600;
 }
+
+.card {
+	cursor: pointer;
+}
+
+.card:hover,
+.card:focus-visible {
+	border-color: #f095c8;
+}
+
+.drawer {
+	position: fixed;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: 420px;
+	max-width: 90vw;
+	background: #1b0f17;
+	border-left: 1px solid #42303c;
+	padding: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5);
+	overflow-y: auto;
+	z-index: 10;
+}
+
+.drawer header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+
+.drawer h3 {
+	margin: 0;
+	color: #f095c8;
+}
+
+.drawer h4 {
+	margin: 8px 0 0;
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: #8a7583;
+}
+
+.journal {
+	flex: 1;
+	overflow-y: auto;
+	background: #12080f;
+	border: 1px solid #3a2a34;
+	border-radius: 8px;
+	padding: 8px;
+	font-family: "JetBrains Mono", ui-monospace, monospace;
+	font-size: 11px;
+	max-height: 50vh;
+}
+
+.entry {
+	margin: 2px 0;
+	word-break: break-word;
+}
+
+.entry .kind {
+	color: #8a7583;
+	text-transform: uppercase;
+	font-size: 9px;
+	margin-right: 6px;
+}
+
+.entry-launched .kind, .entry-exited .kind, .entry-stopped .kind {
+	color: #f095c8;
+}
+
+.drawer button.danger {
+	border: 1px solid #5c2f2f;
+	background: #2f1616;
+	color: #f0a9a9;
+	border-radius: 6px;
+	padding: 8px;
+	cursor: pointer;
+}
