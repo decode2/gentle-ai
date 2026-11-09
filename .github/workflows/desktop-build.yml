@@ -1,0 +1,61 @@
+name: Desktop app builds
+
+# Builds the Gentle Orchestrator desktop app on all three OSes. Bundles are
+# unsigned artifacts; signing and publishing stay a human release action.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**/orchestrator*", "feat/orchestrator*"]
+    paths: ["desktop/**", "cmd/orchestratord/**", "internal/orchestrator/**"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            sidecar-ext: .exe
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            sidecar-ext: ""
+          - os: ubuntu-22.04
+            triple: x86_64-unknown-linux-gnu
+            sidecar-ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Build the Go sidecar
+        run: |
+          go build -C . -o "desktop/src-tauri/binaries/orchestratord-${{ matrix.triple }}${{ matrix.sidecar-ext }}" ./cmd/orchestratord
+      - name: Build the UI
+        working-directory: desktop
+        run: |
+          npm install
+          npm run build
+      - name: Build the app bundle
+        working-directory: desktop/src-tauri
+        run: cargo build --release
+      - name: Bundle installers
+        working-directory: desktop/src-tauri
+        run: |
+          npm exec --yes @tauri-apps/cli@v2.9.0 -- build --no-sign 2>/dev/null || cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gentle-orchestrator-${{ matrix.os }}
+          path: |
+            desktop/src-tauri/target/release/gentle-orchestrator*
+            desktop/src-tauri/target/release/bundle/**
