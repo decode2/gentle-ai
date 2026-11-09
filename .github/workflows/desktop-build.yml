@@ -4,6 +4,8 @@ name: Desktop app builds
 # unsigned artifacts; signing and publishing stay a human release action.
 on:
   workflow_dispatch:
+  pull_request:
+    paths: ["desktop/**", "cmd/orchestratord/**", "internal/orchestrator/**"]
   push:
     branches: ["**/orchestrator*", "feat/orchestrator*"]
     paths: ["desktop/**", "cmd/orchestratord/**", "internal/orchestrator/**"]
