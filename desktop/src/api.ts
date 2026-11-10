@@ -65,6 +65,7 @@ export async function fetchAgents(): Promise<DetectedAgent[]> {
 export interface DetectedAgent {
 	agent: string;
 	command: string;
+	displayName: string;
 	path?: string;
 	version?: string;
 	found: boolean;

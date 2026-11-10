@@ -60,12 +60,34 @@ const AGENT_COLORS: Record<string, string> = {
 	goose: "#f095c8",
 };
 
+const AGENT_DISPLAY_NAMES: Record<string, string> = {
+	pi: "Gentle Shell",
+	claude: "Claude Code",
+	codex: "Codex",
+	gemini: "Gemini CLI",
+	opencode: "OpenCode",
+	aider: "Aider",
+	cursor: "Cursor",
+	qwen: "Qwen Code",
+	kimi: "Kimi CLI",
+	crush: "Crush",
+	amp: "Amp",
+	goose: "Goose",
+};
+
 function agentColor(agent: string): string {
 	return AGENT_COLORS[agent.toLowerCase()] ?? "#d7a0b8";
 }
 
-function agentInitial(agent: string): string {
-	return agent.slice(0, 2).toUpperCase();
+function agentDisplayName(agent: string, fallback?: string): string {
+	return fallback ?? AGENT_DISPLAY_NAMES[agent.toLowerCase()] ?? agent;
+}
+
+function agentMonogram(agent: string, fallback?: string): string {
+	const name = agentDisplayName(agent, fallback);
+	const words = name.split(/\s+/).filter(Boolean);
+	if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+	return name.slice(0, 2).toUpperCase();
 }
 
 export default function App() {
@@ -281,7 +303,7 @@ function LaneColumn({
 				>
 					<header>
 						<span className="avatar" style={{ background: agentColor(card.agent) }} aria-hidden="true">
-							{agentInitial(card.agent)}
+							{agentMonogram(card.agent)}
 						</span>
 						<strong className="card-id">{card.id}</strong>
 						{card.pr ? <span className="pr">#{card.pr}</span> : null}
@@ -306,10 +328,9 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	const [entries, setEntries] = useState<JournalEntry[]>([]);
 	const [stopError, setStopError] = useState<string | null>(null);
 	const [diff, setDiff] = useState<DiffInfo | null>(null);
-	const [showPatch, setShowPatch] = useState(false);
 	const [terminalError, setTerminalError] = useState<string | null>(null);
 	const [evidence, setEvidence] = useState<Evidence | null>(null);
-	const [showTerminal, setShowTerminal] = useState(false);
+	const [tab, setTab] = useState<"journal" | "terminal" | "diff">("journal");
 	const journalRef = useRef<HTMLDivElement>(null);
 	const drawerRef = useRef<HTMLElement>(null);
 	const openerRef = useRef<HTMLElement | null>(null);
@@ -339,6 +360,16 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 			first.focus();
 		}
 	};
+
+	// Card hover actions can open the drawer directly on a tab.
+	useEffect(() => {
+		const onDrawerTab = (event: Event) => {
+			const detail = (event as CustomEvent<string>).detail;
+			if (detail === "terminal" || detail === "journal" || detail === "diff") setTab(detail);
+		};
+		document.addEventListener("drawer-tab", onDrawerTab);
+		return () => document.removeEventListener("drawer-tab", onDrawerTab);
+	}, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -382,7 +413,7 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 		}
 	};
 
-	const terminal = async () => {
+	const openOsTerminal = async () => {
 		setTerminalError(null);
 		try {
 			await openTerminal(card.id);
@@ -392,16 +423,21 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	};
 
 	const changed = diff?.files.length ?? 0;
+	const totalAdded = evidence?.totalAdditions ?? 0;
+	const totalDeleted = evidence?.totalDeletions ?? 0;
 
 	return (
 		<>
 			<div className="backdrop" onClick={onClose} aria-hidden="true" />
 			<aside className="drawer" role="dialog" aria-modal="true" ref={drawerRef} tabIndex={-1} onKeyDown={trapTab} aria-label={`Sesión ${card.id}`}>
 				<header>
-					<span className="avatar big" style={{ background: agentColor(card.agent) }} aria-hidden="true">
-						{agentInitial(card.agent)}
+					<span className="avatar big" style={{ background: agentColor(card.agent) }} title={agentDisplayName(card.agent)} aria-hidden="true">
+						{agentMonogram(card.agent)}
 					</span>
-					<h3>{card.id}</h3>
+					<div className="drawer-title">
+						<h3>{card.id}</h3>
+						<span className="agent-name">{agentDisplayName(card.agent)}</span>
+					</div>
 					<button className="icon-btn" onClick={onClose} aria-label="Cerrar">
 						✕
 					</button>
@@ -414,38 +450,27 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 						{card.running ? "corriendo" : "detenido"}
 					</span>
 				</div>
-				<div className="actions-row">
-					<button className="tool" onClick={() => setShowTerminal((v) => !v)}>
-						{showTerminal ? "Ocultar terminal" : "⌨ Terminal"}
+				<nav className="drawer-tabs" role="tablist" aria-label="Vistas de la sesión">
+					<button role="tab" aria-selected={tab === "journal"} className={`drawer-tab ${tab === "journal" ? "picked" : ""}`} onClick={() => setTab("journal")}>
+						Journal
 					</button>
-					<button className="tool" onClick={terminal}>
-						⟫ Terminal del OS
+					<button role="tab" aria-selected={tab === "terminal"} className={`drawer-tab ${tab === "terminal" ? "picked" : ""}`} onClick={() => setTab("terminal")}>
+						Terminal
 					</button>
-					<button className="tool" onClick={() => setShowPatch((v) => !v)} disabled={changed === 0}>
-						{showPatch ? "Ocultar diff" : `Diff (${changed})`}
+					<button role="tab" aria-selected={tab === "diff"} className={`drawer-tab ${tab === "diff" ? "picked" : ""}`} onClick={() => setTab("diff")} disabled={changed === 0}>
+						Diff ({changed})
 					</button>
-				</div>
-				{terminalError && <p className="banner" role="alert">{terminalError}</p>}
-				{showTerminal && <EmbeddedTerminal sessionId={card.id} />}
-			{evidence && (
-					<p className="evidence-line">
-						{evidence.status}
-						{evidence.totalAdditions || evidence.totalDeletions ? (
-							<> · <span className="adds">+{evidence.totalAdditions}</span> <span className="dels">−{evidence.totalDeletions}</span></>
-						) : null}
-						{evidence.commits && evidence.commits.length > 0 ? <> · {evidence.commits.length} commits</> : null}
-						{evidence.receipt ? (
-						<span
-							className={`receipt ${evidence.valid === false ? "receipt-bad" : ""}`}
-							title={evidence.valid === false ? "El paquete de evidencia fue modificado después de que el worker lo congeló" : "Recibo de evidencia congelado al salir el worker"}
-						>
-							{" · "}{evidence.valid === false ? "⚠ recibo alterado " : ""}{evidence.receipt.slice(6, 14)}
-						</span>
-					) : null}
+					<button className="tool os-term" onClick={openOsTerminal} title="Abrir la terminal del sistema en el worktree">
+						⟫ OS
+					</button>
+				</nav>
+				{terminalError && (
+					<p className="banner" role="alert">
+						{terminalError}
 					</p>
 				)}
-				{evidence?.summary && <p className="worker-summary">{evidence.summary}</p>}
-				{showPatch && diff && (
+				{tab === "terminal" && <EmbeddedTerminal sessionId={card.id} />}
+				{tab === "diff" && diff && (
 					<div className="diffview">
 						<div className="diffstat">
 							{diff.files.map((f) => (
@@ -458,32 +483,52 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 						<pre className="patch">{diff.patch || "(sin cambios contra la base)"}</pre>
 					</div>
 				)}
-				<h4>Journal</h4>
-				<div className="journal" ref={journalRef}>
-					{entries.length === 0 && <p className="lane-empty">(sin eventos)</p>}
-					{entries.map((entry, index) => (
-						<p key={index} className={`entry entry-${entry.kind}`}>
-							<span className="entry-meta">
-								<span className="kind">{entry.kind}</span>
-								<time>{new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+				{tab === "journal" && (
+					<>
+						<div className="journal" ref={journalRef}>
+							{entries.length === 0 && <p className="lane-empty">(sin eventos)</p>}
+							{entries.map((entry, index) => (
+								<p key={index} className={`entry entry-${entry.kind}`}>
+									<span className="entry-meta">
+										<span className="kind">{entry.kind}</span>
+										<time>{new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+									</span>
+									{entry.text}
+								</p>
+							))}
+						</div>
+						{stopError && (
+							<p className="banner" role="alert">
+								{stopError}
+							</p>
+						)}
+						<button className="danger" onClick={stop}>
+							Detener worker
+						</button>
+					</>
+				)}
+				{evidence && (
+					<p className="evidence-line">
+						{evidence.status}
+						{totalAdded || totalDeleted ? (
+							<> · <span className="adds">+{totalAdded}</span> <span className="dels">−{totalDeleted}</span></>
+						) : null}
+						{evidence.commits && evidence.commits.length > 0 ? <> · {evidence.commits.length} commits</> : null}
+						{evidence.receipt ? (
+							<span
+								className={`receipt ${evidence.valid === false ? "receipt-bad" : ""}`}
+								title={evidence.valid === false ? "El paquete de evidencia fue modificado después de que el worker lo congeló" : "Recibo de evidencia congelado al salir el worker"}
+							>
+								{" · "}{evidence.valid === false ? "⚠ recibo alterado " : ""}{evidence.receipt.slice(6, 14)}
 							</span>
-							{entry.text}
-						</p>
-					))}
-				</div>
-				{stopError && (
-					<p className="banner" role="alert">
-						{stopError}
+						) : null}
 					</p>
 				)}
-				<button className="danger" onClick={stop}>
-					Detener worker
-				</button>
+				{evidence?.summary && <p className="worker-summary">{evidence.summary}</p>}
 			</aside>
 		</>
 	);
 }
-
 function SessionForm({ agents }: { agents: DetectedAgent[] }) {
 	const [open, setOpen] = useState(false);
 	const [fields, setFields] = useState({ id: "", task: "", agent: "", branch: "" });
@@ -563,7 +608,7 @@ function SessionForm({ agents }: { agents: DetectedAgent[] }) {
 									title={a.version || a.path}
 								>
 									<span className="avatar" style={{ background: agentColor(a.agent) }} aria-hidden="true">
-										{agentInitial(a.agent)}
+										{agentMonogram(a.agent, a.displayName)}
 									</span>
 									{a.agent}
 								</button>
