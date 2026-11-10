@@ -104,7 +104,7 @@ func newDaemonServerProjects(fleet *Fleet, journal *Journal, launcher *Launcher,
 	mux.HandleFunc("GET /sessions/{id}/diff", d.sessionDiff)
 	mux.HandleFunc("POST /sessions/{id}/stop", d.stopSession)
 	mux.HandleFunc("POST /sessions/{id}/terminal", d.openSessionTerminal)
-	return withCORS(mux)
+	return withBoundary(withCORS(mux))
 }
 
 // sessionTerminalWS bridges the embedded terminal websocket for the session.

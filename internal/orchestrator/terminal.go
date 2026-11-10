@@ -33,8 +33,8 @@ type sessionTerminal struct {
 	cancel context.CancelFunc
 	exited chan struct{} // closed when the shell dies
 
-	writeMu sync.Mutex
-	clients int
+	mu      sync.Mutex
+	clients map[chan []byte]struct{}
 }
 
 // NewTerminalHub returns an empty hub.
@@ -46,7 +46,14 @@ func NewTerminalHub() *TerminalHub {
 // the first client starts the shell inside the worktree; further clients
 // attach to the same terminal.
 func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID, dir string) error {
-	conn, err := websocket.Accept(w, r, nil)
+	// The boundary middleware already filtered browser origins
+	// (originAllowed); coder/websocket's own cross-origin check compares
+	// against the request host, which would reject the desktop shell's
+	// tauri origin — authorize exactly the allowed origin hosts instead.
+	opts := &websocket.AcceptOptions{
+		OriginPatterns: wsOriginPatterns(),
+	}
+	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		return err
 	}
@@ -58,10 +65,10 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 		return err
 	}
 
-	term.attach()
-	defer term.detach()
+	// Register this client's mailbox and start its keystroke pump.
+	mailbox := term.subscribe()
+	defer term.unsubscribe(mailbox)
 
-	// Reader: client keystrokes into the PTY.
 	go func() {
 		for {
 			_, data, err := conn.Read(r.Context())
@@ -74,16 +81,54 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 		}
 	}()
 
-	// Writer: PTY output to the client, one burst at a time.
-	buf := make([]byte, 4096)
+	// Drain the mailbox into this client's websocket until the shell or the
+	// client goes away.
 	for {
-		n, err := term.io.Read(buf)
-		if err != nil {
+		select {
+		case burst, ok := <-mailbox:
+			if !ok {
+				_ = conn.Close(websocket.StatusNormalClosure, "shell exited")
+				return nil
+			}
+			if err := conn.Write(r.Context(), websocket.MessageBinary, burst); err != nil {
+				return nil
+			}
+		case <-r.Context().Done():
+			return nil
+		case <-term.exited:
 			_ = conn.Close(websocket.StatusNormalClosure, "shell exited")
 			return nil
 		}
-		if err := conn.Write(r.Context(), websocket.MessageBinary, buf[:n]); err != nil {
-			return nil
+	}
+}
+
+// subscribe registers a mailbox; the PTY broadcast delivers every burst.
+func (t *sessionTerminal) subscribe() chan []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.clients == nil {
+		t.clients = make(map[chan []byte]struct{})
+	}
+	mailbox := make(chan []byte, 64)
+	t.clients[mailbox] = struct{}{}
+	return mailbox
+}
+
+func (t *sessionTerminal) unsubscribe(mailbox chan []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.clients, mailbox)
+}
+
+// broadcast delivers one PTY burst to every mailbox; a slow or gone client
+// drops its burst instead of stalling the shell.
+func (t *sessionTerminal) broadcast(burst []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for mailbox := range t.clients {
+		select {
+		case mailbox <- burst:
+		default: // mailbox full: the client is too slow, drop the burst
 		}
 	}
 }
@@ -113,6 +158,23 @@ func (h *TerminalHub) acquire(id SessionID, dir string) (*sessionTerminal, error
 	}
 	term.hub, term.id, term.dir, term.cancel = h, id, dir, cancel
 
+	// The single PTY reader: every burst broadcasts to all clients.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := term.io.Read(buf)
+			if n > 0 {
+				burst := make([]byte, n)
+				copy(burst, buf[:n])
+				term.broadcast(burst)
+			}
+			if readErr != nil {
+				close(term.exited)
+				return
+			}
+		}
+	}()
+
 	h.mu.Lock()
 	h.terminals[id] = term
 	h.mu.Unlock()
@@ -134,20 +196,6 @@ func (h *TerminalHub) acquire(id SessionID, dir string) (*sessionTerminal, error
 		cancel()
 	}()
 	return term, nil
-}
-
-func (t *sessionTerminal) attach() {
-	t.writeMu.Lock()
-	t.clients++
-	t.writeMu.Unlock()
-}
-
-func (t *sessionTerminal) detach() {
-	t.writeMu.Lock()
-	t.clients--
-	// The last client leaving keeps the shell alive: the terminal belongs to
-	// the session, not to a window. Stop is the explicit way to end it.
-	t.writeMu.Unlock()
 }
 
 // Stop kills the session's terminal shell, if any.

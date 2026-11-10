@@ -99,28 +99,42 @@ func TestTerminalWSTwoClientsShareOneShell(t *testing.T) {
 	}
 	defer second.Close(websocket.StatusNormalClosure, "")
 
-	// Keystrokes through the second client reach the same shell: ask for a
-	// marker and expect it in the first client's stream.
-	if err := second.Write(ctx, websocket.MessageBinary, []byte("echo shared-pty\n")); err != nil {
-		t.Fatalf("write via second: %v", err)
-	}
-	seen := make([]byte, 0, 4096)
-	deadline := time.Now().Add(4 * time.Second)
-	for !strings.Contains(string(seen), "shared-pty") {
-		if time.Now().After(deadline) {
-			t.Fatalf("first client never saw the shared shell output: %q", string(seen))
+	// Keystrokes through the second client reach the same shell: keep asking
+	// for the marker until either client's stream shows it. The attach order
+	// is racy by design (each client subscribes when its Open advances), so
+	// the marker may echo before the first client's mailbox exists.
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := second.Write(ctx, websocket.MessageBinary, []byte("echo shared-pty\n")); err != nil {
+			t.Fatalf("write via second: %v", err)
 		}
-		readCtx, readCancel := context.WithTimeout(ctx, time.Second)
-		_, data, err := first.Read(readCtx)
-		readCancel()
-		if err != nil {
-			if strings.Contains(err.Error(), "timeout") {
-				continue
+		if sawInEither(first, second, "shared-pty", ctx) {
+			return
+		}
+	}
+	t.Fatal("the marker never reached either client through the shared shell")
+}
+
+// sawInEither drains both clients until one shows the marker (bounded).
+func sawInEither(a, b *websocket.Conn, marker string, ctx context.Context) bool {
+	deadline := time.Now().Add(2 * time.Second)
+	seenA, seenB := []byte{}, []byte{}
+	for time.Now().Before(deadline) {
+		for _, pair := range []struct {
+			conn *websocket.Conn
+			seen *[]byte
+		}{{a, &seenA}, {b, &seenB}} {
+			readCtx, readCancel := context.WithTimeout(ctx, 150*time.Millisecond)
+			_, data, err := pair.conn.Read(readCtx)
+			readCancel()
+			if err == nil {
+				*pair.seen = append(*pair.seen, data...)
+				if strings.Contains(string(*pair.seen), marker) {
+					return true
+				}
 			}
-			t.Fatalf("read: %v", err)
 		}
-		seen = append(seen, data...)
 	}
+	return false
 }
 
 func TestTerminalWithoutHubIs501(t *testing.T) {
