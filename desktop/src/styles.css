@@ -929,3 +929,53 @@ body {
 	max-height: 34vh;
 	overflow-y: auto;
 }
+
+/* ---------- embedded terminal + evidence line ---------- */
+
+.term-wrap {
+	position: relative;
+	border: 1px solid var(--line);
+	border-radius: var(--r-card);
+	overflow: hidden;
+	background: #12080f;
+}
+
+.term-host {
+	height: 240px;
+	padding: 6px;
+}
+
+.term-badge {
+	position: absolute;
+	top: 8px;
+	right: 10px;
+	font-size: 10px;
+	font-family: var(--font-mono);
+	color: var(--muted);
+	background: var(--bg2);
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	padding: 2px 8px;
+}
+
+.evidence-line {
+	margin: 0;
+	font-size: 12px;
+	color: var(--muted);
+	background: var(--bg0);
+	border: 1px solid var(--line-soft);
+	border-radius: var(--r-card);
+	padding: 7px 10px;
+}
+
+.evidence-line .adds {
+	color: var(--lane-ready);
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+.evidence-line .dels {
+	color: #f0a9a9;
+	font-family: var(--font-mono);
+	font-size: 11px;
+}

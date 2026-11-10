@@ -97,6 +97,27 @@ export interface DiffInfo {
 	patch: string;
 }
 
+export interface Evidence {
+	sessionId: string;
+	task: string;
+	agent: string;
+	branch: string;
+	worktree?: string;
+	status: string;
+	startedAt?: string;
+	updatedAt?: string;
+	files?: DiffFile[];
+	totalAdditions?: number;
+	totalDeletions?: number;
+	journal: JournalEntry[];
+}
+
+export async function fetchEvidence(id: string): Promise<Evidence> {
+	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/evidence`);
+	if (response.status === 404) throw new Error("Sesión desconocida.");
+	if (!response.ok) throw new Error(`GET evidence → ${response.status}`);
+	return (await response.json()) as Evidence;
+}
 export async function openTerminal(id: string): Promise<void> {
 	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/terminal`, { method: "POST" });
 	if (response.status === 404) throw new Error("Sesión desconocida.");

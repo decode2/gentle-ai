@@ -4,6 +4,7 @@ import {
 	fetchAgents,
 	fetchBoard,
 	fetchDiff,
+	fetchEvidence,
 	fetchSessionEvents,
 	openLiveBoard,
 	openTerminal,
@@ -12,10 +13,12 @@ import {
 	type Board,
 	type DetectedAgent,
 	type DiffInfo,
+	type Evidence,
 	type JournalEntry,
 	type Lane,
 	type SessionCard,
 } from "./api";
+import { EmbeddedTerminal } from "./EmbeddedTerminal";
 
 const EMPTY_BOARD: Board = { working: null, "needs-you": null, "in-review": null, "ready-to-merge": null };
 
@@ -252,6 +255,8 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	const [diff, setDiff] = useState<DiffInfo | null>(null);
 	const [showPatch, setShowPatch] = useState(false);
 	const [terminalError, setTerminalError] = useState<string | null>(null);
+	const [evidence, setEvidence] = useState<Evidence | null>(null);
+	const [showTerminal, setShowTerminal] = useState(false);
 	const journalRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -262,6 +267,8 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 				if (!cancelled) setEntries(fresh);
 				const freshDiff = await fetchDiff(card.id);
 				if (!cancelled) setDiff(freshDiff);
+				const freshEvidence = await fetchEvidence(card.id);
+				if (!cancelled) setEvidence(freshEvidence);
 			} catch {
 				/* the connection badge already shows daemon problems */
 			}
@@ -327,14 +334,27 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 					</span>
 				</div>
 				<div className="actions-row">
+					<button className="tool" onClick={() => setShowTerminal((v) => !v)}>
+						{showTerminal ? "Ocultar terminal" : "⌨ Terminal"}
+					</button>
 					<button className="tool" onClick={terminal}>
-						⟫ Terminal en el worktree
+						⟫ Terminal del OS
 					</button>
 					<button className="tool" onClick={() => setShowPatch((v) => !v)} disabled={changed === 0}>
-						{showPatch ? "Ocultar diff" : `Diff (${changed} archivos)`}
+						{showPatch ? "Ocultar diff" : `Diff (${changed})`}
 					</button>
 				</div>
 				{terminalError && <p className="banner" role="alert">{terminalError}</p>}
+				{showTerminal && <EmbeddedTerminal sessionId={card.id} />}
+				{evidence && (
+					<p className="evidence-line">
+						{evidence.status}
+						{evidence.totalAdditions || evidence.totalDeletions ? (
+							<> · <span className="adds">+{evidence.totalAdditions}</span> <span className="dels">−{evidence.totalDeletions}</span></>
+						) : null}
+						{evidence.startedAt ? <> · desde {new Date(evidence.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</> : null}
+					</p>
+				)}
 				{showPatch && diff && (
 					<div className="diffview">
 						<div className="diffstat">
