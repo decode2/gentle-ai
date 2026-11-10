@@ -86,5 +86,6 @@ type Session struct {
 	Agent    string
 	Branch   string
 	Worktree string
+	Base     string
 	Facts    Facts
 }

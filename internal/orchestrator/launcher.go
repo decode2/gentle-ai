@@ -78,6 +78,7 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 		return err
 	}
 	session.Worktree = path
+	session.Base = l.Base
 	if err := l.Fleet.Start(session); err != nil {
 		_ = l.Worktrees.Remove(session.Branch)
 		return err
