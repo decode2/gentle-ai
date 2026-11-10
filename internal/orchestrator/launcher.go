@@ -12,9 +12,22 @@ import (
 	"time"
 )
 
-// workProcess wraps one running worker process.
+// workProcess wraps one running worker process. done closes exactly when
+// cmd.Wait returned: every kill/monitor path checks it instead of touching
+// cmd fields that Wait writes concurrently.
 type workProcess struct {
-	cmd *exec.Cmd
+	cmd  *exec.Cmd
+	done chan struct{}
+}
+
+// finished reports whether the worker already exited.
+func (wp *workProcess) finished() bool {
+	select {
+	case <-wp.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // Launcher turns a session request into a running worker: it creates the
@@ -148,6 +161,7 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 		command = defaultAgentCommand
 	}
 	wp := command(workerCtx, session, session.Worktree)
+	wp.done = make(chan struct{})
 	l.running[session.ID] = wp
 	l.mu.Unlock()
 
@@ -174,10 +188,10 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 	go func() {
 		<-ctx.Done()
 		l.mu.Lock()
-		process, live := l.running[session.ID]
-		_ = live
+		current := l.running[session.ID]
+		live := current == wp && wp.cmd.Process != nil
 		l.mu.Unlock()
-		if process == wp && wp.cmd.Process != nil && wp.cmd.ProcessState == nil {
+		if live && !wp.finished() {
 			_ = killProcessTree(wp.cmd, wp.cmd.Process)
 		}
 	}()
@@ -245,6 +259,7 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 	wg.Wait()
 
 	waitErr := wp.cmd.Wait()
+	close(wp.done)
 	text := "ok"
 	if waitErr != nil {
 		text = waitErr.Error()
@@ -284,19 +299,20 @@ func (l *Launcher) freezeReceipt(session Session, status string) {
 }
 
 // KillAll kills every running worker's process tree; the shutdown path
-// sweeps stragglers after the lifecycle context canceled.
+// sweeps stragglers after the lifecycle context canceled. ProcessState is
+// only read under l.mu — Wait writes it concurrently.
 func (l *Launcher) KillAll() {
 	l.mu.Lock()
 	live := make([]*workProcess, 0, len(l.running))
 	for id, wp := range l.running {
 		l.stopping[id] = true
-		live = append(live, wp)
+		if wp.cmd.Process != nil && !wp.finished() {
+			live = append(live, wp)
+		}
 	}
 	l.mu.Unlock()
 	for _, wp := range live {
-		if wp.cmd.Process != nil && wp.cmd.ProcessState == nil {
-			_ = killProcessTree(wp.cmd, wp.cmd.Process)
-		}
+		_ = killProcessTree(wp.cmd, wp.cmd.Process)
 	}
 }
 
@@ -323,7 +339,7 @@ func (l *Launcher) Stop(id SessionID) error {
 		l.stopping[id] = true
 	}
 	var process *os.Process
-	if ok && wp.cmd.Process != nil {
+	if ok && wp.cmd.Process != nil && !wp.finished() {
 		process = wp.cmd.Process
 	}
 	l.mu.Unlock()
@@ -341,9 +357,9 @@ func (l *Launcher) Stop(id SessionID) error {
 	// their own, but a grandchild holding stdout would otherwise stall the
 	// journal and the receipt freeze.
 	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for wp.cmd.ProcessState == nil && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
+		select {
+		case <-wp.done:
+		case <-time.After(2 * time.Second):
 		}
 		closeWorkerPipes(wp.cmd)
 	}()

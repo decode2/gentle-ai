@@ -9,10 +9,10 @@ import (
 )
 
 // killProcessTree kills the worker's process group (Setpgid at start).
+// It must only run for a live process — callers check state under l.mu,
+// because Cmd.Wait writes ProcessState concurrently.
 func killProcessTree(cmd *exec.Cmd, process *os.Process) error {
-	if cmd.ProcessState != nil {
-		return nil
-	}
+	_ = cmd
 	if -process.Pid != 0 {
 		return syscall.Kill(-process.Pid, syscall.SIGKILL)
 	}
