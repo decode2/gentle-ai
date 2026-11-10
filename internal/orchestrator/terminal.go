@@ -110,7 +110,7 @@ func (h *TerminalHub) acquire(id SessionID, dir string) (*sessionTerminal, error
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, shell, "-i")
 	cmd.Dir = dir
-	applyProcessPlatformTraits(cmd)
+	applyInteractiveTraits(cmd)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {

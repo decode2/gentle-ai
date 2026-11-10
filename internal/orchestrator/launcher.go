@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // workProcess wraps one running worker process.
@@ -37,6 +38,12 @@ type Launcher struct {
 	Command func(ctx context.Context, s Session, dir string) *workProcess
 	// Engram publishes fleet memory when set (PRD F5); failures degrade.
 	Engram *EngramBridge
+	// ReceiptGate requires the frozen evidence receipt before a launched
+	// session may graduate to ready-to-merge (F4). Default on.
+	ReceiptGate bool
+	// Projects resolves per-project worktree managers for multi-repo fleets;
+	// nil or an unknown project falls back to the fixed Worktrees.
+	Projects *Projects
 
 	mu       sync.Mutex
 	running  map[SessionID]*workProcess
@@ -100,11 +107,19 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 	if err := validateBranch(session.Branch); err != nil {
 		return err
 	}
+	manager := l.Worktrees
+	if l.Projects != nil && session.Project != "" {
+		resolved, ok := l.Projects.ManagerFor(session.Project)
+		if !ok {
+			return fmt.Errorf("orchestrator: unknown project %q", session.Project)
+		}
+		manager = resolved
+	}
 	if _, err := l.Fleet.Get(session.ID); err == nil {
 		return ErrDuplicateSession
 	}
 
-	path, err := l.Worktrees.Create(session.Branch, l.Base)
+	path, err := manager.Create(session.Branch, l.Base)
 	if err != nil {
 		return err
 	}
@@ -136,7 +151,12 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 	l.running[session.ID] = wp
 	l.mu.Unlock()
 
-	l.Fleet.Update(session.ID, func(f *Facts) { f.Activity.Running = true })
+	l.Fleet.Update(session.ID, func(f *Facts) {
+		f.Activity.Running = true
+		if l.ReceiptGate {
+			f.ReceiptRequired = true
+		}
+	})
 	go l.run(session, wp)
 	return nil
 }
@@ -150,10 +170,12 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 
 	if stopping {
 		l.Journal.Append(session.ID, "stopped", "stopped before launch")
+		l.freezeReceipt(session, "Detenido sin iniciar")
 		l.finish(session, "worker stopped before launch")
 		return
 	}
 
+	applyProcessPlatformTraits(wp.cmd)
 	stdout, err := wp.cmd.StdoutPipe()
 	if err == nil {
 		err = wp.cmd.Start()
@@ -219,28 +241,32 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 	l.mu.Unlock()
 	if wasStopping {
 		l.Journal.Append(session.ID, "stopped", text)
+		l.freezeReceipt(session, "Detenido")
 		l.finish(session, "worker stopped: "+text)
 	} else {
 		l.Journal.Append(session.ID, "exited", text)
-		l.freezeReceipt(session)
+		l.freezeReceipt(session, "Exitado")
 		l.finish(session, "worker exited ("+text+"); task: "+session.Task+"; branch: "+session.Branch)
 	}
 }
 
 // freezeReceipt stamps the session's evidence receipt at worker exit: the
-// package's facts at this moment are what the receipt attests to.
-func (l *Launcher) freezeReceipt(session Session) {
+// package's facts at this moment are what the receipt attests to. Freezing
+// releases the evidence gate (F4).
+func (l *Launcher) freezeReceipt(session Session, status string) {
 	ev := Evidence{
 		SessionID: string(session.ID),
 		Task:      session.Task,
 		Agent:     session.Agent,
 		Branch:    session.Branch,
-		Status:    "Exitado",
+		Status:    status,
 	}
-	if l.Engram != nil && l.Fleet != nil {
-		_ = l.Engram.PublishOutcome(context.Background(), session.ID, session.Task, "receipt frozen")
+	receipt := evidenceReceipt(ev)
+	l.Journal.Append(session.ID, "receipt", receipt)
+	_, _ = l.Fleet.Update(session.ID, func(f *Facts) { f.ReceiptValid = true })
+	if l.Engram != nil {
+		_ = l.Engram.PublishOutcome(context.Background(), session.ID, session.Task, "receipt frozen "+receipt)
 	}
-	l.Journal.Append(session.ID, "receipt", evidenceReceipt(ev))
 }
 
 // finish marks the worker idle in the fleet and records the outcome in
@@ -255,9 +281,10 @@ func (l *Launcher) finish(session Session, summary string) {
 	}
 }
 
-// Stop kills a running worker. If the process has not started yet, the
-// stopping flag makes the launch path kill it right after start. The journal
-// records the stop; the worktree and branch survive for inspection.
+// Stop kills a running worker and its whole process tree. If the process
+// has not started yet, the stopping flag makes the launch path kill it
+// right after start. The journal records the stop; the worktree and branch
+// survive for inspection.
 func (l *Launcher) Stop(id SessionID) error {
 	l.mu.Lock()
 	wp, ok := l.running[id]
@@ -276,5 +303,18 @@ func (l *Launcher) Stop(id SessionID) error {
 	if process == nil {
 		return nil
 	}
-	return process.Kill()
+	if err := killProcessTree(wp.cmd, process); err != nil {
+		return err
+	}
+	// Unblock the output scanners: with the tree gone the pipes close on
+	// their own, but a grandchild holding stdout would otherwise stall the
+	// journal and the receipt freeze.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for wp.cmd.ProcessState == nil && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		closeWorkerPipes(wp.cmd)
+	}()
+	return nil
 }

@@ -62,6 +62,7 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 	}
 	watcher := NewWatcher(fleet, router, source, interval)
 	detector := NewAgentDetector(nil, 0)
+	projects := NewProjects()
 
 	journal := NewJournal()
 	var launcher *Launcher
@@ -72,12 +73,14 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 		}
 		lifecycle, cancelLifecycle := context.WithCancel(ctx)
 		launcher = &Launcher{
-			Root:      lifecycle,
-			Fleet:     fleet,
-			Router:    router,
-			Journal:   journal,
-			Worktrees: &WorktreeManager{Repo: opts.RepoPath, Parent: filepath.Join(opts.RepoPath, ".orchestrator-worktrees")},
-			Base:      base,
+			Root:        lifecycle,
+			Fleet:       fleet,
+			Router:      router,
+			Journal:     journal,
+			Worktrees:   &WorktreeManager{Repo: opts.RepoPath, Parent: filepath.Join(opts.RepoPath, ".orchestrator-worktrees")},
+			Base:        base,
+			ReceiptGate: true,
+			Projects:    projects,
 		}
 		// Workers die with the daemon: canceling the lifecycle context kills
 		// every running worker process (see Launcher.Root).

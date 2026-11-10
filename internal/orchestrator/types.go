@@ -77,6 +77,11 @@ type Facts struct {
 	Activity  Activity
 	PR        *PullRequest
 	UpdatedAt time.Time
+	// Receipt gate (F4): sessions the daemon launched require their frozen
+	// evidence receipt before ready-to-merge; externally registered sessions
+	// never set ReceiptRequired and skip the gate.
+	ReceiptRequired bool
+	ReceiptValid    bool
 }
 
 // Session is one worker registered in the fleet.
@@ -85,6 +90,7 @@ type Session struct {
 	Task     string
 	Agent    string
 	Branch   string
+	Project  string
 	Worktree string
 	Base     string
 	Facts    Facts

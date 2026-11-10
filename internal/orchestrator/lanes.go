@@ -40,6 +40,11 @@ func DeriveLane(f Facts) Lane {
 		checksPassed := checksAllPassed(p)
 		switch {
 		case approved && checksPassed && !pendingReview:
+			// Evidence gate (F4): launched sessions wait for their frozen
+			// receipt before graduating; external sessions skip the gate.
+			if f.ReceiptRequired && !f.ReceiptValid {
+				return LaneInReview
+			}
 			return LaneReadyToMerge
 		default:
 			return LaneInReview

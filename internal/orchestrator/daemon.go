@@ -18,6 +18,7 @@ type DaemonHTTP struct {
 	agents   *AgentDetector
 	terminal *TerminalHub
 	config   *configStore
+	projects *Projects
 }
 
 // corsAllowedOrigins are the desktop shell origins allowed to call the
@@ -82,13 +83,19 @@ func NewDaemonServerFull(fleet *Fleet, journal *Journal, launcher *Launcher, age
 }
 
 func newDaemonServer(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector, terminal *TerminalHub, config *configStore) http.Handler {
-	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher, agents: agents, terminal: terminal, config: config}
+	return newDaemonServerProjects(fleet, journal, launcher, agents, terminal, config, NewProjects())
+}
+
+func newDaemonServerProjects(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector, terminal *TerminalHub, config *configStore, projects *Projects) http.Handler {
+	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher, agents: agents, terminal: terminal, config: config, projects: projects}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("GET /agents", d.listAgents)
 	mux.HandleFunc("GET /config", d.getConfig)
 	mux.HandleFunc("POST /config", d.saveConfig)
+	mux.HandleFunc("GET /projects", d.listProjects)
+	mux.HandleFunc("POST /projects", d.addProject)
 	mux.HandleFunc("GET /sessions/{id}/terminal", d.sessionTerminalWS)
 	mux.HandleFunc("GET /sessions/{id}/evidence", d.sessionEvidence)
 	mux.HandleFunc("POST /sessions", d.startSession)

@@ -13,6 +13,7 @@ type SessionCard struct {
 	Task     string `json:"task"`
 	Agent    string `json:"agent"`
 	Branch   string `json:"branch"`
+	Project  string `json:"project,omitempty"`
 	PR       int    `json:"pr,omitempty"`
 	Running  bool   `json:"running,omitempty"`
 	Status   string `json:"status,omitempty"`
@@ -22,6 +23,12 @@ type SessionCard struct {
 // Board groups every session's card by its fact-derived lane. All four lanes
 // are present so a renderer can draw the board without nil checks.
 func (f *Fleet) Board() map[Lane][]SessionCard {
+	return f.BoardFor("")
+}
+
+// BoardFor groups the board restricted to one project; an empty project
+// means every session.
+func (f *Fleet) BoardFor(project string) map[Lane][]SessionCard {
 	groups := make(map[Lane][]SessionCard, 4)
 	for _, lane := range []Lane{LaneWorking, LaneNeedsYou, LaneInReview, LaneReadyToMerge} {
 		groups[lane] = nil
@@ -30,11 +37,15 @@ func (f *Fleet) Board() map[Lane][]SessionCard {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	for id, s := range f.sessions {
+		if project != "" && s.Project != project {
+			continue
+		}
 		card := SessionCard{
 			ID:       string(id),
 			Task:     s.Task,
 			Agent:    s.Agent,
 			Branch:   s.Branch,
+			Project:  s.Project,
 			Running:  s.Facts.Activity.Running,
 			Status:   cardStatus(&s.Facts),
 			Question: s.Facts.Activity.Question,

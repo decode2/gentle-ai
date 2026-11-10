@@ -149,3 +149,34 @@ func evidenceReceiptValid(ev Evidence) bool {
 	}
 	return evidenceReceipt(ev) == ev.Receipt
 }
+
+// listProjects reports the managed repositories.
+func (d *DaemonHTTP) listProjects(w http.ResponseWriter, _ *http.Request) {
+	roster := []Project{}
+	if d.projects != nil {
+		roster = d.projects.List()
+	}
+	writeJSON(w, http.StatusOK, roster)
+}
+
+// addProject validates and registers one repository for a multi-repo fleet.
+func (d *DaemonHTTP) addProject(w http.ResponseWriter, r *http.Request) {
+	if d.projects == nil {
+		http.Error(w, "projects registry unavailable", http.StatusInternalServerError)
+		return
+	}
+	var project Project
+	if err := json.NewDecoder(r.Body).Decode(&project); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if err := d.projects.Add(project); err != nil {
+		if err.Error() == ErrDuplicateSession.Error() {
+			http.Error(w, "project already registered", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusCreated, project)
+}

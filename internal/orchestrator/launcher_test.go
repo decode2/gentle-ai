@@ -16,11 +16,12 @@ func launcherFixture(t *testing.T) (*Fleet, *Router, *Journal, *Launcher) {
 	router := NewRouter(2)
 	journal := NewJournal()
 	launcher := &Launcher{
-		Fleet:     fleet,
-		Router:    router,
-		Journal:   journal,
-		Worktrees: &WorktreeManager{Repo: repo, Parent: t.TempDir()},
-		Base:      "main",
+		Fleet:       fleet,
+		Router:      router,
+		Journal:     journal,
+		Worktrees:   &WorktreeManager{Repo: repo, Parent: t.TempDir()},
+		Base:        "main",
+		ReceiptGate: true,
 	}
 	return fleet, router, journal, launcher
 }
@@ -153,7 +154,8 @@ func TestLauncherStopTerminatesWorker(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		entries := journal.Get("long")
-		if len(entries) > 0 && entries[len(entries)-1].Kind == "stopped" {
+		last := entries[len(entries)-1]
+		if last.Kind == "receipt" { // freeze runs right after the stop entry
 			return
 		}
 		if time.Now().After(deadline) {

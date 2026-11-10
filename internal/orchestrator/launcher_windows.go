@@ -9,3 +9,6 @@ import "os/exec"
 // exiting the app terminates daemon and workers together. Nothing to set
 // here — the default (no breakaway) is the correct behavior.
 func applyProcessPlatformTraits(*exec.Cmd) {}
+
+// applyInteractiveTraits: no attributes needed on Windows.
+func applyInteractiveTraits(*exec.Cmd) {}
