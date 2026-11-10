@@ -18,6 +18,9 @@ type SessionCard struct {
 	Running  bool   `json:"running,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Question string `json:"question,omitempty"`
+	// GatePending marks a launched session whose evidence receipt has not
+	// frozen yet (F4): the card explains why ready-to-merge waits.
+	GatePending bool `json:"gatePending,omitempty"`
 }
 
 // Board groups every session's card by its fact-derived lane. All four lanes
@@ -41,14 +44,15 @@ func (f *Fleet) BoardFor(project string) map[Lane][]SessionCard {
 			continue
 		}
 		card := SessionCard{
-			ID:       string(id),
-			Task:     s.Task,
-			Agent:    s.Agent,
-			Branch:   s.Branch,
-			Project:  s.Project,
-			Running:  s.Facts.Activity.Running,
-			Status:   cardStatus(&s.Facts),
-			Question: s.Facts.Activity.Question,
+			ID:          string(id),
+			Task:        s.Task,
+			Agent:       s.Agent,
+			Branch:      s.Branch,
+			Project:     s.Project,
+			Running:     s.Facts.Activity.Running,
+			Status:      cardStatus(&s.Facts),
+			Question:    s.Facts.Activity.Question,
+			GatePending: s.Facts.ReceiptRequired && !s.Facts.ReceiptValid,
 		}
 		if p := s.Facts.PR; p != nil {
 			card.PR = p.Number

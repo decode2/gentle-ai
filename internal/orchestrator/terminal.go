@@ -2,16 +2,19 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
-	"runtime"
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/creack/pty"
 )
+
+// terminalIO is the platform-neutral handle of a worker's pseudo terminal:
+// an os.File PTY on Unix, a ConPTY on Windows.
+type terminalIO interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Close() error
+}
 
 // TerminalHub owns the PTY-backed terminal for one session: at most one shell
 // at a time, shared by every attached websocket client (the same session
@@ -21,13 +24,14 @@ type TerminalHub struct {
 	terminals map[SessionID]*sessionTerminal
 }
 
+// sessionTerminal is one live interactive shell anchored in a worktree.
 type sessionTerminal struct {
 	hub    *TerminalHub
 	id     SessionID
 	dir    string
-	cmd    *exec.Cmd
-	ptmx   *os.File
+	io     terminalIO
 	cancel context.CancelFunc
+	exited chan struct{} // closed when the shell dies
 
 	writeMu sync.Mutex
 	clients int
@@ -39,7 +43,7 @@ func NewTerminalHub() *TerminalHub {
 }
 
 // Open upgrades the websocket request and bridges it to the session's PTY:
-// the first client starts `SHELL -i` inside the worktree; further clients
+// the first client starts the shell inside the worktree; further clients
 // attach to the same terminal.
 func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID, dir string) error {
 	conn, err := websocket.Accept(w, r, nil)
@@ -64,16 +68,16 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 			if err != nil {
 				return
 			}
-			if _, err := term.ptmx.Write(data); err != nil {
+			if _, err := term.io.Write(data); err != nil {
 				return
 			}
 		}
 	}()
 
-	// Writer: PTY output to the client, one line/burst at a time.
+	// Writer: PTY output to the client, one burst at a time.
 	buf := make([]byte, 4096)
 	for {
-		n, err := term.ptmx.Read(buf)
+		n, err := term.io.Read(buf)
 		if err != nil {
 			_ = conn.Close(websocket.StatusNormalClosure, "shell exited")
 			return nil
@@ -88,48 +92,45 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 // attach. The worktree anchors the shell; the daemon's lifecycle bounds it.
 func (h *TerminalHub) acquire(id SessionID, dir string) (*sessionTerminal, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if term, ok := h.terminals[id]; ok {
+		h.mu.Unlock()
 		return term, nil
 	}
-	if runtime.GOOS == "windows" {
-		return nil, fmt.Errorf("embedded terminal requires a Windows ConPTY build (pending); use the worktree terminal button for now")
-	}
+	h.mu.Unlock()
+
 	if dir == "" {
-		return nil, fmt.Errorf("session has no worktree")
+		return nil, errNoWorktree
 	}
-	if _, err := os.Stat(dir); err != nil {
-		return nil, fmt.Errorf("worktree not accessible: %w", err)
+	if statErr := statDir(dir); statErr != nil {
+		return nil, errNoWorktree
 	}
 
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
-	}
 	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, shell, "-i")
-	cmd.Dir = dir
-	applyInteractiveTraits(cmd)
-
-	ptmx, err := pty.Start(cmd)
+	term, err := newSessionTerminal(ctx, dir)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("pty start: %w", err)
+		return nil, err
 	}
+	term.hub, term.id, term.dir, term.cancel = h, id, dir, cancel
 
-	term := &sessionTerminal{hub: h, id: id, dir: dir, cmd: cmd, ptmx: ptmx, cancel: cancel}
+	h.mu.Lock()
 	h.terminals[id] = term
+	h.mu.Unlock()
+
+	// When the shell exits — or the daemon dies — drop the terminal so the
+	// next attach starts a fresh one.
 	go func() {
-		// When the shell exits, drop the terminal so the next attach starts
-		// a fresh one.
-		_ = cmd.Wait()
+		select {
+		case <-term.exited:
+		case <-ctx.Done():
+			_ = term.io.Close()
+		}
 		h.mu.Lock()
 		if h.terminals[id] == term {
 			delete(h.terminals, id)
 		}
 		h.mu.Unlock()
-		_ = ptmx.Close()
+		_ = term.io.Close()
 		cancel()
 	}()
 	return term, nil
@@ -158,6 +159,6 @@ func (h *TerminalHub) Stop(id SessionID) {
 	}
 	h.mu.Unlock()
 	if ok {
-		_ = term.cmd.Process.Kill()
+		_ = term.io.Close()
 	}
 }
