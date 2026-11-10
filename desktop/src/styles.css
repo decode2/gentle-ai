@@ -840,3 +840,92 @@ body {
 		transform: none;
 	}
 }
+
+/* ---------- drawer: actions row, diff view ---------- */
+
+.actions-row {
+	display: flex;
+	gap: 8px;
+}
+
+.tool {
+	flex: 1;
+	background: var(--bg0);
+	border: 1px solid var(--line);
+	color: var(--text);
+	border-radius: 8px;
+	padding: 8px 10px;
+	font-size: 12.5px;
+	cursor: pointer;
+	transition: border-color 120ms ease;
+}
+
+.tool:hover:not(:disabled) {
+	border-color: var(--rose);
+}
+
+.tool:disabled {
+	color: var(--faint);
+	cursor: default;
+}
+
+.diffview {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+}
+
+.diffstat {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	background: var(--bg0);
+	border: 1px solid var(--line-soft);
+	border-radius: var(--r-card);
+	padding: 8px 10px;
+}
+
+.diffstat p {
+	margin: 0;
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.diffstat code {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.diffstat .adds {
+	color: var(--lane-ready);
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+.diffstat .dels {
+	color: #f0a9a9;
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+.patch {
+	margin: 0;
+	background: var(--bg0);
+	border: 1px solid var(--line-soft);
+	border-radius: var(--r-card);
+	padding: 10px;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--muted);
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 34vh;
+	overflow-y: auto;
+}

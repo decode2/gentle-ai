@@ -79,6 +79,29 @@ export async function fetchSessionEvents(id: string): Promise<JournalEntry[]> {
 	return (await response.json()) as JournalEntry[];
 }
 
+export async function fetchDiff(id: string): Promise<DiffInfo> {
+	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/diff`);
+	if (response.status === 404) throw new Error("Sesión desconocida.");
+	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
+	return (await response.json()) as DiffInfo;
+}
+
+export interface DiffFile {
+	path: string;
+	additions: number;
+	deletions: number;
+}
+
+export interface DiffInfo {
+	files: DiffFile[];
+	patch: string;
+}
+
+export async function openTerminal(id: string): Promise<void> {
+	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/terminal`, { method: "POST" });
+	if (response.status === 404) throw new Error("Sesión desconocida.");
+	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
+}
 export async function stopSession(id: string): Promise<void> {
 	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
 	if (response.status === 404) throw new Error("No hay worker corriendo para esa sesión.");

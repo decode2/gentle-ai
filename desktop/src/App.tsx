@@ -3,12 +3,15 @@ import {
 	DAEMON_BASE,
 	fetchAgents,
 	fetchBoard,
+	fetchDiff,
 	fetchSessionEvents,
 	openLiveBoard,
+	openTerminal,
 	startSession,
 	stopSession,
 	type Board,
 	type DetectedAgent,
+	type DiffInfo,
 	type JournalEntry,
 	type Lane,
 	type SessionCard,
@@ -246,6 +249,9 @@ function LaneColumn({
 function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => void }) {
 	const [entries, setEntries] = useState<JournalEntry[]>([]);
 	const [stopError, setStopError] = useState<string | null>(null);
+	const [diff, setDiff] = useState<DiffInfo | null>(null);
+	const [showPatch, setShowPatch] = useState(false);
+	const [terminalError, setTerminalError] = useState<string | null>(null);
 	const journalRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -254,6 +260,8 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 			try {
 				const fresh = await fetchSessionEvents(card.id);
 				if (!cancelled) setEntries(fresh);
+				const freshDiff = await fetchDiff(card.id);
+				if (!cancelled) setDiff(freshDiff);
 			} catch {
 				/* the connection badge already shows daemon problems */
 			}
@@ -286,6 +294,17 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 		}
 	};
 
+	const terminal = async () => {
+		setTerminalError(null);
+		try {
+			await openTerminal(card.id);
+		} catch (cause) {
+			setTerminalError(cause instanceof Error ? cause.message : String(cause));
+		}
+	};
+
+	const changed = diff?.files.length ?? 0;
+
 	return (
 		<>
 			<div className="backdrop" onClick={onClose} aria-hidden="true" />
@@ -307,6 +326,28 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 						{card.running ? "corriendo" : "detenido"}
 					</span>
 				</div>
+				<div className="actions-row">
+					<button className="tool" onClick={terminal}>
+						⟫ Terminal en el worktree
+					</button>
+					<button className="tool" onClick={() => setShowPatch((v) => !v)} disabled={changed === 0}>
+						{showPatch ? "Ocultar diff" : `Diff (${changed} archivos)`}
+					</button>
+				</div>
+				{terminalError && <p className="banner" role="alert">{terminalError}</p>}
+				{showPatch && diff && (
+					<div className="diffview">
+						<div className="diffstat">
+							{diff.files.map((f) => (
+								<p key={f.path}>
+									<code>{f.path}</code>
+									<span className="adds">+{f.additions}</span> <span className="dels">−{f.deletions}</span>
+								</p>
+							))}
+						</div>
+						<pre className="patch">{diff.patch || "(sin cambios contra la base)"}</pre>
+					</div>
+				)}
 				<h4>Journal</h4>
 				<div className="journal" ref={journalRef}>
 					{entries.length === 0 && <p className="lane-empty">(sin eventos)</p>}
