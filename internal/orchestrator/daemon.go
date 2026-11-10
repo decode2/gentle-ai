@@ -283,7 +283,7 @@ func (d *DaemonHTTP) sessionEvents(w http.ResponseWriter, r *http.Request) {
 	id := SessionID(r.PathValue("id"))
 	var entries []JournalEntry
 	if d.journal != nil {
-		entries = d.journal.Get(id)
+		entries, _ = d.journal.ForEvidence(id, maxEvidenceJournalEntries)
 	}
 	if entries == nil {
 		entries = []JournalEntry{}

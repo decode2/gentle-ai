@@ -66,6 +66,7 @@ type Router struct {
 	maxFixCycles int
 	failures     map[SessionID]int
 	inboxes      map[SessionID]chan Event
+	dropped      map[SessionID]int
 }
 
 // inboxCapacity bounds how many undelivered events a session may queue.
@@ -78,6 +79,7 @@ func NewRouter(maxFixCycles int) *Router {
 		maxFixCycles: maxFixCycles,
 		failures:     make(map[SessionID]int),
 		inboxes:      make(map[SessionID]chan Event),
+		dropped:      make(map[SessionID]int),
 	}
 }
 
@@ -123,6 +125,15 @@ func (r *Router) Route(ev Event) error {
 	case ch <- ev:
 		return nil
 	default:
+		r.dropped[ev.Session]++
 		return errors.New("orchestrator: session inbox full")
 	}
+}
+
+// Dropped reports how many events were refused for a session because its
+// inbox was full; a non-zero count is a visibility signal, not an error.
+func (r *Router) Dropped(id SessionID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped[id]
 }

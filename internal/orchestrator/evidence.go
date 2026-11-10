@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// maxEvidenceJournalEntries bounds the journal served in API responses.
+const maxEvidenceJournalEntries = 500
+
 // Evidence is the per-worker audit package (PRD F4): what the session did,
 // in facts. The UI shows it; RDD receipts join it in a later sprint.
 type Evidence struct {
@@ -47,7 +50,7 @@ func (d *DaemonHTTP) sessionEvidence(w http.ResponseWriter, r *http.Request) {
 		Journal:   []JournalEntry{},
 	}
 	if d.journal != nil {
-		ev.Journal = d.journal.Get(s.ID)
+		ev.Journal, _ = d.journal.ForEvidence(s.ID, maxEvidenceJournalEntries)
 		if len(ev.Journal) > 0 {
 			first, last := ev.Journal[0].At, ev.Journal[len(ev.Journal)-1].At
 			ev.StartedAt = &first

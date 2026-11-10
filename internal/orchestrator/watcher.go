@@ -68,6 +68,9 @@ func NewWatcher(fleet *Fleet, router *Router, source PullSource, interval time.D
 // unknown-session routing failures are ignored (the snapshot belongs to a PR
 // no worker owns).
 func (w *Watcher) Poll(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err // a dying daemon routes nothing
+	}
 	snapshots, err := w.source.Fetch(ctx)
 	if err != nil {
 		return err
