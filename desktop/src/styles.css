@@ -1056,3 +1056,48 @@ body {
 	color: #f0a9a9 !important;
 	font-weight: 600;
 }
+
+/* ---------- project bar + update banner ---------- */
+
+.project-bar {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.project-tab {
+	background: var(--bg1);
+	border: 1px solid var(--line);
+	color: var(--muted);
+	border-radius: 999px;
+	padding: 5px 14px;
+	font-size: 12.5px;
+	cursor: pointer;
+	font-family: var(--font-display);
+}
+
+.project-tab:hover {
+	border-color: var(--rose-soft);
+	color: var(--text);
+}
+
+.project-tab.picked {
+	background: rgba(240, 149, 200, 0.12);
+	border-color: var(--rose);
+	color: var(--rose);
+}
+
+.update-banner {
+	display: block;
+	background: rgba(138, 184, 240, 0.08);
+	border: 1px solid rgba(138, 184, 240, 0.35);
+	color: var(--lane-review);
+	border-radius: var(--r-card);
+	padding: 8px 13px;
+	font-size: 12.5px;
+	text-decoration: none;
+}
+
+.update-banner:hover {
+	background: rgba(138, 184, 240, 0.14);
+}

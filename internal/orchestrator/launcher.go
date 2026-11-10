@@ -157,16 +157,30 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 			f.ReceiptRequired = true
 		}
 	})
-	go l.run(session, wp)
+	go l.run(workerCtx, session, wp)
 	return nil
 }
 
 // run records the worker's output until exit. The process was already
 // registered by StartTask; a stop that arrived first wins the journal.
-func (l *Launcher) run(session Session, wp *workProcess) {
+func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 	l.mu.Lock()
 	stopping := l.stopping[session.ID]
 	l.mu.Unlock()
+
+	// Lifecycle watchdog: when the daemon's context cancels (app close),
+	// kill the worker's whole process tree — grandchildren included — so
+	// nothing outlives the app.
+	go func() {
+		<-ctx.Done()
+		l.mu.Lock()
+		process, live := l.running[session.ID]
+		_ = live
+		l.mu.Unlock()
+		if process == wp && wp.cmd.Process != nil && wp.cmd.ProcessState == nil {
+			_ = killProcessTree(wp.cmd, wp.cmd.Process)
+		}
+	}()
 
 	if stopping {
 		l.Journal.Append(session.ID, "stopped", "stopped before launch")
@@ -266,6 +280,23 @@ func (l *Launcher) freezeReceipt(session Session, status string) {
 	_, _ = l.Fleet.Update(session.ID, func(f *Facts) { f.ReceiptValid = true })
 	if l.Engram != nil {
 		_ = l.Engram.PublishOutcome(context.Background(), session.ID, session.Task, "receipt frozen "+receipt)
+	}
+}
+
+// KillAll kills every running worker's process tree; the shutdown path
+// sweeps stragglers after the lifecycle context canceled.
+func (l *Launcher) KillAll() {
+	l.mu.Lock()
+	live := make([]*workProcess, 0, len(l.running))
+	for id, wp := range l.running {
+		l.stopping[id] = true
+		live = append(live, wp)
+	}
+	l.mu.Unlock()
+	for _, wp := range live {
+		if wp.cmd.Process != nil && wp.cmd.ProcessState == nil {
+			_ = killProcessTree(wp.cmd, wp.cmd.Process)
+		}
 	}
 }
 

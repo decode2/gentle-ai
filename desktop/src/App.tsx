@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+	APP_VERSION,
 	DAEMON_BASE,
 	fetchAgents,
 	fetchBoard,
 	fetchDiff,
 	fetchEvidence,
+	fetchLatestRelease,
+	fetchProjects,
 	fetchSessionEvents,
 	openLiveBoard,
 	openTerminal,
@@ -17,6 +20,7 @@ import {
 	type Evidence,
 	type JournalEntry,
 	type Lane,
+	type Project,
 	type SessionCard,
 } from "./api";
 import { EmbeddedTerminal } from "./EmbeddedTerminal";
@@ -70,6 +74,9 @@ export default function App() {
 	const [error, setError] = useState<string | null>(null);
 	const [selected, setSelected] = useState<SessionCard | null>(null);
 	const [agents, setAgents] = useState<DetectedAgent[]>([]);
+	const [projects, setProjects] = useState<Project[]>([]);
+	const [selectedProject, setSelectedProject] = useState<string>("");
+	const [update, setUpdate] = useState<{ tag: string; url: string } | null>(null);
 	const [toast, setToast] = useState<string | null>(null);
 	const seenNeedsYou = useRef<Set<string>>(new Set());
 
@@ -116,12 +123,19 @@ export default function App() {
 		fetchAgents()
 			.then((roster) => setAgents(roster))
 			.catch(() => setAgents([]));
+		fetchProjects()
+			.then(setProjects)
+			.catch(() => setProjects([]));
+		fetchLatestRelease().then((latest) => {
+			if (latest && latest.tag !== APP_VERSION) setUpdate(latest);
+		});
 	}, []);
 
-	const total = board
-		? LANES.reduce((sum, lane) => sum + (board[lane]?.length ?? 0), 0)
+	const liveBoard = board === null ? null : selectedProject ? boardFor(board, selectedProject) : board;
+	const total = liveBoard
+		? LANES.reduce((sum, lane) => sum + (liveBoard[lane]?.length ?? 0), 0)
 		: 0;
-	const attention = board?.["needs-you"]?.length ?? 0;
+	const attention = liveBoard?.["needs-you"]?.length ?? 0;
 	const installed = agents.filter((a) => a.found).length;
 
 	return (
@@ -157,6 +171,33 @@ export default function App() {
 
 			{!connected && board !== null && <SetupPanel />}
 
+			{update && (
+				<a className="update-banner" href={update.url} target="_blank" rel="noreferrer">
+					Nueva versión disponible: {update.tag} (corre {APP_VERSION}) — descargala del release
+				</a>
+			)}
+
+			{projects.length > 0 && (
+				<nav className="project-bar" aria-label="Proyectos">
+					<button
+						className={`project-tab ${selectedProject === "" ? "picked" : ""}`}
+						onClick={() => setSelectedProject("")}
+					>
+						Todos
+					</button>
+					{projects.map((p) => (
+						<button
+							key={p.id}
+							className={`project-tab ${selectedProject === p.id ? "picked" : ""}`}
+							onClick={() => setSelectedProject(p.id)}
+							title={p.repo}
+						>
+							{p.id}
+						</button>
+					))}
+				</nav>
+			)}
+
 			{board === null ? (
 				<section className="lanes" aria-busy="true">
 					{LANES.map((lane) => (
@@ -181,7 +222,7 @@ export default function App() {
 						<LaneColumn
 							key={lane}
 							lane={lane}
-							cards={board[lane] ?? []}
+							cards={liveBoard![lane] ?? []}
 							onSelect={setSelected}
 							style={{ "--enter-delay": `${index * 45}ms` } as React.CSSProperties}
 						/>
@@ -199,6 +240,15 @@ export default function App() {
 			<SessionForm agents={agents} />
 		</main>
 	);
+}
+
+/** boardFor filters a board down to one project's cards. */
+function boardFor(board: Board, project: string): Board {
+	const filtered = {} as Board;
+	for (const lane of Object.keys(board) as Lane[]) {
+		filtered[lane] = (board[lane] ?? []).filter((card) => card.project === project);
+	}
+	return filtered;
 }
 
 function LaneColumn({

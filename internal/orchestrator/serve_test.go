@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -116,5 +118,74 @@ func TestServeWiresWatcherAndDaemon(t *testing.T) {
 	case <-handle.Done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not drain after cancel")
+	}
+}
+
+// TestServeShutdownKillsAllWorkers proves the app-close guarantee: canceling
+// the daemon's context leaves no worker processes behind — not even
+// grandchildren that inherited the output pipes.
+func TestServeShutdownKillsAllWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: spawns processes and git")
+	}
+	repo := initRepo(t)
+	token := "gate-kill-token-7fd2"
+	alive := func() bool {
+		out, err := exec.Command("pgrep", "-f", token).CombinedOutput()
+		return err == nil && strings.TrimSpace(string(out)) != ""
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	handle, err := Serve(ctx, ServeOptions{
+		ListenAddr:   "127.0.0.1:0",
+		Source:       &fakeSource{states: [][]PRSnapshot{nil}},
+		PollInterval: time.Hour,
+		RepoPath:     repo,
+		ConfigPath:   filepath.Join(t.TempDir(), "orchestrator.json"),
+		Command: func(ctx context.Context, s Session, dir string) *workProcess {
+			return startScript(ctx, dir, "sleep 30 # "+token)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Serve(): %v", err)
+	}
+
+	body := `{"id":"long","task":"t","agent":"pi","branch":"orch/long","launch":true,"project":"core"}`
+	resp, err := http.Post("http://"+handle.Addr+"/projects", "application/json",
+		strings.NewReader(`{"id":"core","repo":"o/c","repoPath":"`+repo+`"}`))
+	if err != nil {
+		t.Fatalf("POST /projects: %v", err)
+	}
+	resp.Body.Close()
+	resp, err = http.Post("http://"+handle.Addr+"/sessions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /sessions: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("launch status = %d, want 201", resp.StatusCode)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("worker process never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-handle.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not drain")
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for alive() {
+		if time.Now().After(deadline) {
+			t.Fatal("worker process survived the daemon shutdown")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

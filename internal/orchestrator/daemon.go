@@ -92,6 +92,7 @@ func newDaemonServerProjects(fleet *Fleet, journal *Journal, launcher *Launcher,
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("GET /agents", d.listAgents)
+	mux.HandleFunc("GET /version", d.daemonVersion)
 	mux.HandleFunc("GET /config", d.getConfig)
 	mux.HandleFunc("POST /config", d.saveConfig)
 	mux.HandleFunc("GET /projects", d.listProjects)

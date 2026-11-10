@@ -35,6 +35,8 @@ type ServeOptions struct {
 	PrintBoard bool
 	// ConfigPath overrides where orchestrator.json lives (tests).
 	ConfigPath string
+	// Command replaces the worker command builder (tests inject fakes).
+	Command func(ctx context.Context, s Session, dir string) *workProcess
 }
 
 // ServeHandle is the running daemon: Addr is live for the whole run and Done
@@ -81,6 +83,7 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 			Base:        base,
 			ReceiptGate: true,
 			Projects:    projects,
+			Command:     opts.Command,
 		}
 		// Workers die with the daemon: canceling the lifecycle context kills
 		// every running worker process (see Launcher.Root).
@@ -125,6 +128,9 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 
 	go func() {
 		<-ctx.Done()
+		if launcher != nil {
+			launcher.KillAll()
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)

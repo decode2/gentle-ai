@@ -13,6 +13,7 @@ export interface SessionCard {
 	task: string;
 	agent: string;
 	branch: string;
+	project?: string;
 	pr?: number;
 	running?: boolean;
 	status?: string;
@@ -138,6 +139,38 @@ export async function saveConfig(config: AppConfig): Promise<string> {
 	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
 	const body = (await response.json()) as { status?: string; note?: string };
 	return body.note ?? "Guardado.";
+}
+
+export interface Project {
+	id: string;
+	repo: string;
+	repoPath?: string;
+}
+
+export async function fetchProjects(): Promise<Project[]> {
+	const response = await fetch(`${DAEMON_BASE}/projects`);
+	if (!response.ok) return [];
+	return (await response.json()) as Project[];
+}
+
+export const APP_VERSION = "0.1.0-alpha.1";
+export const UPDATE_REPO = import.meta.env.VITE_UPDATE_REPO ?? "decode2/gentle-ai";
+
+export interface LatestRelease {
+	tag: string;
+	url: string;
+}
+
+export async function fetchLatestRelease(): Promise<LatestRelease | null> {
+	try {
+		const response = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+		if (!response.ok) return null;
+		const body = (await response.json()) as { tag_name?: string; html_url?: string };
+		if (!body.tag_name) return null;
+		return { tag: body.tag_name, url: body.html_url ?? "" };
+	} catch {
+		return null;
+	}
 }
 
 export async function fetchConfig(): Promise<AppConfig> {
