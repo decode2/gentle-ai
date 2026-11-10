@@ -15,6 +15,7 @@ type DaemonHTTP struct {
 	fleet    *Fleet
 	journal  *Journal
 	launcher *Launcher
+	agents   *AgentDetector
 }
 
 // corsAllowedOrigins are the desktop shell origins allowed to call the
@@ -63,14 +64,30 @@ func NewDaemonHTTP(fleet *Fleet) http.Handler {
 // surface the desktop app and the CLI use. A nil journal or launcher keeps
 // their endpoints inert (events read empty, launch/stop report 400).
 func NewDaemonServer(fleet *Fleet, journal *Journal, launcher *Launcher) http.Handler {
-	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher}
+	return NewDaemonServerWithDetector(fleet, journal, launcher, nil)
+}
+
+// NewDaemonServerWithDetector also wires agent detection for GET /agents; a
+// nil detector serves an empty roster.
+func NewDaemonServerWithDetector(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector) http.Handler {
+	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher, agents: agents}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
+	mux.HandleFunc("GET /agents", d.listAgents)
 	mux.HandleFunc("POST /sessions", d.startSession)
 	mux.HandleFunc("GET /sessions/{id}/events", d.sessionEvents)
 	mux.HandleFunc("POST /sessions/{id}/stop", d.stopSession)
 	return withCORS(mux)
+}
+
+// listAgents reports which coding agent CLIs are installed on this machine.
+func (d *DaemonHTTP) listAgents(w http.ResponseWriter, _ *http.Request) {
+	roster := []DetectedAgent{}
+	if d.agents != nil {
+		roster = d.agents.Detect(false)
+	}
+	writeJSON(w, http.StatusOK, roster)
 }
 
 // liveBoard streams the board as Server-Sent Events: one snapshotted board
