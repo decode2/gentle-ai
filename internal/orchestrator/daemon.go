@@ -16,6 +16,8 @@ type DaemonHTTP struct {
 	journal  *Journal
 	launcher *Launcher
 	agents   *AgentDetector
+	terminal *TerminalHub
+	config   *configStore
 }
 
 // corsAllowedOrigins are the desktop shell origins allowed to call the
@@ -70,15 +72,84 @@ func NewDaemonServer(fleet *Fleet, journal *Journal, launcher *Launcher) http.Ha
 // NewDaemonServerWithDetector also wires agent detection for GET /agents; a
 // nil detector serves an empty roster.
 func NewDaemonServerWithDetector(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector) http.Handler {
-	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher, agents: agents}
+	return NewDaemonServerFull(fleet, journal, launcher, agents, NewTerminalHub())
+}
+
+// NewDaemonServerFull wires every service; terminal may be nil to disable
+// the embedded terminal route (tests, headless).
+func NewDaemonServerFull(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector, terminal *TerminalHub) http.Handler {
+	return newDaemonServer(fleet, journal, launcher, agents, terminal, nil)
+}
+
+func newDaemonServer(fleet *Fleet, journal *Journal, launcher *Launcher, agents *AgentDetector, terminal *TerminalHub, config *configStore) http.Handler {
+	d := &DaemonHTTP{fleet: fleet, journal: journal, launcher: launcher, agents: agents, terminal: terminal, config: config}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /board", d.board)
 	mux.HandleFunc("GET /board/live", d.liveBoard)
 	mux.HandleFunc("GET /agents", d.listAgents)
+	mux.HandleFunc("GET /config", d.getConfig)
+	mux.HandleFunc("POST /config", d.saveConfig)
+	mux.HandleFunc("GET /sessions/{id}/terminal", d.sessionTerminalWS)
+	mux.HandleFunc("GET /sessions/{id}/evidence", d.sessionEvidence)
 	mux.HandleFunc("POST /sessions", d.startSession)
 	mux.HandleFunc("GET /sessions/{id}/events", d.sessionEvents)
+	mux.HandleFunc("GET /sessions/{id}/diff", d.sessionDiff)
 	mux.HandleFunc("POST /sessions/{id}/stop", d.stopSession)
+	mux.HandleFunc("POST /sessions/{id}/terminal", d.openSessionTerminal)
 	return withCORS(mux)
+}
+
+// sessionTerminalWS bridges the embedded terminal websocket for the session.
+func (d *DaemonHTTP) sessionTerminalWS(w http.ResponseWriter, r *http.Request) {
+	if d.terminal == nil {
+		http.Error(w, "embedded terminal disabled", http.StatusNotImplemented)
+		return
+	}
+	s, err := d.fleet.Get(SessionID(r.PathValue("id")))
+	if err != nil {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	_ = d.terminal.Open(w, r, s.ID, s.Worktree)
+}
+
+// sessionDiff returns the session's worktree diff against its base.
+func (d *DaemonHTTP) sessionDiff(w http.ResponseWriter, r *http.Request) {
+	s, err := d.fleet.Get(SessionID(r.PathValue("id")))
+	if err != nil {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	info, err := worktreeDiff(s.Worktree, s.Base)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// openSessionTerminal opens the machine's terminal at the worktree.
+func (d *DaemonHTTP) openSessionTerminal(w http.ResponseWriter, r *http.Request) {
+	s, err := d.fleet.Get(SessionID(r.PathValue("id")))
+	if err != nil {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	if s.Worktree == "" {
+		http.Error(w, "session has no worktree", http.StatusBadRequest)
+		return
+	}
+	cmd, ok := terminalCommandForOS(s.Worktree)
+	if !ok {
+		http.Error(w, "no known terminal emulator on this machine", http.StatusBadRequest)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		http.Error(w, "terminal failed to start", http.StatusInternalServerError)
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // listAgents reports which coding agent CLIs are installed on this machine.
