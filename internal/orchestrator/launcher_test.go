@@ -170,3 +170,38 @@ func startScript(ctx context.Context, dir, script string) *workProcess {
 	cmd.Dir = dir
 	return &workProcess{cmd: cmd}
 }
+
+func TestLauncherRootCancelKillsWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration: spawns processes")
+	}
+	fleet, _, journal, launcher := launcherFixture(t)
+	root, cancelRoot := context.WithCancel(context.Background())
+	launcher.Root = root
+	launcher.Command = func(ctx context.Context, s Session, dir string) *workProcess {
+		return startScript(ctx, dir, "echo started; sleep 30")
+	}
+
+	if err := launcher.StartTask(context.Background(), Session{ID: "long", Task: "t", Agent: "pi", Branch: "orch/long"}); err != nil {
+		t.Fatalf("StartTask(): %v", err)
+	}
+	if _, err := fleet.Lane("long"); err != nil {
+		t.Fatalf("session not registered: %v", err)
+	}
+
+	cancelRoot()
+
+	// The worker must die with the daemon's lifecycle, not run 30 seconds.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		entries := journal.Get("long")
+		last := entries[len(entries)-1]
+		if last.Kind == "exited" || last.Kind == "stopped" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker outlived the lifecycle context: %+v", entries)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -20,6 +20,10 @@ type workProcess struct {
 // records everything in the journal. Worker stdout lines that start with
 // "QUESTION:" route to the session's inbox so the human sees them.
 type Launcher struct {
+	// Root is the launcher's lifecycle context: workers derive their process
+	// context from it, so canceling Root (daemon shutdown, app exit) kills
+	// every running worker. When nil, StartTask's ctx is used.
+	Root      context.Context
 	Fleet     *Fleet
 	Router    *Router
 	Journal   *Journal
@@ -54,6 +58,7 @@ func defaultAgentCommand(ctx context.Context, s Session, dir string) *workProces
 	args = append(args, s.Task)
 	cmd := exec.CommandContext(ctx, s.Agent, args...)
 	cmd.Dir = dir
+	applyProcessPlatformTraits(cmd)
 	return &workProcess{cmd: cmd}
 }
 
@@ -87,11 +92,15 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 		l.running = make(map[SessionID]*workProcess)
 		l.stopping = make(map[SessionID]bool)
 	}
+	workerCtx := l.Root
+	if workerCtx == nil {
+		workerCtx = ctx
+	}
 	command := l.Command
 	if command == nil {
 		command = defaultAgentCommand
 	}
-	wp := command(ctx, session, session.Worktree)
+	wp := command(workerCtx, session, session.Worktree)
 	l.running[session.ID] = wp
 	l.mu.Unlock()
 

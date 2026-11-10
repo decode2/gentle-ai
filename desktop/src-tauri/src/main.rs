@@ -1,12 +1,67 @@
 // The Gentle-AI Orchestrator desktop shell. It launches the Go daemon
 // (orchestratord) placed next to this application's binary and opens the
 // board window. The daemon is the whole product; the shell is a window.
+//
+// Process lifecycle: whatever starts with the app, dies with the app. On
+// Windows the daemon is bound to a Job Object with KILL_ON_JOB_CLOSE (the
+// daemon's workers inherit that job), and on every platform the shell kills
+// the daemon when the last window closes or the app exits.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::Manager;
+
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+
+#[cfg(windows)]
+mod job {
+	//! Windows: bind the daemon to a kill-on-close job so daemon + workers
+	//! (which inherit the job) die even on a hard shell crash.
+	use windows_sys::Win32::Foundation::HANDLE;
+	use windows_sys::Win32::System::JobObjects::{
+		AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+		SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+		JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+	};
+
+	pub struct KillOnCloseJob(HANDLE);
+
+	impl KillOnCloseJob {
+		pub fn new() -> Result<Self, ()> {
+			unsafe {
+				let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+				if handle.is_null() {
+					return Err(());
+				}
+				let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+				info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+				let ok = SetInformationJobObject(
+					handle,
+					JobObjectExtendedLimitInformation,
+					&info as *const _ as *const core::ffi::c_void,
+					std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+				);
+				if ok == 0 {
+					return Err(());
+				}
+				Ok(KillOnCloseJob(handle))
+			}
+		}
+
+		pub fn assign(&self, child_handle: HANDLE) -> Result<(), ()> {
+			unsafe {
+				if AssignProcessToJobObject(self.0, child_handle) == 0 {
+					Err(())
+				} else {
+					Ok(())
+				}
+			}
+		}
+	}
+}
 
 struct DaemonChild(Mutex<Option<Child>>);
 
@@ -48,11 +103,21 @@ fn daemon_path() -> Option<PathBuf> {
 	}
 }
 
+/// Kills the daemon child, if one is running.
+fn kill_daemon(app: &tauri::AppHandle) {
+	let state = app.state::<DaemonChild>();
+	let mut guard = state.0.lock().unwrap();
+	if let Some(mut child) = guard.take() {
+		let _ = child.kill();
+		let _ = child.wait();
+	}
+}
+
 fn main() {
 	let daemon = DaemonChild(Mutex::new(None));
 	let sidecar = daemon_path();
 
-	tauri::Builder::default()
+	let builder = tauri::Builder::default()
 		.manage(daemon)
 		.setup(move |app| {
 			match sidecar {
@@ -64,16 +129,31 @@ fn main() {
 					// The windowed shell has no console: keep the daemon's output
 					// in a log file beside the app so failures are diagnosable.
 					if let Some(dir) = &app_dir {
-						if let Ok(log) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("orchestratord.log")) {
-							let log_err = log.try_clone();
-							command.stdout(log);
-							if let Ok(log_err) = log_err {
+						if let Ok(log) = std::fs::OpenOptions::new()
+							.create(true)
+							.append(true)
+							.open(dir.join("orchestratord.log"))
+						{
+							if let Ok(log_err) = log.try_clone() {
+								command.stdout(log);
 								command.stderr(log_err);
 							}
 						}
 					}
 					match command.spawn() {
 						Ok(child) => {
+							#[cfg(windows)]
+							{
+								let job = job::KillOnCloseJob::new();
+								if let Ok(job) = job {
+									let handle = child.as_raw_handle();
+									if job.assign(handle).is_err() {
+										eprintln!("orchestrator: daemon not bound to the kill-on-close job");
+									}
+								} else {
+									eprintln!("orchestrator: could not create the kill-on-close job");
+								}
+							}
 							app.state::<DaemonChild>().0.lock().unwrap().replace(child);
 						}
 						Err(error) => eprintln!("orchestrator: could not spawn {}: {error}", path.display()),
@@ -84,17 +164,18 @@ fn main() {
 				),
 			}
 			Ok(())
-		})
-		.on_window_event(|window, event| {
-			if let tauri::WindowEvent::Destroyed = event {
-				let state = window.state::<DaemonChild>();
-				let mut guard = state.0.lock().unwrap();
-				if let Some(mut child) = guard.take() {
-					let _ = child.kill();
-				}
-				drop(guard);
-			}
-		})
-		.run(tauri::generate_context!())
-		.expect("error while running the Gentle Orchestrator shell");
+		});
+
+	let app = builder
+		.build(tauri::generate_context!())
+		.expect("error while building the Gentle Orchestrator shell");
+
+	app.run(|app_handle, event| match event {
+		tauri::RunEvent::Exit
+		| tauri::RunEvent::ExitRequested { .. }
+		| tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Destroyed, .. } => {
+			kill_daemon(app_handle);
+		}
+		_ => {}
+	});
 }

@@ -67,13 +67,21 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 		if base == "" {
 			base = "main"
 		}
+		lifecycle, cancelLifecycle := context.WithCancel(ctx)
 		launcher = &Launcher{
+			Root:      lifecycle,
 			Fleet:     fleet,
 			Router:    router,
 			Journal:   journal,
 			Worktrees: &WorktreeManager{Repo: opts.RepoPath, Parent: filepath.Join(opts.RepoPath, ".orchestrator-worktrees")},
 			Base:      base,
 		}
+		// Workers die with the daemon: canceling the lifecycle context kills
+		// every running worker process (see Launcher.Root).
+		go func() {
+			<-ctx.Done()
+			cancelLifecycle()
+		}()
 	}
 
 	ln, err := net.Listen("tcp", opts.ListenAddr)
