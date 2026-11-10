@@ -1101,3 +1101,17 @@ body {
 .update-banner:hover {
 	background: rgba(138, 184, 240, 0.14);
 }
+
+.gate-chip {
+	font-family: var(--font-mono);
+	font-size: 9.5px;
+	color: var(--lane-review);
+	border: 1px dashed rgba(138, 184, 240, 0.45);
+	border-radius: 999px;
+	padding: 1px 7px;
+	margin-left: auto;
+}
+
+.card header .pr + .gate-chip {
+	margin-left: 8px;
+}

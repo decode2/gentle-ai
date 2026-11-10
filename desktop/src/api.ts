@@ -14,6 +14,7 @@ export interface SessionCard {
 	agent: string;
 	branch: string;
 	project?: string;
+	gatePending?: boolean;
 	pr?: number;
 	running?: boolean;
 	status?: string;
