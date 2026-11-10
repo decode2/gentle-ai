@@ -9,9 +9,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/capabilitymanifest"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/model"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/system"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/capabilitymanifest"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/system"
 )
 
 type Adapter struct {
@@ -53,7 +53,7 @@ func (a *Adapter) Detect(_ context.Context, homeDir string) (bool, string, strin
 		return false, "", extensionsDir, false, err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && (entry.Name() == "github.copilot" || strings.HasPrefix(entry.Name(), "github.copilot-")) {
+		if entry.IsDir() && system.IsCopilotExtensionDir(entry.Name()) {
 			return true, binaryPath, extensionsDir, true, nil
 		}
 	}
@@ -112,14 +112,20 @@ func (a *Adapter) MCPConfigPath(homeDir string, _ string) string {
 	return filepath.Join(a.vscodeUserDir(homeDir), "mcp.json")
 }
 
-// vscodeUserDir returns the OS-specific VS Code User config directory.
+func (a *Adapter) vscodeUserDir(homeDir string) string {
+	return UserDir(homeDir, runtime.GOOS)
+}
+
+// UserDir returns the VS Code User config directory for goos. goos is injected
+// so backup.WithConfigRoots can admit %APPDATA%\Code\User as a restore root
+// when %APPDATA% is redirected outside the profile (issue #6029).
 //
 // Environment overrides (XDG_CONFIG_HOME, APPDATA) are honored only when
 // homeDir is the real user home: a caller that passes a custom installation
 // root (sandboxed installs, tests) must stay contained inside that root, so
 // ambient environment can never redirect a write outside it.
-func (a *Adapter) vscodeUserDir(homeDir string) string {
-	switch runtime.GOOS {
+func UserDir(homeDir, goos string) string {
+	switch goos {
 	case "darwin":
 		return filepath.Join(homeDir, "Library", "Application Support", "Code", "User")
 	case "windows":

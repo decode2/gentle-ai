@@ -5,16 +5,22 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/claude"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/opencode"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/claude"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/hermes"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/kimi"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/opencode"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/pi"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/model"
 )
 
 func claudeAdapter() agents.Adapter   { return claude.NewAdapter() }
 func opencodeAdapter() agents.Adapter { return opencode.NewAdapter() }
+func piAdapter() agents.Adapter       { return pi.NewAdapter() }
 
 func TestInjectMergesThemeOverlayIntoAdapterSettings(t *testing.T) {
 	home := t.TempDir()
@@ -96,6 +102,286 @@ func TestInjectCreatesAdapterSettingsWhenMissing(t *testing.T) {
 	}
 	if root.Theme != "gentleman" {
 		t.Fatalf("theme = %q, want gentleman", root.Theme)
+	}
+}
+
+// TestInjectLeavesNonJSONNativeSettingsUntouched covers #1829: valid native
+// TOML/YAML settings are not JSON targets, so Inject neither rewrites them nor
+// creates a JSON fixture when they are missing.
+func TestInjectLeavesNonJSONNativeSettingsUntouched(t *testing.T) {
+	tests := []struct {
+		name     string
+		adapter  agents.Adapter
+		settings string
+		content  string
+	}{
+		{name: "kimi legacy", adapter: kimi.NewAdapter(), settings: ".kimi/config.toml", content: "default_model = \"k2\"\n"},
+		{name: "kimi current", adapter: kimi.NewAdapter(), settings: ".kimi-code/config.toml", content: "[models.k2]\nprovider = \"moonshot\"\n"},
+		{name: "hermes", adapter: hermes.NewAdapter(), settings: ".hermes/config.yaml", content: "providers:\n  - name: hermes\n"},
+		{name: "hermes missing", adapter: hermes.NewAdapter(), settings: ".hermes/config.yaml"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			settingsPath := filepath.Join(home, tt.settings)
+			if tt.content != "" {
+				if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(settingsPath, []byte(tt.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result, err := Inject(home, tt.adapter)
+			if err != nil || result.Changed || len(result.Files) != 0 {
+				t.Fatalf("Inject() = %#v, %v; want a no-op without reported files", result, err)
+			}
+			if tt.content == "" {
+				if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+					t.Fatalf("Inject() created %s; stat error = %v", settingsPath, err)
+				}
+				return
+			}
+			got, err := os.ReadFile(settingsPath)
+			if err != nil || string(got) != tt.content {
+				t.Fatalf("native settings = %q, %v; want bytes preserved", got, err)
+			}
+			wantMode := os.FileMode(0o600)
+			if runtime.GOOS == "windows" {
+				wantMode = 0o666 // Windows reports only the read-only attribute.
+			}
+			if info, err := os.Stat(settingsPath); err != nil || info.Mode().Perm() != wantMode {
+				t.Fatalf("native settings mode = %v, %v; want %v", info, err, wantMode)
+			}
+		})
+	}
+}
+
+// TestInjectSkipsAdapterWithoutGentlemanTheme covers #4775: the overlay selects
+// a theme by name, so it only belongs on adapters that register "gentleman"
+// (Claude Code and OpenCode). Pi ships its own themes (Gentle, Gentleman-Cute,
+// Gentleman-Sexy) through the gentle-pi npm package, so persisting "gentleman"
+// in its settings makes every Pi startup fail to load the theme. Sync still owns
+// one contract for every adapter: the settings file exists afterwards, so a
+// missing file is created without a theme key while an existing one is left
+// byte-for-byte untouched. Kimi reads TOML settings, which stay untouched too.
+func TestInjectSkipsAdapterWithoutGentlemanTheme(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	piSeed := "{\n  \"tuiMode\": \"fullscreen\",\n  \"packages\": [\"npm:gentle-pi\"]\n}\n"
+	tests := []struct {
+		name        string
+		adapter     agents.Adapter
+		seed        string
+		wantCreated bool
+	}{
+		{name: "pi json keeps user settings", adapter: piAdapter(), seed: piSeed},
+		{name: "pi json created when missing", adapter: piAdapter(), wantCreated: true},
+		{name: "kimi toml", adapter: kimi.NewAdapter(), seed: "[settings]\ntheme = \"user-theme\"\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			jsonPath := agents.JSONSettingsPath(home, tt.adapter)
+			if tt.seed != "" {
+				seedPath := tt.adapter.SettingsPath(home)
+				if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(seedPath, []byte(tt.seed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			first, err := Inject(home, tt.adapter)
+			if err != nil {
+				t.Fatalf("Inject() error = %v", err)
+			}
+			if tt.wantCreated {
+				// Sync verification requires the adapter's settings file to exist
+				// after a sync even when the adapter has no theme assets.
+				if !first.Changed || len(first.Files) != 1 || first.Files[0] != jsonPath {
+					t.Fatalf("Inject() = %#v, want the created settings file %q reported", first, jsonPath)
+				}
+				got, err := os.ReadFile(jsonPath)
+				if err != nil {
+					t.Fatalf("ReadFile(%s) error = %v", jsonPath, err)
+				}
+				if strings.Contains(string(got), "theme") {
+					t.Fatalf("created settings contain a theme key: %q", got)
+				}
+				if strings.TrimSpace(string(got)) != "{}" {
+					t.Fatalf("created settings = %q, want an empty JSON object", got)
+				}
+			} else {
+				if first.Changed || len(first.Files) != 0 {
+					t.Fatalf("Inject() = %#v, want a no-op without reported files", first)
+				}
+			}
+			if tt.seed != "" {
+				seedPath := tt.adapter.SettingsPath(home)
+				if got, err := os.ReadFile(seedPath); err != nil || string(got) != tt.seed {
+					t.Fatalf("settings = %q, %v; want bytes preserved as %q", got, err, tt.seed)
+				}
+			}
+
+			second, err := Inject(home, tt.adapter)
+			if err != nil || second.Changed || len(second.Files) != 0 {
+				t.Fatalf("Inject() second = %#v, %v; want a no-op on re-run", second, err)
+			}
+		})
+	}
+}
+
+func TestInjectAtPathAcceptsCustomSelectedFilename(t *testing.T) {
+	selected := filepath.Join(t.TempDir(), "custom-opencode-settings")
+	if err := os.WriteFile(selected, []byte(`{"custom":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := InjectAtPath(selected)
+	if err != nil || !result.Changed || len(result.Files) != 1 || result.Files[0] != selected {
+		t.Fatalf("InjectAtPath() = %#v, %v; want the selected file written", result, err)
+	}
+	got, err := os.ReadFile(selected)
+	if err != nil || !bytes.Contains(got, []byte(`"theme": "gentleman"`)) || !bytes.Contains(got, []byte(`"custom": true`)) {
+		t.Fatalf("selected settings = %s, %v", got, err)
+	}
+}
+
+func TestInjectAtPathPreservesSelectedJSONCAndLeavesDecoy(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "opencode.jsonc")
+	decoy := filepath.Join(root, "opencode.json")
+	before := []byte("// selected\n{\"theme\":\"old\",\"custom\":true}\n")
+	if err := os.WriteFile(selected, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decoy, []byte(`{"theme":"mine"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := InjectAtPath(selected)
+	if err != nil || !first.Changed || len(first.Files) != 1 || first.Files[0] != selected {
+		t.Fatalf("first injection = %#v, %v", first, err)
+	}
+	second, err := InjectAtPath(selected)
+	if err != nil || second.Changed {
+		t.Fatalf("second injection = %#v, %v", second, err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(selected)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("selected JSONC mode = %v, %v; want 0600", info, err)
+		}
+	}
+	got, err := os.ReadFile(selected)
+	if err != nil || !bytes.Contains(got, []byte(`"theme":"gentleman"`)) || !bytes.Contains(got, []byte(`"custom":true`)) || !bytes.Contains(got, []byte("// selected")) {
+		t.Fatalf("selected JSONC = %s, %v", got, err)
+	}
+	got, err = os.ReadFile(decoy)
+	if err != nil || string(got) != `{"theme":"mine"}` {
+		t.Fatalf("decoy JSON = %s, %v", got, err)
+	}
+}
+
+func TestInjectAtPathRejectsZeroPermissionSettingsWithoutChangingThem(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission bits are not supported on Windows")
+	}
+
+	path := filepath.Join(t.TempDir(), "opencode.jsonc")
+	before := []byte("// private settings\n{\"theme\":\"old\"}\n")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Skipf("cannot set file mode 0000: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode().Perm() != 0 {
+		t.Skipf("cannot verify file mode 0000: %v, %v", info, err)
+	}
+
+	result, err := InjectAtPath(path)
+	if err == nil || !strings.Contains(err.Error(), "0000") || !strings.Contains(err.Error(), "permissions") {
+		t.Errorf("InjectAtPath() = %#v, %v; want actionable mode 0000 error", result, err)
+	}
+	if result.Changed || len(result.Files) != 0 {
+		t.Errorf("InjectAtPath() = %#v; want no changed files", result)
+	}
+	info, err = os.Lstat(path)
+	if err != nil || info.Mode().Perm() != 0 {
+		t.Fatalf("settings mode after injection = %v, %v; want 0000", info, err)
+	}
+	// Restore access only to inspect bytes, then leave the file locked down.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := os.ReadFile(path)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if readErr != nil || !bytes.Equal(got, before) {
+		t.Fatalf("settings bytes after injection = %q, %v; want %q", got, readErr, before)
+	}
+}
+
+func TestInjectAtPathRefusesSymlinkWithoutChangingLinkOrTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "user.jsonc")
+	selected := filepath.Join(dir, "opencode.jsonc")
+	before := []byte("// private settings\n{\"theme\":\"old\"}\n")
+	if err := os.WriteFile(target, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, selected); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if result, err := InjectAtPath(selected); err == nil || !strings.Contains(err.Error(), "select a regular settings file") || result.Changed {
+		t.Fatalf("InjectAtPath() = %#v, %v; want symlink refusal", result, err)
+	}
+	if link, err := os.Readlink(selected); err != nil || link != target {
+		t.Fatalf("selected symlink changed: %q, %v", link, err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(got, before) {
+		t.Fatalf("target bytes = %q, %v; want %q", got, err, before)
+	}
+	if info, err := os.Stat(target); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("target mode changed: %v, %v", info, err)
+	}
+}
+
+// The selected-settings refusal is OpenCode-only; other agents keep the base
+// writer behavior for a dotfiles-managed (symlinked) settings file.
+func TestInjectNonOpenCodeSymlinkedSettingsKeepBaseWriterBehavior(t *testing.T) {
+	home := t.TempDir()
+	adapter := claudeAdapter()
+	settings := adapter.SettingsPath(home)
+	target := filepath.Join(home, "dotfiles", "settings.json")
+	before := []byte("{\"theme\":\"old\"}\n")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, settings); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := Inject(home, adapter)
+	if err == nil || !strings.Contains(err.Error(), "refusing to read symlink") || strings.Contains(err.Error(), "select a regular settings file") {
+		t.Fatalf("Inject() = %#v, %v; want base writer symlink error, not the OpenCode refusal", result, err)
+	}
+	if link, err := os.Readlink(settings); err != nil || link != target {
+		t.Fatalf("settings symlink changed: %q, %v", link, err)
+	}
+	if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, before) {
+		t.Fatalf("target bytes = %q, %v; want %q", got, err, before)
 	}
 }
 
@@ -255,4 +541,60 @@ func indentedJSON(t *testing.T, fixture string, value any) []byte {
 		t.Fatal(err)
 	}
 	return append(result, '\n')
+}
+
+// A UTF-8 BOM written by some editors is encoding metadata: the theme writer
+// must keep it, keep every user key, and converge on repeated runs.
+func TestInjectAtPathPreservesBOMSettings(t *testing.T) {
+	const bom = "\xEF\xBB\xBF"
+	for _, tc := range []struct {
+		name, file, body string
+		keep             []string
+	}{
+		{
+			name: "json",
+			file: "settings.json",
+			body: "{\n  \"model\": \"user-model\",\n  \"permissions\": {\"allow\": [\"Bash(ls)\"], \"deny\": [\"Read(.env)\"]}\n}\n",
+			keep: []string{`"model": "user-model"`, `"Bash(ls)"`, `"Read(.env)"`, `"theme": "gentleman"`},
+		},
+		{
+			name: "jsonc",
+			file: "opencode.jsonc",
+			body: "{\n  // user note\n  \"model\": \"user-model\",\n}\n",
+			keep: []string{"// user note", `"model": "user-model"`, `"theme": "gentleman"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.file)
+			if err := os.WriteFile(path, []byte(bom+tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			first, err := InjectAtPath(path)
+			if err != nil || !first.Changed {
+				t.Fatalf("first InjectAtPath() = %#v, %v; want changed", first, err)
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.HasPrefix(want, []byte(bom)) || bytes.Count(want, []byte(bom)) != 1 {
+				t.Fatalf("settings must keep exactly one leading BOM:\n%q", want)
+			}
+			for _, key := range tc.keep {
+				if !bytes.Contains(want, []byte(key)) {
+					t.Fatalf("settings lost %s:\n%s", key, want)
+				}
+			}
+			for run := 2; run <= 3; run++ {
+				again, err := InjectAtPath(path)
+				if err != nil || again.Changed {
+					t.Fatalf("run %d InjectAtPath() = %#v, %v; want unchanged", run, again, err)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("run %d rewrote settings:\n%q\nwant:\n%q", run, got, want)
+				}
+			}
+		})
+	}
 }

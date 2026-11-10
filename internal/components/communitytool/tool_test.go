@@ -8,17 +8,24 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/claude"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/opencode"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/claude"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/opencode"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/testenv"
 )
 
+// TestMain neutralizes ambient agent runtime-dir overrides (PI_CODING_AGENT_DIR,
+// OPENCODE_CONFIG_DIR) before anything else: this package's Pi CodeGraph tests
+// already set PI_CODING_AGENT_DIR explicitly per-test, but the codegraph
+// subprocess re-exec path below runs before any such t.Setenv takes effect.
 func TestMain(m *testing.M) {
+	testenv.Isolate()
 	if mode := os.Getenv("GENTLE_AI_CODEGRAPH_TEST_HELPER"); mode != "" {
 		runCodeGraphTestHelper(mode)
 		os.Exit(0)
@@ -279,8 +286,11 @@ func TestInstallWithHomeReportsEffectiveMCPAdapterSchema(t *testing.T) {
 	}
 }
 
+// TestInstallWithHomeFailsClosedForEmptyPiSettingsWithoutMCPProcess verifies that
+// installation fails when Pi settings exist but the MCP process probe fails.
 func TestInstallWithHomeFailsClosedForEmptyPiSettingsWithoutMCPProcess(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
 	mustWrite(t, filepath.Join(home, ".pi", "agent", "settings.json"), `{}`)
 	mustWrite(t, filepath.Join(home, ".pi", "agent", "subagents", "worker.md"), "---\ntools: bash\n---\nwork\n")
 	previous := piCodeGraphEffectiveMCPProbe
@@ -302,6 +312,8 @@ func TestInstallWithHomeFailsClosedForEmptyPiSettingsWithoutMCPProcess(t *testin
 	}
 }
 
+// TestCodeGraphGuidanceContainsLazyInitAndUsageRules verifies that the CodeGraph
+// guidance block contains mandatory ordering, initialization, and worktree placement rules.
 func TestCodeGraphGuidanceContainsLazyInitAndUsageRules(t *testing.T) {
 	guidance := CodeGraphGuidanceMarkdown()
 	for _, want := range []string{
@@ -309,6 +321,8 @@ func TestCodeGraphGuidanceContainsLazyInitAndUsageRules(t *testing.T) {
 		"hard ordering rule",
 		"Create Git worktrees that may need CodeGraph under the user's home directory",
 		"<repo-parent>/<repo-name>-worktrees/<worktree-name>",
+		"immediate parent directory of the repository root",
+		"repo `~/Projects/Rust/foo` → `~/Projects/Rust/foo-worktrees/<worktree-name>`",
 		"Never place a CodeGraph-dependent worktree under `/tmp`, `/var/tmp`, or `/tmp/opencode`",
 		"generic temporary-work guidance does not override this rule",
 		"Every worktree needs its own `.codegraph/` index",
@@ -343,8 +357,6 @@ func TestCodeGraphGuidanceContainsLazyInitAndUsageRules(t *testing.T) {
 		"Do not fall back just because `.codegraph/` is missing",
 		"missing index is the trigger to lazy-initialize",
 		"read-only upstream CLI commands when MCP tools are absent",
-		"rely on watcher auto-sync by default",
-		"Run `codegraph sync` only when the watcher is disabled or CodeGraph reports stale files",
 		"Only fall back to normal filesystem tools after CodeGraph initialization or use fails",
 		"Broad Read/Glob/Grep exploration before this CodeGraph check is explicitly discouraged",
 	} {
@@ -354,6 +366,69 @@ func TestCodeGraphGuidanceContainsLazyInitAndUsageRules(t *testing.T) {
 	}
 }
 
+func TestCodeGraphGuidanceRequiresFreshIndexForCLIReads(t *testing.T) {
+	guidance := CodeGraphGuidanceMarkdown()
+	for _, want := range []string{
+		"MCP auto-sync requires a running daemon with an active file watcher",
+		"CLI intelligence commands read the existing index as-is and do not auto-sync",
+		"Before CLI intelligence reads, run `codegraph sync -q <project-root>`",
+		"If sync fails, do not treat the existing index as current",
+		"The presence of `.codegraph/` alone does not guarantee freshness",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("CodeGraphGuidanceMarkdown() missing %q", want)
+		}
+	}
+	for _, stale := range []string{
+		"rely on watcher auto-sync by default",
+		"Run `codegraph sync` only when",
+	} {
+		if strings.Contains(guidance, stale) {
+			t.Errorf("CodeGraphGuidanceMarkdown() retains misleading freshness rule %q", stale)
+		}
+	}
+}
+
+func TestCodeGraphGuidanceSyncPrecedesCLIReads(t *testing.T) {
+	guidance := CodeGraphGuidanceMarkdown()
+	read := strings.Index(guidance, "Use `codegraph_explore` after initialization, or the read-only upstream CLI commands when MCP tools are absent")
+	if read < 0 {
+		t.Fatal("missing intelligence read instruction")
+	}
+	for _, prerequisite := range []string{
+		"Before CLI intelligence reads, run `codegraph sync -q <project-root>`",
+		"If sync fails, do not treat the existing index as current; explain the failure and fall back to normal filesystem tools",
+	} {
+		position := strings.Index(guidance, prerequisite)
+		if position < 0 || position >= read {
+			t.Errorf("prerequisite %q must precede the intelligence read instruction", prerequisite)
+		}
+	}
+}
+
+func TestCodeGraphGuidancePreservesExplicitInitializationWorkspace(t *testing.T) {
+	guidance := CodeGraphGuidanceMarkdown()
+	for _, want := range []string{
+		"For project initialization, the explicit agent working directory is authoritative",
+		"Check `<cwd>/.git` (directory or worktree file) and `<cwd>/.codegraph/` before ancestor discovery",
+		"Never replace an initialization target with an enclosing repository",
+		"Only for an already-selected existing repository",
+		"git rev-parse --show-toplevel || pwd",
+		"If the explicit initialization target is not a Git root",
+		"git -C <cwd> init",
+		"never retry initialization against the parent",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("initialization workspace contract missing %q", want)
+		}
+	}
+	if strings.Contains(guidance, "1. Resolve the project root with `git rev-parse --show-toplevel || pwd`.") {
+		t.Error("guidance still unconditionally replaces the workspace with its ancestor Git root")
+	}
+}
+
+// TestCodeGraphGuidanceInjectsForRepresentativeAgents verifies that CodeGraph guidance
+// is correctly injected into configuration files for representative supported agents.
 func TestCodeGraphGuidanceInjectsForRepresentativeAgents(t *testing.T) {
 	home := t.TempDir()
 	mustWrite(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"agent":{"worker":{"prompt":"use codegraph_explore"}}}`)
@@ -731,7 +806,7 @@ func TestInstallRunsCommandsAndReturnsLazyProjectIndexManualAction(t *testing.T)
 
 func TestInstallLeavesPiPendingWhenAdapterHealthIsNotMachineVerifiable(t *testing.T) {
 	home := t.TempDir()
-	mustWrite(t, filepath.Join(home, ".pi", "agent", "npm", "node_modules", "pi-mcp-adapter", "index.ts"), "export default {}\n")
+	mustWrite(t, filepath.Join(home, ".pi", "agent", "settings.json"), `{}`)
 	previousProbe := piCodeGraphEffectiveMCPProbe
 	piCodeGraphEffectiveMCPProbe = func(path string) (PiCodeGraphMCPProbeResult, error) {
 		result, _ := piProbeForTest(path)
@@ -761,8 +836,110 @@ func TestInstallLeavesPiPendingWhenAdapterHealthIsNotMachineVerifiable(t *testin
 		t.Fatalf("Pi manual action = %q, want pending state", result.PiCodeGraph.ManualActions[0])
 	}
 	pi := findAgentStatus(t, *result.StatusAfter, model.AgentPi)
-	if pi.Configured || pi.Status != AgentStatusMissing {
+	if pi.Configured || pi.Status != "pending" {
 		t.Fatalf("Pi status = %#v, want unconfigured pending state", pi)
+	}
+	if detected, configured, missing := result.StatusAfter.DetectedConfiguredMissingCounts(); detected != 1 || configured != 0 || missing != 0 {
+		t.Fatalf("counts = (%d, %d, %d), want (1, 0, 0) for pending Pi", detected, configured, missing)
+	}
+	if !result.StatusAfter.CodeGraphReconcileSatisfied() {
+		t.Fatal("validated pending Pi must satisfy reconciliation")
+	}
+
+	calls := 0
+	rerun, err := InstallWithHome(model.CommunityToolCodeGraph, "", home, RunnerFunc(func(string, ...string) error {
+		calls++
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil {
+		t.Fatalf("second InstallWithHome() error = %v", err)
+	}
+	if calls != 0 || len(rerun.CommandsRun) != 0 {
+		t.Fatalf("rerun calls = %d, commands = %v, want no install commands", calls, rerun.CommandsRun)
+	}
+	wantPending := "CodeGraph configuration is reconciled for all detected supported agents. Pi activation health remains pending."
+	if !slices.Contains(rerun.ManualActions, wantPending) {
+		t.Fatalf("rerun actions = %v, want %q", rerun.ManualActions, wantPending)
+	}
+	for _, action := range rerun.ManualActions {
+		if strings.Contains(action, "configured for all") || strings.Contains(action, "already available and MCP-configured") {
+			t.Fatalf("pending rerun falsely reports configured health: %q", action)
+		}
+	}
+	if rerun.PiCodeGraph == nil || !slices.Contains(rerun.ManualActions, piCodeGraphPendingAction) {
+		t.Fatalf("rerun = %#v, want pending health guidance preserved", rerun)
+	}
+	if rerun.StatusAfter == nil || findAgentStatus(t, *rerun.StatusAfter, model.AgentPi).Status != "pending" {
+		t.Fatalf("rerun status = %#v, want Pi still pending", rerun.StatusAfter)
+	}
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	mustWrite(t, filepath.Join(home, ".claude", "CLAUDE.md"), "user guidance\n")
+	updated, err := InstallWithHome(model.CommunityToolCodeGraph, "", home, RunnerFunc(func(string, ...string) error {
+		calls++
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil || calls != 0 || len(updated.CommandsRun) != 0 {
+		t.Fatalf("guidance refresh = %#v, err=%v, calls=%d, want no installer", updated, err, calls)
+	}
+	if !slices.Contains(updated.ManualActions, wantPending) || !slices.Contains(updated.ManualActions, piCodeGraphPendingAction) {
+		t.Fatalf("guidance refresh actions = %v, want reconciled pending guidance", updated.ManualActions)
+	}
+	if pi := findAgentStatus(t, *updated.StatusAfter, model.AgentPi); pi.Configured || pi.Status != AgentStatusPending {
+		t.Fatalf("refreshed Pi = %#v, want unconfigured pending", pi)
+	}
+	guidance, err := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md"))
+	if err != nil || !strings.Contains(string(guidance), "gentle-ai:codegraph-guidance") {
+		t.Fatalf("Claude guidance = %q, err=%v, want newly reconciled guidance", guidance, err)
+	}
+}
+
+func TestDetectStatusDistinguishesPiPendingFromFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		probeErr    error
+		missingTool bool
+		brokenChild bool
+		want        AgentStatusKind
+	}{
+		{name: "verified capability pending", probeErr: ErrPiCodeGraphAdapterHealthUnavailable, want: "pending"},
+		{name: "genuine probe failure", probeErr: errors.New("probe failed"), want: AgentStatusMissing},
+		{name: "pending without capability", probeErr: ErrPiCodeGraphAdapterHealthUnavailable, missingTool: true, want: AgentStatusMissing},
+		{name: "pending with broken child", probeErr: ErrPiCodeGraphAdapterHealthUnavailable, brokenChild: true, want: AgentStatusMissing},
+		{name: "verified healthy", want: AgentStatusConfigured},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			mustWrite(t, filepath.Join(home, ".pi", "agent", "settings.json"), `{}`)
+			child := filepath.Join(home, ".pi", "agent", "subagents", "worker.md")
+			mustWrite(t, child, "---\ntools: bash\n---\nwork\n")
+			if _, err := ReconcilePiCodeGraph(PiCodeGraphOptions{HomeDir: home, Selected: true}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.brokenChild {
+				mustWrite(t, child, "---\ntools: bash\n---\nmissing managed guidance\n")
+			}
+			previous := piCodeGraphEffectiveMCPProbe
+			piCodeGraphEffectiveMCPProbe = func(path string) (PiCodeGraphMCPProbeResult, error) {
+				result, _ := piProbeForTest(path)
+				if tc.missingTool {
+					result.Tools = nil
+				}
+				return result, tc.probeErr
+			}
+			t.Cleanup(func() { piCodeGraphEffectiveMCPProbe = previous })
+			status := DetectStatus(model.CommunityToolCodeGraph, home, DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+			pi := findAgentStatus(t, status, model.AgentPi)
+			if !pi.Detected || pi.Status != tc.want || pi.Configured != (tc.want == AgentStatusConfigured) {
+				t.Fatalf("Pi status = %#v, want %s", pi, tc.want)
+			}
+			if status.CodeGraphReconcileSatisfied() != (tc.want != AgentStatusMissing) {
+				t.Fatalf("reconciled = %v for %s", status.CodeGraphReconcileSatisfied(), tc.want)
+			}
+			configured, _ := PiCodeGraphConfigured(home, "")
+			if configured != (tc.want == AgentStatusConfigured) {
+				t.Fatalf("PiCodeGraphConfigured() = %v, want %v", configured, tc.want == AgentStatusConfigured)
+			}
+		})
 	}
 }
 
@@ -1201,6 +1378,25 @@ func TestInstallSkipsWhenCodeGraphAlreadyReconciled(t *testing.T) {
 	}
 }
 
+func TestInstallAlreadyReconciledHealthyMessage(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	mustWrite(t, filepath.Join(home, ".claude", "CLAUDE.md"), "user guidance\n")
+	runner := RunnerFunc(func(string, ...string) error {
+		t.Fatal("already reconciled healthy agent must not invoke installer")
+		return nil
+	})
+	detector := DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil })
+	first, err := InstallWithHome(model.CommunityToolCodeGraph, "", home, runner, detector)
+	if err != nil || !slices.Contains(first.ManualActions, "CodeGraph is already available and MCP-configured. Agent guidance was updated so enabled agents lazily initialize project indexes when needed.") {
+		t.Fatalf("healthy guidance refresh = %#v, err=%v", first, err)
+	}
+	second, err := InstallWithHome(model.CommunityToolCodeGraph, "", home, runner, detector)
+	if err != nil || len(second.CommandsRun) != 0 || !slices.Contains(second.ManualActions, "CodeGraph is already available and configured for all detected supported agents. No changes were needed.") {
+		t.Fatalf("healthy no-op = %#v, err=%v", second, err)
+	}
+}
+
 func TestInstallRefreshesOldCodeGraphGuidanceMarker(t *testing.T) {
 	home := t.TempDir()
 	agentsPath := filepath.Join(home, ".config", "opencode", "AGENTS.md")
@@ -1458,4 +1654,247 @@ func findAgentStatus(t *testing.T, status Status, id model.AgentID) AgentStatus 
 	}
 	t.Fatalf("agent %s not found in %#v", id, status.Agents)
 	return AgentStatus{}
+}
+
+// TestInstallReinstallsWhenReconcileSatisfiedButCodeGraphIsOlderThanContract is
+// the R1 short-circuit bypass: when the CodeGraph CLI is available and the
+// installed version reports older than codeGraphUpstreamVersion, the reconcile
+// path must fall through to the install command (PackageName = @latest) even
+// when every detected agent is already wired. Pre-existing skip when
+// installed == contract still applies, so a non-stale CLI keeps the existing
+// zero-call path.
+func TestInstallReinstallsWhenReconcileSatisfiedButCodeGraphIsOlderThanContract(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	stubCodeGraphVersion(t, "0.9.3", true)
+
+	var commands []string
+	result, err := InstallWithHome(model.CommunityToolCodeGraph, "/work/project", home, RunnerFunc(func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		return nil
+	}), DetectorFunc(func(string) (string, error) {
+		return "/bin/codegraph", nil
+	}))
+	if err != nil {
+		t.Fatalf("InstallWithHome() error = %v", err)
+	}
+	if len(commands) == 0 {
+		t.Fatal("runner was never called: stale CodeGraph must fall through to the install path")
+	}
+	foundAtLatest := false
+	for _, command := range commands {
+		if strings.Contains(command, "@colbymchenry/codegraph@latest") {
+			foundAtLatest = true
+			break
+		}
+	}
+	if !foundAtLatest {
+		t.Fatalf("commands = %#v, want the @latest package install so the older CodeGraph is upgraded", commands)
+	}
+	want := []string{"npm install -g @colbymchenry/codegraph@latest", "codegraph install --yes"}
+	if !reflect.DeepEqual(result.CommandsRun, want) {
+		t.Fatalf("CommandsRun = %#v, want %#v", result.CommandsRun, want)
+	}
+	if !reflect.DeepEqual(commands, result.CommandsRun) {
+		t.Fatalf("runner calls = %#v, want them to match CommandsRun %#v", commands, result.CommandsRun)
+	}
+}
+
+// TestInstallSuccessfulStaleUpgradeDoesNotAskForTheUpgradeAgain pins the
+// success wording of the version-gap advisory: the installer already ran the
+// @latest package install, so the note must not tell the user to run it
+// again. The rollback path keeps the install hint (see
+// TestInstallPreservesVersionGapAdvisoryAcrossUpgradeAttempt).
+func TestInstallSuccessfulStaleUpgradeDoesNotAskForTheUpgradeAgain(t *testing.T) {
+	home := installHomeWithTwoNativeTargets(t)
+	stubCodeGraphVersion(t, "0.9.3", true)
+
+	result, err := InstallWithHome(model.CommunityToolCodeGraph, "/work/project", home, RunnerFunc(func(string, ...string) error {
+		mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph","args":["serve","--mcp"]}}}`)
+		mustWrite(t, filepath.Join(home, ".cursor", "mcp.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil {
+		t.Fatalf("InstallWithHome() error = %v", err)
+	}
+	if hasManualActionContaining(result.ManualActions, "npm install") || hasManualActionContaining(result.ManualActions, "pnpm add") {
+		t.Fatalf("ManualActions = %#v, want no install hint after a successful upgrade", result.ManualActions)
+	}
+	if !hasManualActionContaining(result.ManualActions, "CodeGraph was upgraded from 0.9.3") {
+		t.Fatalf("ManualActions = %#v, want the completed upgrade named", result.ManualActions)
+	}
+	if !hasManualActionContaining(result.ManualActions, "rerun Gentle AI to restore explicit target selection") {
+		t.Fatalf("ManualActions = %#v, want the rerun guidance", result.ManualActions)
+	}
+}
+
+// TestInstallKeepsReconcileSatisfiedNoOpWhenCodeGraphVersionMeetsContract is
+// the R1 invariant guard: when the installed CodeGraph version is at or above
+// codeGraphUpstreamVersion, the existing short-circuit must hold exactly.
+func TestInstallKeepsReconcileSatisfiedNoOpWhenCodeGraphVersionMeetsContract(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	stubCodeGraphVersion(t, codeGraphUpstreamVersion, true)
+
+	calls := 0
+	result, err := InstallWithHome(model.CommunityToolCodeGraph, "/work/project", home, RunnerFunc(func(string, ...string) error {
+		calls++
+		return nil
+	}), DetectorFunc(func(string) (string, error) {
+		return "/bin/codegraph", nil
+	}))
+	if err != nil {
+		t.Fatalf("InstallWithHome() error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("runner calls = %d, want 0 when installed CodeGraph meets the contract", calls)
+	}
+	if hasManualActionContaining(result.ManualActions, "older than") {
+		t.Fatalf("ManualActions = %#v, want no version-gap note when version meets contract", result.ManualActions)
+	}
+}
+
+// TestInstallPreservesVersionGapAdvisoryAcrossUpgradeAttempt closes R3: after
+// an upgrade attempt that leaves the detected version still older than the
+// contract, the dropped-blind-targets advisory must still reach the user.
+func TestInstallPreservesVersionGapAdvisoryAcrossUpgradeAttempt(t *testing.T) {
+	home := installHomeWithTwoNativeTargets(t)
+	stubCodeGraphVersion(t, "0.9.3", true)
+
+	result, err := InstallWithHome(model.CommunityToolCodeGraph, "/work/project", home, RunnerFunc(func(string, ...string) error {
+		return errors.New("upstream install rejected the invocation")
+	}), DetectorFunc(func(string) (string, error) {
+		return "/bin/codegraph", nil
+	}))
+	if err == nil {
+		t.Fatal("InstallWithHome() error = nil, want the runner failure surfaced")
+	}
+	if !hasManualActionContaining(result.ManualActions, "0.9.3") {
+		t.Fatalf("ManualActions = %#v, want the version gap named across the upgrade attempt", result.ManualActions)
+	}
+	if !hasManualActionContaining(result.ManualActions, codeGraphUpstreamVersion) {
+		t.Fatalf("ManualActions = %#v, want the contract version named across the upgrade attempt", result.ManualActions)
+	}
+	if !hasManualActionContaining(result.ManualActions, "@colbymchenry/codegraph@latest") {
+		t.Fatalf("ManualActions = %#v, want the resolving command surfaced", result.ManualActions)
+	}
+}
+
+// TestInstallFirstInstallPathUnchangedByVersionReconcile is R3's first-install
+// guard: when the CLI is absent the version probe never runs and the existing
+// `npm install -g @colbymchenry/codegraph@latest` package install is the only
+// command emitted.
+func TestInstallFirstInstallPathUnchangedByVersionReconcile(t *testing.T) {
+	previousProbe := codeGraphInstalledVersion
+	probeCalls := 0
+	codeGraphInstalledVersion = func(string) (string, bool) {
+		probeCalls++
+		return "0.9.3", true
+	}
+	t.Cleanup(func() { codeGraphInstalledVersion = previousProbe })
+
+	var commands []string
+	installed := false
+	_, err := InstallWithHome(model.CommunityToolCodeGraph, "/work/project", t.TempDir(), RunnerFunc(func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		installed = true
+		return nil
+	}), DetectorFunc(func(string) (string, error) {
+		if installed {
+			return "/bin/codegraph", nil
+		}
+		return "", errors.New("not found")
+	}))
+	if err != nil {
+		t.Fatalf("InstallWithHome() error = %v", err)
+	}
+	if probeCalls != 0 {
+		t.Fatalf("probe calls = %d, want 0 on the first-install path; the probe must not run when the CLI is absent", probeCalls)
+	}
+	if !reflect.DeepEqual(commands, []string{"npm install -g @colbymchenry/codegraph@latest"}) {
+		t.Fatalf("commands = %#v, want the first-install package command unchanged by R1", commands)
+	}
+}
+
+// TestInstallForceReinstallsLatestWhenCodeGraphIsCurrent covers the
+// --force-community-tools contract (#984): an explicit forced run must
+// reinstall the package at @latest and then re-run the reconcile step even
+// when the installed CLI already meets codeGraphUpstreamVersion and every
+// detected agent is wired. A current, reconciled CLI is exactly the case the
+// unforced gate short-circuits, so the package install command is what proves
+// the flag took effect.
+func TestInstallForceReinstallsLatestWhenCodeGraphIsCurrent(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".claude", "settings.json"), `{}`)
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	stubCodeGraphVersion(t, codeGraphUpstreamVersion, true)
+
+	var commands []string
+	result, err := InstallWithOptions(model.CommunityToolCodeGraph, "/work/project", InstallOptions{HomeDir: home, ForceCommunityTools: true}, RunnerFunc(func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil {
+		t.Fatalf("InstallWithOptions() error = %v", err)
+	}
+	want := []string{
+		"npm install -g @colbymchenry/codegraph@latest",
+		"codegraph install --target claude --location global --yes",
+	}
+	if !reflect.DeepEqual(result.CommandsRun, want) {
+		t.Fatalf("CommandsRun = %#v, want %#v", result.CommandsRun, want)
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("runner calls = %#v, want %#v", commands, want)
+	}
+}
+
+// TestInstallForceRunsLatestInstallWithoutDetectedTargets pins the other half
+// of the forced contract: with no detected native target there is nothing to
+// reconcile, but the forced run still reinstalls the package at @latest
+// instead of skipping the install step.
+func TestInstallForceRunsLatestInstallWithoutDetectedTargets(t *testing.T) {
+	home := t.TempDir()
+	stubCodeGraphVersion(t, codeGraphUpstreamVersion, true)
+
+	var commands []string
+	result, err := InstallWithOptions(model.CommunityToolCodeGraph, "/work/project", InstallOptions{HomeDir: home, ForceCommunityTools: true}, RunnerFunc(func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil {
+		t.Fatalf("InstallWithOptions() error = %v", err)
+	}
+	want := []string{"npm install -g @colbymchenry/codegraph@latest"}
+	if !reflect.DeepEqual(result.CommandsRun, want) {
+		t.Fatalf("CommandsRun = %#v, want %#v", result.CommandsRun, want)
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("runner calls = %#v, want %#v", commands, want)
+	}
+}
+
+// TestInstallOptionsWithoutForceKeepsTheReconcileShortCircuit is the preserve
+// guard for the shared gate: the options entry point with the force opt-in
+// unset must behave exactly like the legacy InstallWithHome wrapper and skip
+// every command for a current, reconciled CLI.
+func TestInstallOptionsWithoutForceKeepsTheReconcileShortCircuit(t *testing.T) {
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers":{"codegraph":{"command":"codegraph"}}}`)
+	stubCodeGraphVersion(t, codeGraphUpstreamVersion, true)
+
+	calls := 0
+	result, err := InstallWithOptions(model.CommunityToolCodeGraph, "/work/project", InstallOptions{HomeDir: home}, RunnerFunc(func(string, ...string) error {
+		calls++
+		return nil
+	}), DetectorFunc(func(string) (string, error) { return "/bin/codegraph", nil }))
+	if err != nil {
+		t.Fatalf("InstallWithOptions() error = %v", err)
+	}
+	if calls != 0 || len(result.CommandsRun) != 0 {
+		t.Fatalf("runner calls = %d, CommandsRun = %#v, want the unforced short-circuit unchanged", calls, result.CommandsRun)
+	}
+	if result.StatusAfter == nil || !result.StatusAfter.CodeGraphReconcileSatisfied() {
+		t.Fatalf("StatusAfter = %#v, want reconciled", result.StatusAfter)
+	}
 }

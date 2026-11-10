@@ -2,26 +2,28 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/codex"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/kimi"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/backup"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/installcmd"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/model"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/pipeline"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/planner"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/state"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/system"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/codex"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/kimi"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/backup"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/installcmd"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/pipeline"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/planner"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/state"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/system"
 )
 
 // missingBinaryLookPath simulates all installable binaries (engram, gga) as
@@ -39,6 +41,35 @@ func assertFileContains(t *testing.T, path string, want string) {
 	}
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("file %q missing %q; got:\n%s", path, want, string(body))
+	}
+}
+
+func assertFileNotContains(t *testing.T, path string, unwanted string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	if strings.Contains(string(body), unwanted) {
+		t.Fatalf("file %q still contains %q; got:\n%s", path, unwanted, string(body))
+	}
+}
+
+// seedLegacyPiMCPAdapter writes the pi-mcp-adapter entries older releases
+// provisioned, so install tests can prove they are retired.
+func seedLegacyPiMCPAdapter(t *testing.T, agentDir string) {
+	t.Helper()
+	files := map[string]string{
+		filepath.Join(agentDir, "settings.json"):       `{"packages":["npm:other@1.0.0","npm:pi-mcp-adapter"]}`,
+		filepath.Join(agentDir, "npm", "package.json"): `{"dependencies":{"left-pad":"^1.0.0","pi-mcp-adapter":"^2.6.0"}}`,
+	}
+	for path, body := range files {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", path, err)
+		}
 	}
 }
 
@@ -198,7 +229,85 @@ func TestRunInstallCodexKeepsOldRuntimeFailure(t *testing.T) {
 	}
 }
 
-func TestRunInstallEngramForPiAndOpenCodeProvisionsBothMCPTargets(t *testing.T) {
+func TestRunInstallEngramForPiAndOpenCodeProvisionsNativePiAndOpenCodeMCP(t *testing.T) {
+	home := t.TempDir()
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
+
+	osUserHomeDir = func() (string, error) { return home, nil }
+	cmdLookPath = func(name string) (string, error) {
+		return filepath.Join(home, "bin", name), nil
+	}
+	restorePreflightLookPath := installcmd.OverrideLookPath(func(name string) (string, error) {
+		return filepath.Join(home, "bin", name), nil
+	})
+	t.Cleanup(restorePreflightLookPath)
+
+	seedLegacyPiMCPAdapter(t, filepath.Join(home, ".pi", "agent"))
+	settingsPath := filepath.Join(home, ".pi", "agent", "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"packages":["npm:other@1.0.0","npm:pi-mcp-adapter","npm:gentle-engram","npm:gentle-engram@0.1.16"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var commands []string
+	runCommand = func(name string, args ...string) error {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		return nil
+	}
+
+	result, err := RunInstall([]string{
+		"--agent", "pi",
+		"--agent", "opencode",
+		"--component", "engram",
+	}, system.DetectionResult{})
+	if err != nil {
+		t.Fatalf("RunInstall() error = %v", err)
+	}
+	if !result.Verify.Ready {
+		t.Fatalf("verification ready = false, report = %#v", result.Verify)
+	}
+
+	if _, err := os.Stat(filepath.Join(home, ".pi", "agent", "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("native Pi Engram must not create MCP config: %v", err)
+	}
+	assertFileContains(t, filepath.Join(home, ".pi", "agent", "settings.json"), "npm:other@1.0.0")
+	assertFileNotContains(t, filepath.Join(home, ".pi", "agent", "settings.json"), "pi-mcp-adapter")
+	assertFileContains(t, filepath.Join(home, ".pi", "agent", "npm", "package.json"), "left-pad")
+	assertFileNotContains(t, filepath.Join(home, ".pi", "agent", "npm", "package.json"), "pi-mcp-adapter")
+	assertFileContains(t, filepath.Join(home, ".config", "opencode", "opencode.json"), "engram")
+	settingsBytes, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(settingsBytes, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(settings.Packages, []string{"npm:other@1.0.0", "npm:gentle-engram@0.1.16"}) {
+		t.Fatalf("install did not repair duplicate Engram declarations: %v", settings.Packages)
+	}
+
+	if stringSliceContains(commands, "pi install npm:pi-mcp-adapter") {
+		t.Fatalf("commands still install the retired pi-mcp-adapter; got %v", commands)
+	}
+	if stringSliceContains(commands, engramInitCommandForTest) {
+		t.Fatalf("commands still run redundant Engram init; got %v", commands)
+	}
+}
+
+// TestRunInstallPiExcludePackageSkipsExcludedSource proves an excluded
+// managed Pi package never reaches `pi install` while the rest of the stack
+// still installs.
+func TestRunInstallPiExcludePackageSkipsExcludedSource(t *testing.T) {
+	t.Setenv(PiExcludePackagesEnv, "")
 	home := t.TempDir()
 	restoreHome := osUserHomeDir
 	restoreCommand := runCommand
@@ -221,41 +330,24 @@ func TestRunInstallEngramForPiAndOpenCodeProvisionsBothMCPTargets(t *testing.T) 
 	var commands []string
 	runCommand = func(name string, args ...string) error {
 		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
-		// Simulate pi-engram init writing mcp.json with the new schema.
-		isNpmEngramInit := name == "npm" && len(args) >= 7 && args[5] == "pi-engram" && args[6] == "init"
-		if isNpmEngramInit {
-			mcpPath := filepath.Join(home, ".pi", "agent", "mcp.json")
-			if err := os.MkdirAll(filepath.Dir(mcpPath), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(mcpPath, []byte(`{"activeMCP":"engram","mcpServers":{"engram":{"command":"node","args":["--eval","require('child_process').spawn('engram',['mcp','--tools=agent'],{stdio:'inherit'})"]}}}`+"\n"), 0o644); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 
-	result, err := RunInstall([]string{
+	if _, err := RunInstall([]string{
 		"--agent", "pi",
-		"--agent", "opencode",
 		"--component", "engram",
-	}, system.DetectionResult{})
-	if err != nil {
+		"--pi-exclude-package", "npm:gentle-pi",
+	}, system.DetectionResult{}); err != nil {
 		t.Fatalf("RunInstall() error = %v", err)
 	}
-	if !result.Verify.Ready {
-		t.Fatalf("verification ready = false, report = %#v", result.Verify)
-	}
 
-	assertFileContains(t, filepath.Join(home, ".pi", "agent", "settings.json"), "npm:pi-mcp-adapter")
-	assertFileContains(t, filepath.Join(home, ".pi", "agent", "npm", "package.json"), "pi-mcp-adapter")
-	assertFileContains(t, filepath.Join(home, ".config", "opencode", "opencode.json"), "engram")
-
-	if !stringSliceContains(commands, "pi install npm:pi-mcp-adapter") {
-		t.Fatalf("commands missing %q; got %v", "pi install npm:pi-mcp-adapter", commands)
+	if stringSliceContains(commands, "pi install npm:gentle-pi") {
+		t.Fatalf("commands install the excluded npm:gentle-pi; got %v", commands)
 	}
-	if !stringSliceContains(commands, engramInitCommandForTest) {
-		t.Fatalf("commands missing %q; got %v", engramInitCommandForTest, commands)
+	for _, want := range []string{"pi install npm:gentle-engram", "pi install npm:pi-web-access", "pi install npm:pi-btw"} {
+		if !stringSliceContains(commands, want) {
+			t.Fatalf("commands missing %q; got %v", want, commands)
+		}
 	}
 }
 
@@ -265,8 +357,18 @@ func TestRunInstallEngramForPiAndOpenCodeProvisionsBothMCPTargets(t *testing.T) 
 // the real ~/.pi untouched.
 func TestRunInstallEngramForPiTargetsConfiguredAgentDirectory(t *testing.T) {
 	home := t.TempDir()
+	// internal/agents/pi.isRealUserHome only honors an absolute
+	// PI_CODING_AGENT_DIR override for the process's actual home directory,
+	// so this test must make home look real for the duration of the test
+	// (osUserHomeDir below only feeds this package's own home resolution,
+	// not pi's os.UserHomeDir() check).
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
 	configured := filepath.Join(t.TempDir(), "gentle-shell-home", "agent")
 	t.Setenv("PI_CODING_AGENT_DIR", configured)
+	seedLegacyPiMCPAdapter(t, configured)
 
 	restoreHome := osUserHomeDir
 	restoreCommand := runCommand
@@ -287,19 +389,6 @@ func TestRunInstallEngramForPiTargetsConfiguredAgentDirectory(t *testing.T) {
 	t.Cleanup(restorePreflightLookPath)
 
 	runCommand = func(name string, args ...string) error {
-		// Simulate pi-engram init writing mcp.json with the new schema,
-		// exactly as it does under the real Pi binary, under the
-		// configured agent directory rather than the default one.
-		isNpmEngramInit := name == "npm" && len(args) >= 7 && args[5] == "pi-engram" && args[6] == "init"
-		if isNpmEngramInit {
-			mcpPath := filepath.Join(configured, "mcp.json")
-			if err := os.MkdirAll(filepath.Dir(mcpPath), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(mcpPath, []byte(`{"activeMCP":"engram","mcpServers":{"engram":{"command":"node","args":["--eval","require('child_process').spawn('engram',['mcp','--tools=agent'],{stdio:'inherit'})"]}}}`+"\n"), 0o644); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 
@@ -314,8 +403,11 @@ func TestRunInstallEngramForPiTargetsConfiguredAgentDirectory(t *testing.T) {
 		t.Fatalf("verification ready = false, report = %#v", result.Verify)
 	}
 
-	assertFileContains(t, filepath.Join(configured, "settings.json"), "npm:pi-mcp-adapter")
-	assertFileContains(t, filepath.Join(configured, "npm", "package.json"), "pi-mcp-adapter")
+	if _, err := os.Stat(filepath.Join(configured, "mcp.json")); !os.IsNotExist(err) {
+		t.Fatalf("native Pi Engram must not create MCP config: %v", err)
+	}
+	assertFileNotContains(t, filepath.Join(configured, "settings.json"), "pi-mcp-adapter")
+	assertFileNotContains(t, filepath.Join(configured, "npm", "package.json"), "pi-mcp-adapter")
 
 	if _, statErr := os.Stat(filepath.Join(home, ".pi")); !os.IsNotExist(statErr) {
 		t.Fatalf("real home .pi dir stat err = %v, want IsNotExist (install must not touch the real ~/.pi while PI_CODING_AGENT_DIR is set)", statErr)
@@ -324,10 +416,12 @@ func TestRunInstallEngramForPiTargetsConfiguredAgentDirectory(t *testing.T) {
 
 // TestExecuteCommandInheritsPiCodingAgentDirForChildProcesses proves that Pi
 // package-install child processes (spawned through executeCommand, the
-// runCommand default) inherit PI_CODING_AGENT_DIR from the parent process's
-// environment without gentle-ai needing to build an explicit Env slice: Go's
-// os/exec.Cmd defaults to the parent's environment whenever Env is nil, and
-// neither runCommandSequenceWithProgress nor executeCommand ever sets Env.
+// runCommand default) still inherit PI_CODING_AGENT_DIR from the parent
+// process's environment for a non-brew command: commandEnv returns its base
+// (os.Environ()) unchanged whenever the command name is not "brew", so this
+// passthrough is unaffected by executeCommand explicitly building cmd.Env to
+// inject HOMEBREW_NO_AUTO_UPDATE/HOMEBREW_NO_INSTALL_CLEANUP for brew calls
+// (see TestExecuteCommandSetsHomebrewNoAutoUpdateEnvForBrewCommands).
 func TestExecuteCommandInheritsPiCodingAgentDirForChildProcesses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the child-process probe below runs a POSIX sh one-liner")
@@ -395,7 +489,7 @@ func TestPiAgentInstallProgressUsesAdapterCommandNames(t *testing.T) {
 		t.Fatalf("agentInstallStep.Run() error = %v", err)
 	}
 
-	wantPackages := []string{"pi install npm:gentle-pi", "pi install npm:gentle-engram", "pi install npm:pi-mcp-adapter", engramInitCommandForTest, "pi install npm:pi-web-access", "pi install npm:pi-btw"}
+	wantPackages := []string{"pi install npm:gentle-pi", "pi install npm:gentle-engram", "pi install npm:pi-web-access", "pi install npm:pi-btw"}
 	if len(events) != len(wantPackages)*2 {
 		t.Fatalf("progress events = %d, want %d: %v", len(events), len(wantPackages)*2, events)
 	}
@@ -460,7 +554,7 @@ func TestPiAgentInstallRunsPackageCommandsWhenPiAlreadyInstalled(t *testing.T) {
 		case "pi":
 			return fakePi, nil
 		case "npm":
-			// Pi's install runs npm exec for engram init, so npm must be present.
+			// Pi's npm-backed package installs still require npm.
 			return fakeNpm, nil
 		default:
 			return "", exec.ErrNotFound
@@ -490,8 +584,6 @@ func TestPiAgentInstallRunsPackageCommandsWhenPiAlreadyInstalled(t *testing.T) {
 	for _, want := range []string{
 		"pi install npm:gentle-pi",
 		"pi install npm:gentle-engram",
-		"pi install npm:pi-mcp-adapter",
-		engramInitCommandForTest,
 		"pi install npm:pi-web-access",
 		"pi install npm:pi-btw",
 	} {
@@ -1899,7 +1991,7 @@ func TestRunInstallDryRunMatchesActualInstall(t *testing.T) {
 	adapters := resolveAdapters(dryResult.Resolved.Agents)
 	var expectedPaths []string
 	for _, component := range dryResult.Resolved.OrderedComponents {
-		expectedPaths = append(expectedPaths, componentPaths(home, dryResult.Selection, adapters, component)...)
+		expectedPaths = append(expectedPaths, componentPathsWithWorkspaceScoped(home, "", ScopeGlobal, dryResult.Selection, adapters, component)...)
 	}
 	if len(expectedPaths) == 0 {
 		t.Fatal("dry-run resolved zero file paths — test is misconfigured")
@@ -1958,7 +2050,7 @@ func TestRunInstallDryRunMatchesActualInstallOpenCodeReview(t *testing.T) {
 	adapters := resolveAdapters(dryResult.Resolved.Agents)
 	var expectedPaths []string
 	for _, component := range dryResult.Resolved.OrderedComponents {
-		expectedPaths = append(expectedPaths, componentPaths(home, dryResult.Selection, adapters, component)...)
+		expectedPaths = append(expectedPaths, componentPathsWithWorkspaceScoped(home, "", ScopeGlobal, dryResult.Selection, adapters, component)...)
 	}
 	if len(expectedPaths) == 0 {
 		t.Fatal("dry-run omitted the requested persona files")
@@ -2546,6 +2638,57 @@ func TestRunInstallKimiBootstrapsHub(t *testing.T) {
 	}
 }
 
+// TestRunInstallKimiCurrentLayoutBootstrapsHubInKimiCode verifies that when
+// the current kimi-code v0.11+ root (~/.kimi-code directory) exists, install
+// bootstraps the prompt hub there instead of the legacy ~/.kimi root
+// (issue #782).
+func TestRunInstallKimiCurrentLayoutBootstrapsHubInKimiCode(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".kimi-code"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.kimi-code): %v", err)
+	}
+	restoreHome := osUserHomeDir
+	restoreCommand := runCommand
+	restoreLookPath := cmdLookPath
+	t.Cleanup(func() {
+		osUserHomeDir = restoreHome
+		runCommand = restoreCommand
+		cmdLookPath = restoreLookPath
+	})
+	osUserHomeDir = func() (string, error) { return home, nil }
+	runCommand = func(string, ...string) error { return nil }
+	cmdLookPath = missingBinaryLookPath
+	restoreInstallcmdLookPath := installcmd.OverrideLookPath(func(name string) (string, error) {
+		if name == "uv" {
+			return "/usr/bin/uv", nil
+		}
+		return "", exec.ErrNotFound
+	})
+	t.Cleanup(restoreInstallcmdLookPath)
+
+	// Simulate Kimi as already installed (same rationale as the legacy test).
+	restoreKimiLookPath := kimi.LookPathOverride
+	kimi.LookPathOverride = func(string) (string, error) { return "/usr/local/bin/kimi", nil }
+	t.Cleanup(func() { kimi.LookPathOverride = restoreKimiLookPath })
+
+	_, err := RunInstall(
+		[]string{"--agent", "kimi", "--component", "permissions"},
+		system.DetectionResult{},
+	)
+	if err != nil {
+		t.Fatalf("RunInstall() error = %v", err)
+	}
+
+	hubPath := filepath.Join(home, ".kimi-code", "AGENTS.md")
+	if _, err := os.Stat(hubPath); err != nil {
+		t.Fatalf("expected Kimi prompt hub %q in the current layout: %v", hubPath, err)
+	}
+	legacyHub := filepath.Join(home, ".kimi", "KIMI.md")
+	if _, err := os.Stat(legacyHub); err == nil {
+		t.Errorf("legacy hub %q must not be created when the current layout exists", legacyHub)
+	}
+}
+
 func TestRunInstallKimiAlreadyInstalledDoesNotRequireUV(t *testing.T) {
 	home := t.TempDir()
 	restoreHome := osUserHomeDir
@@ -2670,8 +2813,8 @@ func TestRunInstallWorkspaceScopeVerification(t *testing.T) {
 // TestRunInstall_Context7WorkspaceScope_PersistsToWorkspace verifies that executing
 // a real workspace operation with --scope workspace and Context7 component:
 //  1. Returns a successful result with verification ready.
-//  2. Persists Context7 MCP configuration into <project-root>/.mcp.json, the file
-//     Claude Code loads project-scoped MCP servers from (issue #2213).
+//  2. Persists Context7 MCP configuration into <workspace>/.mcp.json, the
+//     project-scoped file Claude Code loads MCP servers from (issue #2213).
 //  3. Leaves the user's home directory settings untouched.
 func TestRunInstall_Context7WorkspaceScope_PersistsToWorkspace(t *testing.T) {
 	home := t.TempDir()
@@ -2720,16 +2863,18 @@ func TestRunInstall_Context7WorkspaceScope_PersistsToWorkspace(t *testing.T) {
 		t.Fatalf("post-apply verification failed for Context7 workspace scope: %#v", result.Verify)
 	}
 
-	// Context7 MCP configuration must persist to <project-root>/.mcp.json, the
-	// file Claude Code loads project-scoped MCP servers from (issue #2213).
+	// Assert that Context7 MCP configuration was persisted to the workspace
+	// project-scoped .mcp.json file Claude Code actually loads.
 	workspaceMCPFile := filepath.Join(workspace, ".mcp.json")
 	assertFileContains(t, workspaceMCPFile, "context7")
 
-	// The legacy .claude/settings.json key is inert for MCP discovery and must
-	// not carry the managed context7 entry after install.
-	if settingsRaw, err := os.ReadFile(filepath.Join(workspace, ".claude", "settings.json")); err == nil {
-		if strings.Contains(string(settingsRaw), `"mcpServers"`) {
-			t.Errorf("workspace .claude/settings.json must not carry mcpServers; got %s", settingsRaw)
+	// Assert that no inert managed mcpServers block was left in the
+	// workspace .claude/settings.json (Claude Code ignores it).
+	workspaceSettingsFile := filepath.Join(workspace, ".claude", "settings.json")
+	if _, err := os.Stat(workspaceSettingsFile); err == nil {
+		content, _ := os.ReadFile(workspaceSettingsFile)
+		if strings.Contains(string(content), "context7") {
+			t.Errorf("unexpected inert Context7 MCP config found in workspace settings file: %q", workspaceSettingsFile)
 		}
 	}
 
@@ -2744,8 +2889,9 @@ func TestRunInstall_Context7WorkspaceScope_PersistsToWorkspace(t *testing.T) {
 }
 
 // TestRunInstall_Context7WorkspaceScope_FailurePath verifies that executing
-// Context7 workspace installation when workspace target is unwriteable fails gracefully,
-// returning an error and reporting verification failure.
+// Context7 workspace installation when the workspace .mcp.json target is
+// unwriteable fails gracefully, returning an error and reporting verification
+// failure.
 func TestRunInstall_Context7WorkspaceScope_FailurePath(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
@@ -2777,12 +2923,10 @@ func TestRunInstall_Context7WorkspaceScope_FailurePath(t *testing.T) {
 		t.Fatalf("failed to change working directory to temp workspace: %v", err)
 	}
 
-	// Block the <project-root>/.mcp.json write by making it a directory, so the
-	// atomic file write fails. The primary workspace-scope target is .mcp.json
-	// (issue #2213), not .claude/settings.json.
-	blockingPath := filepath.Join(workspace, ".mcp.json")
-	if err := os.Mkdir(blockingPath, 0o755); err != nil {
-		t.Fatalf("failed to create blocking .mcp.json directory: %v", err)
+	// Create .mcp.json as a directory so the Context7 merge cannot read it.
+	mcpPath := filepath.Join(workspace, ".mcp.json")
+	if err := os.MkdirAll(mcpPath, 0o755); err != nil {
+		t.Fatalf("failed to block workspace .mcp.json path: %v", err)
 	}
 
 	args := []string{

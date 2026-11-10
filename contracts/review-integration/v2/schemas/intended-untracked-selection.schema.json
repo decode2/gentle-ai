@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "gentle-ai.review-intended-untracked-selection/v1",
+  "$id": "https://gentle-ai.dev/contracts/review-integration/v2/schemas/intended-untracked-selection.schema.json",
   "title": "Gentle AI intended untracked selection",
   "type": "object", "additionalProperties": false,
   "required": ["schema", "untracked_scope", "expected_untracked_inventory", "intended_untracked"],
@@ -8,7 +8,7 @@
     "schema": {"const": "gentle-ai.review-intended-untracked-selection/v1"},
     "untracked_scope": {"enum": ["exclude", "select"]},
     "expected_untracked_inventory": {"$ref": "status-v5.schema.json#/$defs/sha256"},
-    "intended_untracked": {"type": "array", "uniqueItems": true, "items": {"$ref": "start.schema.json#/$defs/changed_path"}}
+    "intended_untracked": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
   },
   "allOf": [
     {"if": {"properties": {"untracked_scope": {"const": "exclude"}}, "required": ["untracked_scope"]}, "then": {"properties": {"intended_untracked": {"maxItems": 0}}}},

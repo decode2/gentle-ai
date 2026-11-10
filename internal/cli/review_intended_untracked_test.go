@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/reviewtransaction"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/reviewtransaction"
 )
 
 // reviewCapabilitySHA256Pattern is the exact wire shape a digest must match
@@ -181,6 +182,98 @@ func TestIntendedUntrackedSelectionSubmissionExecutesSelectedStatusThenPrintedSt
 	started := decodeNegotiatedReviewStart(t, executePrintedReview(t, repo, selected.NextTransition.Execute.Command))
 	if started.State != reviewtransaction.StateApproved || started.Action != "closed" {
 		t.Fatalf("printed START = %#v", started)
+	}
+}
+
+// A base-ref STATUS that asks for an untracked selection must hand back a
+// submission that re-enters the same target: dropping the --base-ref selector
+// resolves a current-changes target with a different base and path set.
+func TestIntendedUntrackedSelectionSubmissionKeepsBaseRefTarget(t *testing.T) {
+	for _, tt := range []struct {
+		name, scope, token string
+	}{
+		{name: "committed-only base diff", scope: "--committed-only", token: "--committed-only=true"},
+		{name: "workspace overlay", scope: "--workspace-overlay", token: "--workspace-overlay=true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(reviewPiHostRelayContractEnvironment, reviewPiHostRelayContract)
+			reviewEnabledHome(t)
+			repo := initReviewCLIRepo(t)
+			baseRef := strings.TrimSpace(runReviewCLIGit(t, repo, "rev-parse", "HEAD"))
+			writeReviewStartCandidate(t, repo, "docs/committed.md", "# Committed\n", 0o644)
+			runReviewCLIGit(t, repo, "commit", "-qm", "add committed doc")
+			writeUndeclaredWorkspaceFile(t, repo, "docs/chosen.md", "# Chosen\n", 0o644)
+
+			target := []string{"--agent", "pi", "--base-ref", baseRef, tt.scope}
+			status := intendedUntrackedStatus(t, repo, target...)
+			digest, inventory := intendedUntrackedSelection(t, status)
+			if !reflect.DeepEqual(inventory, []string{"docs/chosen.md"}) {
+				t.Fatalf("selection inventory = %v", inventory)
+			}
+			submission := status.NextTransition.Collect.Inputs[0].Submission
+			if submission == nil {
+				t.Fatal("base-ref selection lacks its selected-STATUS submission")
+			}
+			want := []string{"--base-ref=" + status.Projection.BaseTree, tt.token}
+			if got := submission.ArgumentTokens[3 : len(submission.ArgumentTokens)-1]; !reflect.DeepEqual(got, want) {
+				t.Fatalf("submission selector = %v, want %v", got, want)
+			}
+			if err := submission.Validate(); err != nil {
+				t.Fatalf("base-ref submission %v: %v", submission.ArgumentTokens, err)
+			}
+
+			answer, _ := json.Marshal(reviewIntendedUntrackedSelection{Schema: reviewIntendedUntrackedSelectionSchema, UntrackedScope: "select", ExpectedInventory: digest, Intended: []string{"docs/chosen.md"}})
+			tokens := append([]string{submission.OperationToken, "--cwd", repo}, submission.ArgumentTokens...)
+			for index := range tokens {
+				tokens[index] = strings.ReplaceAll(tokens[index], reviewSubmissionValuePlaceholder, string(answer))
+			}
+			var output bytes.Buffer
+			if err := RunReview(tokens, &output); err != nil {
+				t.Fatalf("submitted STATUS: %v\n%s", err, output.String())
+			}
+			var submitted ReviewTargetStatusResult
+			decodeStrictReviewJSON(t, output.Bytes(), &submitted)
+
+			direct := intendedUntrackedStatus(t, repo, append(target, intendedUntrackedSelectArgs(digest, "docs/chosen.md")...)...)
+			if submitted.TargetIdentity != direct.TargetIdentity || submitted.Projection.PathsDigest != direct.Projection.PathsDigest || submitted.Projection.BaseTree != direct.Projection.BaseTree {
+				t.Fatalf("submitted target = %s paths_digest %s base %s, want %s paths_digest %s base %s",
+					submitted.TargetIdentity, submitted.Projection.PathsDigest, submitted.Projection.BaseTree,
+					direct.TargetIdentity, direct.Projection.PathsDigest, direct.Projection.BaseTree)
+			}
+			if !reflect.DeepEqual(submitted.Projection.Paths, []string{"docs/chosen.md", "docs/committed.md"}) {
+				t.Fatalf("submitted projection paths = %v", submitted.Projection.Paths)
+			}
+		})
+	}
+}
+
+func TestIntendedUntrackedSelectionSubmissionRejectsForeignSelector(t *testing.T) {
+	// The descriptor names the pi runtime, which is eligible only through the
+	// host relay contract; pin it so the test does not depend on the caller's env.
+	t.Setenv(reviewPiHostRelayContractEnvironment, reviewPiHostRelayContract)
+	tree := strings.Repeat("a", 40)
+	for _, tt := range []struct {
+		name     string
+		selector []string
+		valid    bool
+	}{
+		{name: "workspace", selector: []string{"--projection=workspace"}, valid: true},
+		{name: "committed-only base diff", selector: []string{"--base-ref=" + tree, "--committed-only=true"}, valid: true},
+		{name: "workspace overlay", selector: []string{"--base-ref=" + tree, "--workspace-overlay=true"}, valid: true},
+		{name: "staged projection", selector: []string{"--projection=staged"}},
+		{name: "symbolic base ref", selector: []string{"--base-ref=HEAD", "--committed-only=true"}},
+		{name: "base ref without scope", selector: []string{"--base-ref=" + tree, "--projection=workspace"}},
+		{name: "scope without base ref", selector: []string{"--projection=workspace", "--committed-only=true"}},
+		{name: "no selector"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens := append([]string{"--contract=" + ReviewIntegrationContractV2, "--next-transition=true", "--agent=pi"}, tt.selector...)
+			tokens = append(tokens, "--intended-untracked-selection="+reviewSubmissionValuePlaceholder)
+			submission := ReviewTransitionSubmission{OperationToken: "status", ArgumentTokens: tokens, Value: &ReviewTransitionSubmissionValue{Slot: "intended_untracked_selection", Domain: "schema_bound_json", Schema: reviewIntendedUntrackedSelectionSchema, SubstitutionLocation: len(tokens) - 1}}
+			if err := submission.Validate(); (err == nil) != tt.valid {
+				t.Fatalf("Validate(%v) = %v, want valid=%v", tokens, err, tt.valid)
+			}
+		})
 	}
 }
 
@@ -497,4 +590,78 @@ func TestStagedProjectionOmitsEligibleUntrackedInventoryKey(t *testing.T) {
 	if _, ok := fields["eligible_untracked_inventory"]; ok {
 		t.Fatalf("staged STATUS carries eligible_untracked_inventory, want the key structurally absent: %s", output.String())
 	}
+}
+
+// Issue #4311: the published v1 schema asked a host for changed-path OBJECTS
+// (start.schema.json#/$defs/changed_path) while the sole implementation
+// authority decodes intended_untracked as []string and every
+// --intended-untracked flag carries one repo-relative path. A host that
+// followed the published representation therefore got the preflight refusal
+// `--intended-untracked-selection must be exact ...` for the exact envelope
+// the schema told it to send. The schema now publishes the string
+// representation, and the object representation stays refused.
+func TestIntendedUntrackedSelectionPublishedSchemaMatchesDecoderRepresentation(t *testing.T) {
+	const inventory = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	envelope := func(entries string) []byte {
+		return []byte(`{"schema":"` + reviewIntendedUntrackedSelectionSchema + `","untracked_scope":"select","expected_untracked_inventory":"` + inventory + `","intended_untracked":` + entries + `}`)
+	}
+	objectEnvelope := envelope(`[{"path":"docs/chosen.md","status":"A","old_mode":"000000","new_mode":"100644","deleted":false,"type_changed":false,"mode_only":false,"intended_untracked":true}]`)
+	schema := compileWholeNativeStatusSchema(t, "intended-untracked-selection.schema.json")
+
+	t.Run("published schema accepts the decoder's string entries", func(t *testing.T) {
+		validatePublishedReviewSchema(t, schema, envelope(`["docs/chosen.md"]`))
+	})
+	t.Run("published schema rejects the retired object entries", func(t *testing.T) {
+		var document any
+		if err := json.Unmarshal(objectEnvelope, &document); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(document); err == nil {
+			t.Fatal("published intended-untracked-selection schema accepted a changed-path object entry; the decoder accepts []string entries only")
+		}
+	})
+	t.Run("published schema rejects empty path entries", func(t *testing.T) {
+		var document any
+		if err := json.Unmarshal(envelope(`[""]`), &document); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(document); err == nil {
+			t.Fatal("published intended-untracked-selection schema accepted an empty path entry; every --intended-untracked flag carries one repo-relative path")
+		}
+	})
+	t.Run("object representation is refused at preflight", func(t *testing.T) {
+		t.Setenv(reviewPiHostRelayContractEnvironment, reviewPiHostRelayContract)
+		reviewEnabledHome(t)
+		repo := initReviewCLIRepo(t)
+		writeUndeclaredWorkspaceFile(t, repo, "docs/chosen.md", "# Chosen\n", 0o644)
+		writeReviewStartCandidate(t, repo, "docs/tracked.md", "# Tracked\n", 0o644)
+
+		status := intendedUntrackedStatus(t, repo, "--agent", "opencode")
+		submission := status.NextTransition.Collect.Inputs[0].Submission
+		if submission == nil || submission.Value == nil || submission.Value.Schema != reviewIntendedUntrackedSelectionSchema {
+			t.Fatalf("selection submission = %#v", submission)
+		}
+		tokens := append([]string{submission.OperationToken, "--cwd", repo}, submission.ArgumentTokens...)
+		for index := range tokens {
+			tokens[index] = strings.ReplaceAll(tokens[index], reviewSubmissionValuePlaceholder, string(objectEnvelope))
+		}
+		var output bytes.Buffer
+		err := RunReview(tokens, &output)
+		if err == nil {
+			t.Fatalf("object representation was accepted; output=%s", output.String())
+		}
+		var typed *ReviewIntegrationFailureError
+		if !errors.As(err, &typed) {
+			t.Fatalf("object representation refusal = %v, want a negotiated failure", err)
+		}
+		var emitted ReviewIntegrationFailure
+		decodeStrictReviewJSON(t, output.Bytes(), &emitted)
+		for name, failure := range map[string]ReviewIntegrationFailure{"stdout": emitted, "typed": typed.Failure} {
+			if failure.Schema != ReviewIntegrationFailureSchemaV2 || failure.Contract != ReviewIntegrationContractV2 ||
+				failure.Phase != "preflight" || failure.Code != "invalid_request" || failure.MutationOutcome != ReviewMutationNotStarted {
+				t.Fatalf("%s refusal envelope = %#v", name, failure)
+			}
+		}
+		assertNoUntrackedSelectionAuthority(t, repo)
+	})
 }

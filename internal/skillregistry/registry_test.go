@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/antigravity"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/agents/trae"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/antigravity"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/agents/trae"
 )
 
 func TestRegenerateWritesRegistryAndCacheThenHitsCache(t *testing.T) {
@@ -278,7 +278,7 @@ func TestAntigravitySkillDiscoveryMatchesActiveVariant(t *testing.T) {
 			want: []expectedSkill{
 				{scope: "user", path: ".gemini/antigravity-cli/skills/cli-only/SKILL.md", name: "cli-only", description: "CLI only"},
 			},
-			activeVariant: ".gemini/antigravity-cli/skills",
+			activeVariant: ".gemini/config/skills",
 		},
 		{
 			name: "Desktop only",
@@ -288,7 +288,7 @@ func TestAntigravitySkillDiscoveryMatchesActiveVariant(t *testing.T) {
 			want: []expectedSkill{
 				{scope: "user", path: ".gemini/antigravity-desktop/skills/desktop-only/SKILL.md", name: "desktop-only", description: "Desktop only"},
 			},
-			activeVariant: ".gemini/antigravity-desktop/skills",
+			activeVariant: ".gemini/config/skills",
 		},
 		{
 			name: "both variants preserve compatibility roots and precedence",
@@ -310,7 +310,21 @@ func TestAntigravitySkillDiscoveryMatchesActiveVariant(t *testing.T) {
 				{scope: "project", path: "skills/project-wins/SKILL.md", name: "project-wins", description: "Project copy"},
 				{scope: "user", path: ".gemini/skills/shared-only/SKILL.md", name: "shared-only", description: "Shared only"},
 			},
-			activeVariant: ".gemini/antigravity-desktop/skills",
+			activeVariant: ".gemini/config/skills",
+		},
+		{
+			name: "shared config root is discovered and wins over variant copies",
+			skills: []fixtureSkill{
+				{scope: "user", path: ".gemini/config/skills/shared-config/SKILL.md", name: "shared-config", description: "Shared config"},
+				{scope: "user", path: ".gemini/config/skills/duplicate/SKILL.md", name: "duplicate", description: "Shared config duplicate"},
+				{scope: "user", path: ".gemini/antigravity-desktop/skills/duplicate/SKILL.md", name: "duplicate", description: "Desktop duplicate"},
+				{scope: "user", path: ".gemini/antigravity-cli/skills/duplicate/SKILL.md", name: "duplicate", description: "CLI duplicate"},
+			},
+			want: []expectedSkill{
+				{scope: "user", path: ".gemini/config/skills/duplicate/SKILL.md", name: "duplicate", description: "Shared config duplicate"},
+				{scope: "user", path: ".gemini/config/skills/shared-config/SKILL.md", name: "shared-config", description: "Shared config"},
+			},
+			activeVariant: ".gemini/config/skills",
 		},
 		{
 			name: "missing variant directories preserve shared and legacy roots",
@@ -322,7 +336,7 @@ func TestAntigravitySkillDiscoveryMatchesActiveVariant(t *testing.T) {
 				{scope: "user", path: ".gemini/antigravity/skills/legacy-only/SKILL.md", name: "legacy-only", description: "Legacy only"},
 				{scope: "user", path: ".gemini/skills/shared-only/SKILL.md", name: "shared-only", description: "Shared only"},
 			},
-			activeVariant: ".gemini/antigravity-cli/skills",
+			activeVariant: ".gemini/config/skills",
 		},
 	}
 
@@ -443,6 +457,7 @@ func TestUserSkillDirsIncludesSupportedAgentSkillLocations(t *testing.T) {
 		filepath.Join(home, ".codex", "skills"),
 		filepath.Join(home, ".codeium", "windsurf", "skills"),
 		filepath.Join(home, ".config", "agents", "skills"),
+		filepath.Join(home, ".kimi-code", "skills"),
 		filepath.Join(home, ".kimi", "skills"),
 		filepath.Join(home, ".qwen", "skills"),
 		filepath.Join(home, ".kiro", "skills"),
@@ -751,6 +766,37 @@ func TestListReturnsDedupedEntriesWithoutWriting(t *testing.T) {
 	// List is read-only: it must not write the registry or cache.
 	if _, err := os.Stat(filepath.Join(cwd, RegistryRelPath)); !os.IsNotExist(err) {
 		t.Fatalf("List wrote registry (stat err = %v), want it absent", err)
+	}
+}
+
+// TestListKeepsSharedUserSkillBeforeKimiCodeNativeSkills verifies that a
+// skill name present in both the shared user skills root and the current
+// kimi-code native skills root resolves to the shared user copy: the
+// .config/agents/skills source precedes .kimi-code/skills in UserSkillDirs,
+// so dedupeBySkillName keeps the earlier entry while project skills still
+// beat both (issue #782 review).
+func TestListKeepsSharedUserSkillBeforeKimiCodeNativeSkills(t *testing.T) {
+	cwd := t.TempDir()
+	home := t.TempDir()
+	writeSkill(t, filepath.Join(home, ".config", "agents", "skills", "shared", "SKILL.md"),
+		"---\nname: shared\ndescription: shared user copy\n---\n")
+	writeSkill(t, filepath.Join(home, ".kimi-code", "skills", "shared", "SKILL.md"),
+		"---\nname: shared\ndescription: kimi-code native copy\n---\n")
+
+	entries := List(cwd, home)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if want := filepath.Join(home, ".config", "agents", "skills", "shared", "SKILL.md"); entries[0].Path != want {
+		t.Fatalf("entries[0].Path = %q, want the shared user copy %q", entries[0].Path, want)
+	}
+
+	// Project-local skills must still outrank both user-level roots.
+	writeSkill(t, filepath.Join(cwd, "skills", "shared", "SKILL.md"),
+		"---\nname: shared\ndescription: project copy\n---\n")
+	entries = List(cwd, home)
+	if len(entries) != 1 || entries[0].Description != "project copy" {
+		t.Fatalf("entries = %#v, want the project copy to win", entries)
 	}
 }
 

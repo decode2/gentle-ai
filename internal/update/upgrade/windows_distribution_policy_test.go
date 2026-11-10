@@ -6,14 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/system"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/update"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/system"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/update"
 )
 
 func TestGentleAIWindowsUpgradeFailsClosedToSourceInstall(t *testing.T) {
 	originalExec := execCommand
 	t.Cleanup(func() { execCommand = originalExec })
 	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "scoop" && len(args) == 2 && args[0] == "config" && args[1] == "root_path" {
+			return scoopTestCommand("'root_path' is not set", 0)
+		}
 		t.Fatalf("Windows omission policy executed %s %v", name, args)
 		return nil
 	}
@@ -88,7 +91,7 @@ func TestWindowsBetaSourceRecoveryIsPinned(t *testing.T) {
 func TestWindowsBetaGentleAIUpgradeUsesShippedRegistryGoTarget(t *testing.T) {
 	const (
 		mainSHA = "972997650b51abcdef0123456789abcdef012345"
-		module  = "github.com/gentleman-programming/gentle-ai/v3"
+		module  = "github.com/gentleman-programming/gentle-ai/v4"
 	)
 
 	var tool update.ToolInfo

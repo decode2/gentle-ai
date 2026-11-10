@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-ai/v3/internal/components/communitytool"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/model"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/pipeline"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/planner"
-	"github.com/gentleman-programming/gentle-ai/v3/internal/system"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/components/communitytool"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/model"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/pipeline"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/planner"
+	"github.com/gentleman-programming/gentle-ai/v4/internal/system"
 )
 
 func TestInstallRuntimeStagePlanAddsCommunityToolStepsInSelectionOrder(t *testing.T) {
@@ -161,14 +161,12 @@ func TestBackupTargetsSnapshotCrossAgentCodeGraphGuidance(t *testing.T) {
 	}
 }
 
-func TestBackupTargetsIncludeSelectedOpenCodePluginPaths(t *testing.T) {
+func TestBackupTargetsIncludeGentleLogoComponentPaths(t *testing.T) {
 	home := t.TempDir()
 	targets, err := backupTargets(home, "", ScopeGlobal, model.Selection{
-		OpenCodePlugins: []model.OpenCodeCommunityPluginID{
-			model.OpenCodePluginSubAgentStatusline,
-			model.OpenCodePluginGentleLogo,
-		},
-	}, planner.ResolvedPlan{})
+		Agents:     []model.AgentID{model.AgentOpenCode},
+		Components: []model.ComponentID{model.ComponentOpenCodeGentleLogo},
+	}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}, OrderedComponents: []model.ComponentID{model.ComponentOpenCodeGentleLogo}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +194,10 @@ func TestCodeGraphFailureDoesNotLeaveEarlierOpenCodePluginRegistration(t *testin
 	}
 
 	runtime, err := newInstallRuntime(home, ScopeGlobal, ChannelStable, model.Selection{
-		Agents:          []model.AgentID{model.AgentOpenCode},
-		OpenCodePlugins: []model.OpenCodeCommunityPluginID{model.OpenCodePluginSubAgentStatusline},
-		CommunityTools:  []model.CommunityToolID{model.CommunityToolCodeGraph},
-	}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}}, system.PlatformProfile{})
+		Agents:         []model.AgentID{model.AgentOpenCode},
+		Components:     []model.ComponentID{model.ComponentOpenCodeGentleLogo},
+		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+	}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}, OrderedComponents: []model.ComponentID{model.ComponentOpenCodeGentleLogo}}, system.PlatformProfile{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,13 +242,10 @@ func TestInstallRollbackRestoresSelectedOpenCodePluginPathsAfterPluginRegistrati
 			}
 
 			runtime, err := newInstallRuntime(home, ScopeGlobal, ChannelStable, model.Selection{
-				Agents: []model.AgentID{model.AgentOpenCode},
-				OpenCodePlugins: []model.OpenCodeCommunityPluginID{
-					model.OpenCodePluginSubAgentStatusline,
-					model.OpenCodePluginGentleLogo,
-				},
+				Agents:         []model.AgentID{model.AgentOpenCode},
+				Components:     []model.ComponentID{model.ComponentOpenCodeGentleLogo},
 				CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
-			}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}}, system.PlatformProfile{})
+			}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}, OrderedComponents: []model.ComponentID{model.ComponentOpenCodeGentleLogo}}, system.PlatformProfile{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -310,7 +305,7 @@ func (s failAfterPluginRegistrationStep) Run() error {
 	if err := json.Unmarshal(tui, &config); err != nil {
 		return fmt.Errorf("decode plugin registration %q: %w", s.tuiPath, err)
 	}
-	for _, plugin := range []string{"opencode-subagent-statusline", s.logoPath} {
+	for _, plugin := range []string{s.logoPath} {
 		if !slices.Contains(config.Plugin, plugin) {
 			return fmt.Errorf("plugin registration %q is missing exact plugin %q", s.tuiPath, plugin)
 		}
@@ -334,10 +329,10 @@ func TestSuccessfulCodeGraphReconciliationStillRegistersOpenCodePlugin(t *testin
 	}
 
 	runtime, err := newInstallRuntime(home, ScopeGlobal, ChannelStable, model.Selection{
-		Agents:          []model.AgentID{model.AgentOpenCode},
-		OpenCodePlugins: []model.OpenCodeCommunityPluginID{model.OpenCodePluginSubAgentStatusline},
-		CommunityTools:  []model.CommunityToolID{model.CommunityToolCodeGraph},
-	}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}}, system.PlatformProfile{})
+		Agents:         []model.AgentID{model.AgentOpenCode},
+		Components:     []model.ComponentID{model.ComponentOpenCodeGentleLogo},
+		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
+	}, planner.ResolvedPlan{Agents: []model.AgentID{model.AgentOpenCode}, OrderedComponents: []model.ComponentID{model.ComponentOpenCodeGentleLogo}}, system.PlatformProfile{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +344,7 @@ func TestSuccessfulCodeGraphReconciliationStillRegistersOpenCodePlugin(t *testin
 	}
 
 	data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "tui.json"))
-	if err != nil || !strings.Contains(string(data), "opencode-subagent-statusline") {
+	if err != nil || !strings.Contains(string(data), "gentle-logo.tsx") {
 		t.Fatalf("OpenCode plugin registration = %q, %v; want successful registration", data, err)
 	}
 }
@@ -704,7 +699,6 @@ func TestPiCodeGraphMCPRuntimeClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			writePiInstallFixture(t, home)
-			mustWriteFile(t, filepath.Join(home, ".pi", "agent", "npm", "node_modules", "pi-mcp-adapter", "index.ts"), []byte("export default {}\n"))
 			installFakeCodeGraphMCP(t, tc.tools)
 
 			result, err := communitytool.ReconcilePiCodeGraph(communitytool.PiCodeGraphOptions{HomeDir: home, Selected: true})
@@ -724,10 +718,10 @@ func TestPiCodeGraphMCPRuntimeClassification(t *testing.T) {
 
 func TestSyncPlanIncludesPiCodeGraphReconciliationAfterComponentsWhenSelected(t *testing.T) {
 	home := t.TempDir()
-	runtime, err := newSyncRuntime(home, model.Selection{
+	runtime, err := newSyncRuntimeWithScope(home, model.Selection{
 		Agents:         []model.AgentID{model.AgentPi},
 		CommunityTools: []model.CommunityToolID{model.CommunityToolCodeGraph},
-	})
+	}, ScopeGlobal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,4 +781,103 @@ func installFakeCodeGraphMCP(t *testing.T, tools string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestCommunityToolInstallStepForwardsForceCommunityTools covers #984's
+// plumbing seam: the step must hand the force opt-in to the installer so the
+// installer decides to reinstall @latest instead of skipping.
+func TestCommunityToolInstallStepForwardsForceCommunityTools(t *testing.T) {
+	previousOptions := installCommunityToolWithOptions
+	previousInstall := installCommunityToolWithHome
+	t.Cleanup(func() {
+		installCommunityToolWithOptions = previousOptions
+		installCommunityToolWithHome = previousInstall
+	})
+	installCommunityToolWithHome = func(model.CommunityToolID, string, string, communitytool.Runner, communitytool.Detector) (communitytool.Result, error) {
+		t.Fatal("a forced step must not use the unforced installer seam")
+		return communitytool.Result{}, nil
+	}
+
+	var gotTool model.CommunityToolID
+	var gotWorkspace string
+	var gotOptions communitytool.InstallOptions
+	var gotRunner communitytool.Runner
+	installCommunityToolWithOptions = func(tool model.CommunityToolID, workspaceDir string, options communitytool.InstallOptions, runner communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+		gotTool, gotWorkspace, gotOptions, gotRunner = tool, workspaceDir, options, runner
+		return communitytool.Result{Tool: tool}, nil
+	}
+
+	step := communityToolInstallStep{id: "community-tool:codegraph", tool: model.CommunityToolCodeGraph, workspaceDir: "/work/project", homeDir: "/home/pi", forceCommunityTools: true}
+	if err := step.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if gotTool != model.CommunityToolCodeGraph || gotWorkspace != "/work/project" || gotRunner == nil {
+		t.Fatalf("installer args = (%q, %q, %#v), want CodeGraph, workspace, runner", gotTool, gotWorkspace, gotRunner)
+	}
+	if gotOptions.HomeDir != "/home/pi" || !gotOptions.ForceCommunityTools {
+		t.Fatalf("install options = %#v, want the runtime home and the force opt-in", gotOptions)
+	}
+}
+
+// TestCommunityToolInstallStepKeepsTheLegacyInstallerWithoutForce is the
+// preserve guard for the shared step: without the flag the step keeps calling
+// the unforced installer exactly as before.
+func TestCommunityToolInstallStepKeepsTheLegacyInstallerWithoutForce(t *testing.T) {
+	previousOptions := installCommunityToolWithOptions
+	previousInstall := installCommunityToolWithHome
+	t.Cleanup(func() {
+		installCommunityToolWithOptions = previousOptions
+		installCommunityToolWithHome = previousInstall
+	})
+	installCommunityToolWithOptions = func(model.CommunityToolID, string, communitytool.InstallOptions, communitytool.Runner, communitytool.Detector) (communitytool.Result, error) {
+		t.Fatal("an unforced step must keep the legacy installer seam")
+		return communitytool.Result{}, nil
+	}
+	installCommunityToolWithHome = func(tool model.CommunityToolID, _, _ string, _ communitytool.Runner, _ communitytool.Detector) (communitytool.Result, error) {
+		return communitytool.Result{Tool: tool}, nil
+	}
+
+	step := communityToolInstallStep{id: "community-tool:codegraph", tool: model.CommunityToolCodeGraph, workspaceDir: "/work/project", homeDir: "/home/pi"}
+	if err := step.Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+// TestRunInstallForwardsForceCommunityToolsToTheInstallRuntime drives the real
+// CLI entry point: `gentle-ai install --force-community-tools` must reach the
+// install runtime that builds the community-tool step, not a test-only struct
+// field.
+func TestRunInstallForwardsForceCommunityToolsToTheInstallRuntime(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "flag present", args: []string{"--force-community-tools"}, want: true},
+		{name: "flag absent", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			installTestHome(t)
+			t.Chdir(t.TempDir())
+			previousPlan := installStagePlan
+			t.Cleanup(func() { installStagePlan = previousPlan })
+			var got *bool
+			installStagePlan = func(rt *installRuntime) pipeline.StagePlan {
+				value := rt.forceCommunityTools
+				got = &value
+				return rt.stagePlan()
+			}
+
+			args := append([]string{"--agent", "claude-code", "--scope", "workspace"}, test.args...)
+			if _, err := RunInstall(args, macOSDetectionResult()); err != nil {
+				t.Fatalf("RunInstall(%v) error = %v", args, err)
+			}
+			if got == nil {
+				t.Fatal("installStagePlan was never called; the flag cannot reach the community-tool step")
+			}
+			if *got != test.want {
+				t.Fatalf("runtime forceCommunityTools = %t, want %t", *got, test.want)
+			}
+		})
+	}
 }
