@@ -107,6 +107,7 @@ export interface Evidence {
 	summary?: string;
 	decisions?: string[];
 	receipt?: string;
+	valid?: boolean;
 	commits?: string[];
 	startedAt?: string;
 	updatedAt?: string;

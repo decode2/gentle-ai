@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -56,10 +57,40 @@ var agentArgTemplates = map[string][]string{
 func defaultAgentCommand(ctx context.Context, s Session, dir string) *workProcess {
 	args := append([]string(nil), agentArgTemplates[s.Agent]...)
 	args = append(args, workerPrompt(s))
-	cmd := exec.CommandContext(ctx, s.Agent, args...)
+	invocation := agentInvocation(resolveAgentExecutable(s.Agent), runtime.GOOS)
+	cmd := exec.CommandContext(ctx, invocation.exe, append(invocation.prefix, args...)...)
 	cmd.Dir = dir
 	applyProcessPlatformTraits(cmd)
 	return &workProcess{cmd: cmd}
+}
+
+// agentInvocation turns a resolved executable path into the process to run:
+// npm shims (.cmd/.bat) cannot exec directly on Windows, they need
+// "cmd /c"; everything else (and every unix path) runs as-is.
+func agentInvocation(resolved, goos string) struct {
+	exe    string
+	prefix []string
+} {
+	lower := strings.ToLower(resolved)
+	if goos == "windows" && (strings.HasSuffix(lower, ".cmd") || strings.HasSuffix(lower, ".bat")) {
+		return struct {
+			exe    string
+			prefix []string
+		}{exe: "cmd", prefix: []string{"/c", resolved}}
+	}
+	return struct {
+		exe    string
+		prefix []string
+	}{exe: resolved}
+}
+
+// resolveAgentExecutable is the seam for tests: LookPath by default.
+var resolveAgentExecutable = func(command string) string {
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return command
+	}
+	return path
 }
 
 // StartTask validates, creates the worktree, registers the session, and
@@ -191,8 +222,25 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 		l.finish(session, "worker stopped: "+text)
 	} else {
 		l.Journal.Append(session.ID, "exited", text)
+		l.freezeReceipt(session)
 		l.finish(session, "worker exited ("+text+"); task: "+session.Task+"; branch: "+session.Branch)
 	}
+}
+
+// freezeReceipt stamps the session's evidence receipt at worker exit: the
+// package's facts at this moment are what the receipt attests to.
+func (l *Launcher) freezeReceipt(session Session) {
+	ev := Evidence{
+		SessionID: string(session.ID),
+		Task:      session.Task,
+		Agent:     session.Agent,
+		Branch:    session.Branch,
+		Status:    "Exitado",
+	}
+	if l.Engram != nil && l.Fleet != nil {
+		_ = l.Engram.PublishOutcome(context.Background(), session.ID, session.Task, "receipt frozen")
+	}
+	l.Journal.Append(session.ID, "receipt", evidenceReceipt(ev))
 }
 
 // finish marks the worker idle in the fleet and records the outcome in

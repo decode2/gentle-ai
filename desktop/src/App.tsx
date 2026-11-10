@@ -356,7 +356,14 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 							<> · <span className="adds">+{evidence.totalAdditions}</span> <span className="dels">−{evidence.totalDeletions}</span></>
 						) : null}
 						{evidence.commits && evidence.commits.length > 0 ? <> · {evidence.commits.length} commits</> : null}
-						{evidence.receipt ? <span className="receipt" title="hash del paquete de evidencia"> · {evidence.receipt.slice(6, 14)}</span> : null}
+						{evidence.receipt ? (
+						<span
+							className={`receipt ${evidence.valid === false ? "receipt-bad" : ""}`}
+							title={evidence.valid === false ? "El paquete de evidencia fue modificado después de que el worker lo congeló" : "Recibo de evidencia congelado al salir el worker"}
+						>
+							{" · "}{evidence.valid === false ? "⚠ recibo alterado " : ""}{evidence.receipt.slice(6, 14)}
+						</span>
+					) : null}
 					</p>
 				)}
 				{evidence?.summary && <p className="worker-summary">{evidence.summary}</p>}

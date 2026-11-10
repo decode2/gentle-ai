@@ -138,3 +138,14 @@ func defaultConfigPath() string {
 	}
 	return filepath.Join(filepath.Dir(exe), "orchestrator.json")
 }
+
+// evidenceReceiptValid recomputes the receipt over the package's current
+// facts and compares it with the receipt the package carries: false means
+// the evidence was edited after its worker froze it. Receipts are frozen at
+// worker exit (journal entry kind "receipt").
+func evidenceReceiptValid(ev Evidence) bool {
+	if ev.Receipt == "" {
+		return false
+	}
+	return evidenceReceipt(ev) == ev.Receipt
+}

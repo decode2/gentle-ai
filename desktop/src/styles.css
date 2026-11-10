@@ -1051,3 +1051,8 @@ body {
 	border-radius: var(--r-card);
 	padding: 8px 10px;
 }
+
+.receipt-bad {
+	color: #f0a9a9 !important;
+	font-weight: 600;
+}

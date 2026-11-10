@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type Evidence struct {
 	Summary   string         `json:"summary,omitempty"`
 	Decisions []string       `json:"decisions,omitempty"`
 	Receipt   string         `json:"receipt,omitempty"`
+	Valid     bool           `json:"valid"`
 	Commits   []string       `json:"commits,omitempty"`
 	StartedAt *time.Time     `json:"startedAt,omitempty"`
 	UpdatedAt *time.Time     `json:"updatedAt,omitempty"`
@@ -72,6 +74,20 @@ func (d *DaemonHTTP) sessionEvidence(w http.ResponseWriter, r *http.Request) {
 			ev.Deleted += f.Deletions
 		}
 	}
-	ev.Receipt = evidenceReceipt(ev)
+	// The frozen receipt lives in the journal (kind "receipt"); when present
+	// it is authoritative and the package reports whether its current facts
+	// still match. Without a frozen receipt the package computes one fresh.
+	for _, entry := range ev.Journal {
+		if entry.Kind == "receipt" && strings.HasPrefix(entry.Text, "rcpt1_") {
+			ev.Receipt = entry.Text
+			break
+		}
+	}
+	if ev.Receipt == "" {
+		ev.Receipt = evidenceReceipt(ev)
+		ev.Valid = true
+	} else {
+		ev.Valid = evidenceReceiptValid(ev)
+	}
 	writeJSON(w, http.StatusOK, ev)
 }
