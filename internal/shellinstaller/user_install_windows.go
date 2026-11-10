@@ -36,8 +36,8 @@ func UserKernelCheck() error {
 	if err := windows.IsWow64Process2(windows.CurrentProcess(), &processMachine, &nativeMachine); err != nil {
 		return err
 	}
-	if runtime.GOARCH != "amd64" || nativeMachine != 0x8664 || version.MajorVersion != 10 || version.BuildNumber < 22000 || version.ProductType != 1 {
-		return errors.New("Gentle Shell Separate requires Windows 11 x64; Windows Server and ARM64 are not qualified targets")
+	if runtime.GOARCH != "amd64" || nativeMachine != 0x8664 || version.MajorVersion != 10 || version.BuildNumber < 19045 || version.ProductType != 1 {
+		return errors.New("Gentle Shell Separate requires Windows 10 22H2 (build 19045) or Windows 11 x64; Windows Server and ARM64 are not qualified targets")
 	}
 	if windows.GetCurrentProcessToken().IsElevated() {
 		return errors.New("run Gentle Shell from your normal Windows account, not an Administrator terminal")
