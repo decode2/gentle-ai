@@ -126,20 +126,17 @@ fn main() {
 					let args = app_dir.as_deref().map(daemon_arguments).unwrap_or_default();
 					let mut command = Command::new(&path);
 					command.args(&args);
-					// The windowed shell has no console: keep the daemon's output
-					// in a log file beside the app so failures are diagnosable.
-					if let Some(dir) = &app_dir {
-						if let Ok(log) = std::fs::OpenOptions::new()
-							.create(true)
-							.append(true)
-							.open(dir.join("orchestratord.log"))
-						{
-							if let Ok(log_err) = log.try_clone() {
-								command.stdout(log);
-								command.stderr(log_err);
-							}
-						}
+					#[cfg(windows)]
+					{
+						// The daemon is a background fleet process: never give it a
+						// console window, however the user launched the app.
+						use std::os::windows::process::CommandExt;
+						const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+						command.creation_flags(CREATE_NO_WINDOW);
 					}
+					// The daemon owns its own log file (it also runs double-clicked,
+					// with no console and no shell to capture its output); the shell
+					// does not duplicate it.
 					match command.spawn() {
 						Ok(child) => {
 							#[cfg(windows)]
