@@ -1,0 +1,21 @@
+[package]
+name = "gentle-orchestrator"
+version = "0.1.0"
+description = "Gentle-AI Orchestrator desktop shell: the fleet board for your coding agents"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["custom-protocol"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+	"Win32_Foundation",
+	"Win32_Security",
+	"Win32_System_JobObjects",
+	"Win32_System_Threading",
+] }
