@@ -33,6 +33,8 @@ type ServeOptions struct {
 	BaseBranch string
 	// PrintBoard renders the text board to stdout on every poll.
 	PrintBoard bool
+	// ConfigPath overrides where orchestrator.json lives (tests).
+	ConfigPath string
 }
 
 // ServeHandle is the running daemon: Addr is live for the whole run and Done
@@ -59,6 +61,7 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 		interval = DefaultPollInterval
 	}
 	watcher := NewWatcher(fleet, router, source, interval)
+	detector := NewAgentDetector(nil, 0)
 
 	journal := NewJournal()
 	var launcher *Launcher
@@ -90,7 +93,7 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 	}
 
 	handle := &ServeHandle{Addr: ln.Addr().String(), Done: make(chan error, 1)}
-	server := &http.Server{Handler: NewDaemonServer(fleet, journal, launcher)}
+	server := &http.Server{Handler: newDaemonServer(fleet, journal, launcher, detector, nil, &configStore{path: configPath(opts)})}
 	go func() {
 		serveErr := server.Serve(ln)
 		if serveErr != nil && serveErr != http.ErrServerClosed {
@@ -124,4 +127,13 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	return handle, nil
+}
+
+// configPath anchors orchestrator.json beside the daemon binary so the
+// shell re-reads it on restart; tests can override it.
+func configPath(opts ServeOptions) string {
+	if opts.ConfigPath != "" {
+		return opts.ConfigPath
+	}
+	return defaultConfigPath()
 }

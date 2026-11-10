@@ -103,3 +103,8 @@ func TestEngramBridgeEmptyOutcomeIsLocalNoop(t *testing.T) {
 		t.Fatalf("empty outcome still published: %+v", fake.observations)
 	}
 }
+
+// newFakeEngramServer wraps the fake's handler in a test server.
+func newFakeEngramServer(f *fakeEngram) *httptest.Server {
+	return httptest.NewServer(f.handler())
+}

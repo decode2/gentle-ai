@@ -55,7 +55,7 @@ var agentArgTemplates = map[string][]string{
 
 func defaultAgentCommand(ctx context.Context, s Session, dir string) *workProcess {
 	args := append([]string(nil), agentArgTemplates[s.Agent]...)
-	args = append(args, s.Task)
+	args = append(args, workerPrompt(s))
 	cmd := exec.CommandContext(ctx, s.Agent, args...)
 	cmd.Dir = dir
 	applyProcessPlatformTraits(cmd)
@@ -150,6 +150,19 @@ func (l *Launcher) run(session Session, wp *workProcess) {
 			l.Journal.Append(session.ID, "output", line)
 			if question, ok := strings.CutPrefix(line, "QUESTION:"); ok {
 				_ = l.Router.Route(Event{Kind: EventQuestion, Session: session.ID, Note: strings.TrimSpace(question)})
+				continue
+			}
+			if decision, ok := strings.CutPrefix(line, "DECISION:"); ok {
+				text := strings.TrimSpace(decision)
+				l.Journal.Append(session.ID, "decision", text)
+				if l.Engram != nil {
+					_ = l.Engram.PublishDecision(context.Background(), session, text)
+				}
+				continue
+			}
+			if summary, ok := strings.CutPrefix(line, "SUMMARY:"); ok {
+				l.Journal.Append(session.ID, "summary", strings.TrimSpace(summary))
+				continue
 			}
 		}
 	}

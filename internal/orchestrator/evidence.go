@@ -14,6 +14,10 @@ type Evidence struct {
 	Branch    string         `json:"branch"`
 	Worktree  string         `json:"worktree,omitempty"`
 	Status    string         `json:"status"`
+	Summary   string         `json:"summary,omitempty"`
+	Decisions []string       `json:"decisions,omitempty"`
+	Receipt   string         `json:"receipt,omitempty"`
+	Commits   []string       `json:"commits,omitempty"`
 	StartedAt *time.Time     `json:"startedAt,omitempty"`
 	UpdatedAt *time.Time     `json:"updatedAt,omitempty"`
 	Files     []DiffFile     `json:"files,omitempty"`
@@ -47,7 +51,16 @@ func (d *DaemonHTTP) sessionEvidence(w http.ResponseWriter, r *http.Request) {
 			ev.StartedAt = &first
 			ev.UpdatedAt = &last
 		}
+		for _, entry := range ev.Journal {
+			switch entry.Kind {
+			case "summary":
+				ev.Summary = entry.Text
+			case "decision":
+				ev.Decisions = append(ev.Decisions, entry.Text)
+			}
+		}
 	}
+	ev.Commits = workerCommits(s.Worktree, s.Base, 50)
 	if s.Facts.UpdatedAt != (time.Time{}) {
 		ev.UpdatedAt = &s.Facts.UpdatedAt
 	}
@@ -59,5 +72,6 @@ func (d *DaemonHTTP) sessionEvidence(w http.ResponseWriter, r *http.Request) {
 			ev.Deleted += f.Deletions
 		}
 	}
+	ev.Receipt = evidenceReceipt(ev)
 	writeJSON(w, http.StatusOK, ev)
 }

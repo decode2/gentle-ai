@@ -104,6 +104,10 @@ export interface Evidence {
 	branch: string;
 	worktree?: string;
 	status: string;
+	summary?: string;
+	decisions?: string[];
+	receipt?: string;
+	commits?: string[];
 	startedAt?: string;
 	updatedAt?: string;
 	files?: DiffFile[];
@@ -118,6 +122,29 @@ export async function fetchEvidence(id: string): Promise<Evidence> {
 	if (!response.ok) throw new Error(`GET evidence → ${response.status}`);
 	return (await response.json()) as Evidence;
 }
+export interface AppConfig {
+	repo: string;
+	repoPath: string;
+	listen?: string;
+}
+
+export async function saveConfig(config: AppConfig): Promise<string> {
+	const response = await fetch(`${DAEMON_BASE}/config`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(config),
+	});
+	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
+	const body = (await response.json()) as { status?: string; note?: string };
+	return body.note ?? "Guardado.";
+}
+
+export async function fetchConfig(): Promise<AppConfig> {
+	const response = await fetch(`${DAEMON_BASE}/config`);
+	if (!response.ok) throw new Error(`GET /config → ${response.status}`);
+	return (await response.json()) as AppConfig;
+}
+
 export async function openTerminal(id: string): Promise<void> {
 	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/terminal`, { method: "POST" });
 	if (response.status === 404) throw new Error("Sesión desconocida.");

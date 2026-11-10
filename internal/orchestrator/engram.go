@@ -69,6 +69,27 @@ func (b *EngramBridge) StartSession(ctx context.Context, s Session) error {
 	return nil
 }
 
+// PublishDecision records one worker DECISION line as a project-scoped
+// decision observation, immediately: fleet memory grows while the worker
+// runs, not only at exit.
+func (b *EngramBridge) PublishDecision(ctx context.Context, s Session, decision string) error {
+	if b.BaseURL == "" || strings.TrimSpace(decision) == "" {
+		return nil
+	}
+	err := b.post(ctx, "/observations", map[string]any{
+		"session_id": string(s.ID),
+		"type":       "decision",
+		"title":      fmt.Sprintf("worker %s decides: %.60s", s.ID, decision),
+		"content":    decision,
+		"project":    b.Project,
+		"scope":      "project",
+	})
+	if err != nil {
+		return nil // degrade
+	}
+	return nil
+}
+
 // PublishOutcome records what a finished worker did as a project-scoped
 // decision observation. An empty summary is a local no-op (Engram rejects
 // untitled content).

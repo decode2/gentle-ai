@@ -8,6 +8,7 @@ import {
 	fetchSessionEvents,
 	openLiveBoard,
 	openTerminal,
+	saveConfig,
 	startSession,
 	stopSession,
 	type Board,
@@ -153,6 +154,8 @@ export default function App() {
 					{error}
 				</p>
 			)}
+
+			{!connected && board !== null && <SetupPanel />}
 
 			{board === null ? (
 				<section className="lanes" aria-busy="true">
@@ -346,15 +349,17 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 				</div>
 				{terminalError && <p className="banner" role="alert">{terminalError}</p>}
 				{showTerminal && <EmbeddedTerminal sessionId={card.id} />}
-				{evidence && (
+			{evidence && (
 					<p className="evidence-line">
 						{evidence.status}
 						{evidence.totalAdditions || evidence.totalDeletions ? (
 							<> · <span className="adds">+{evidence.totalAdditions}</span> <span className="dels">−{evidence.totalDeletions}</span></>
 						) : null}
-						{evidence.startedAt ? <> · desde {new Date(evidence.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</> : null}
+						{evidence.commits && evidence.commits.length > 0 ? <> · {evidence.commits.length} commits</> : null}
+						{evidence.receipt ? <span className="receipt" title="hash del paquete de evidencia"> · {evidence.receipt.slice(6, 14)}</span> : null}
 					</p>
 				)}
+				{evidence?.summary && <p className="worker-summary">{evidence.summary}</p>}
 				{showPatch && diff && (
 					<div className="diffview">
 						<div className="diffstat">
@@ -517,5 +522,57 @@ function SessionForm({ agents }: { agents: DetectedAgent[] }) {
 				</div>
 			</form>
 		</>
+	);
+}
+
+/** SetupPanel: the first-run onboarding when the daemon cannot be reached. */
+function SetupPanel() {
+	const [fields, setFields] = useState({ repo: "", repoPath: "" });
+	const [note, setNote] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+
+	const save = async (event: React.FormEvent) => {
+		event.preventDefault();
+		setError(null);
+		setNote(null);
+		try {
+			setNote(await saveConfig(fields));
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	};
+
+	return (
+		<form className="setup-panel rise" onSubmit={save}>
+			<h2>Configurá tu repositorio</h2>
+			<p className="form-hint">
+				El daemon corre, pero sin repo: el tablero funciona y podés lanzar workers si
+				señalás dónde vive tu proyecto.
+			</p>
+			<label>
+				Repositorio (OWNER/REPO)
+				<input
+					required
+					value={fields.repo}
+					onChange={(e) => setFields({ ...fields, repo: e.target.value })}
+					placeholder="decode2/gentle-ai"
+				/>
+			</label>
+			<label>
+				Checkout local (opcional, habilita lanzar)
+				<input
+					value={fields.repoPath}
+					onChange={(e) => setFields({ ...fields, repoPath: e.target.value })}
+					placeholder="C:\dev\mi-proyecto"
+				/>
+			</label>
+			{note && <p role="status" className="form-hint">{note}</p>}
+			{error && (
+				<p className="banner" role="alert">
+					{error}
+				</p>
+			)}
+			<button type="submit">Guardar y reiniciar</button>
+		</form>
 	);
 }
