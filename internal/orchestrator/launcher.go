@@ -238,7 +238,7 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 				text := strings.TrimSpace(decision)
 				l.Journal.Append(session.ID, "decision", text)
 				if l.Engram != nil {
-					_ = l.Engram.PublishDecision(context.Background(), session, text)
+					_ = l.Engram.PublishDecision(ctx, session, text)
 				}
 				continue
 			}

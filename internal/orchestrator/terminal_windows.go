@@ -25,8 +25,14 @@ func statDir(dir string) error {
 // newSessionTerminal starts cmd.exe attached to a real Windows ConPTY, so
 // the embedded terminal runs the interactive shell like on Unix. The ConPTY
 // child inherits the daemon's kill-on-close Job Object.
+// terminalCommandLine builds the shell command anchored in dir: cmd /K keeps
+// the session alive after errors and /d + cd land the shell in the worktree.
+func terminalCommandLine(dir string) string {
+	return `/k "cd /d "` + dir + `"`
+}
+
 func newSessionTerminal(ctx context.Context, dir string) (*sessionTerminal, error) {
-	p, err := conpty.Start("cmd.exe", conpty.ConPtyDimensions(120, 32))
+	p, err := conpty.Start("cmd.exe "+terminalCommandLine(dir), conpty.ConPtyDimensions(120, 32))
 	if err != nil {
 		return nil, err
 	}

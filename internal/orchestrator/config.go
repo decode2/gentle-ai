@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // workerCommits lists the session's commits against base, newest first,
@@ -69,9 +70,10 @@ type configRequest struct {
 // to its own executable (the app dir the shell re-reads on restart).
 type configStore struct {
 	path string
+	mu   sync.Mutex
 }
 
-func (c configStore) load() configRequest {
+func (c *configStore) load() configRequest {
 	var cfg configRequest
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
@@ -81,7 +83,9 @@ func (c configStore) load() configRequest {
 	return cfg
 }
 
-func (c configStore) save(cfg configRequest) error {
+func (c *configStore) save(cfg configRequest) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	payload, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

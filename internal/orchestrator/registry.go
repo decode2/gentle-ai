@@ -12,6 +12,10 @@ var (
 	ErrUnknownSession = errors.New("orchestrator: unknown session")
 	// ErrDuplicateSession is returned when starting a session id twice.
 	ErrDuplicateSession = errors.New("orchestrator: session already registered")
+	// ErrDuplicateBranch is returned when two sessions would own one branch:
+	// a pull request has exactly one owner, and ambiguous routing is worse
+	// than a refused launch.
+	ErrDuplicateBranch = errors.New("orchestrator: branch already owned by another session")
 )
 
 // Fleet is the in-memory registry of worker sessions. All methods are safe
@@ -34,6 +38,11 @@ func (f *Fleet) Start(s Session) error {
 
 	if _, ok := f.sessions[s.ID]; ok {
 		return ErrDuplicateSession
+	}
+	for id, existing := range f.sessions {
+		if existing.Branch == s.Branch && id != s.ID {
+			return ErrDuplicateBranch
+		}
 	}
 	s.Facts.UpdatedAt = time.Now()
 	stored := s
