@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	DAEMON_BASE,
+	fetchAgents,
 	fetchBoard,
 	fetchSessionEvents,
 	openLiveBoard,
 	startSession,
 	stopSession,
 	type Board,
+	type DetectedAgent,
 	type JournalEntry,
 	type Lane,
 	type SessionCard,
@@ -33,13 +35,18 @@ const LANE_EMPTY: Record<Lane, string> = {
 
 /** Brand-adjacent agent colors: the monogram disc encodes the agent. */
 const AGENT_COLORS: Record<string, string> = {
-	"pi": "#f095c8",
-	"claude": "#e8865e",
-	"codex": "#c9d1d9",
-	"gemini": "#8ab8f0",
-	"aider": "#7ee2b8",
-	"cursor": "#b8a8f0",
-	"opencode": "#f5d76e",
+	pi: "#f095c8",
+	claude: "#e8865e",
+	codex: "#c9d1d9",
+	gemini: "#8ab8f0",
+	aider: "#7ee2b8",
+	cursor: "#b8a8f0",
+	opencode: "#f5d76e",
+	qwen: "#7ee2b8",
+	kimi: "#8ab8f0",
+	crush: "#f5a742",
+	amp: "#c9d1d9",
+	goose: "#f095c8",
 };
 
 function agentColor(agent: string): string {
@@ -55,6 +62,9 @@ export default function App() {
 	const [connected, setConnected] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [selected, setSelected] = useState<SessionCard | null>(null);
+	const [agents, setAgents] = useState<DetectedAgent[]>([]);
+	const [toast, setToast] = useState<string | null>(null);
+	const seenNeedsYou = useRef<Set<string>>(new Set());
 
 	const markDisconnected = useCallback(() => setConnected(false), []);
 
@@ -69,8 +79,17 @@ export default function App() {
 				setConnected(true);
 				stream = openLiveBoard(markDisconnected);
 				stream.addEventListener("board", (event) => {
-					setBoard(JSON.parse((event as MessageEvent<string>).data) as Board);
+					const next = JSON.parse((event as MessageEvent<string>).data) as Board;
+					setBoard(next);
 					setConnected(true);
+					// A worker that newly needs you gets one toast; dismiss it
+					// by clicking (the lane itself stays the source of truth).
+					for (const card of next["needs-you"] ?? []) {
+						if (!seenNeedsYou.current.has(card.id)) {
+							seenNeedsYou.current.add(card.id);
+							setToast(`${card.id} te necesita${card.question ? `: ${card.question}` : ""}`);
+						}
+					}
 				});
 			})
 			.catch(() => {
@@ -86,9 +105,17 @@ export default function App() {
 		};
 	}, [markDisconnected]);
 
+	useEffect(() => {
+		fetchAgents()
+			.then((roster) => setAgents(roster))
+			.catch(() => setAgents([]));
+	}, []);
+
 	const total = board
 		? LANES.reduce((sum, lane) => sum + (board[lane]?.length ?? 0), 0)
 		: 0;
+	const attention = board?.["needs-you"]?.length ?? 0;
+	const installed = agents.filter((a) => a.found).length;
 
 	return (
 		<main className="shell">
@@ -104,11 +131,14 @@ export default function App() {
 					<span className="name">Gentle Orchestrator</span>
 				</div>
 				<div className="top-meta">
+					{attention > 0 && <span className="attention-pill">{attention} te necesita</span>}
 					<span className={`conn ${connected ? "ok" : "down"}`}>
 						<span className="conn-dot" aria-hidden="true" />
 						{connected ? "conectado" : "desconectado"}
 					</span>
-					<span className="fleet-count">{total} {total === 1 ? "worker" : "workers"}</span>
+					<span className="fleet-count">
+						{total} {total === 1 ? "worker" : "workers"} · {installed} agentes
+					</span>
 				</div>
 			</header>
 
@@ -150,8 +180,14 @@ export default function App() {
 				</section>
 			)}
 
+			{toast && (
+				<button className="toast" onClick={() => setToast(null)}>
+					{toast}
+				</button>
+			)}
+
 			{selected && <SessionDrawer card={selected} onClose={() => setSelected(null)} />}
-			<SessionForm />
+			<SessionForm agents={agents} />
 		</main>
 	);
 }
@@ -297,22 +333,33 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	);
 }
 
-function SessionForm() {
+function SessionForm({ agents }: { agents: DetectedAgent[] }) {
 	const [open, setOpen] = useState(false);
-	const [fields, setFields] = useState({ id: "", task: "", agent: "pi", branch: "" });
+	const [fields, setFields] = useState({ id: "", task: "", agent: "", branch: "" });
 	const [feedback, setFeedback] = useState<string | null>(null);
 	const firstField = useRef<HTMLInputElement>(null);
+
+	const installed = agents.filter((a) => a.found);
 
 	useEffect(() => {
 		if (open) firstField.current?.focus();
 	}, [open]);
+
+	// Default the agent to the first detected CLI once the roster arrives.
+	useEffect(() => {
+		setFields((current) =>
+			current.agent === "" && installed.length > 0
+				? { ...current, agent: installed[0].agent }
+				: current,
+		);
+	}, [agents]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	const submit = async (event: React.FormEvent) => {
 		event.preventDefault();
 		setFeedback(null);
 		try {
 			await startSession({ ...fields, launch: true });
-			setFields({ id: "", task: "", agent: "pi", branch: "" });
+			setFields({ id: "", task: "", agent: installed[0]?.agent ?? "", branch: "" });
 			setOpen(false);
 		} catch (cause) {
 			setFeedback(cause instanceof Error ? cause.message : String(cause));
@@ -354,13 +401,37 @@ function SessionForm() {
 				</label>
 				<label>
 					Agente
-					<input
-						required
-						value={fields.agent}
-						onChange={(e) => setFields({ ...fields, agent: e.target.value })}
-						placeholder="pi"
-					/>
+					{installed.length > 0 ? (
+						<div className="agent-picker">
+							{installed.map((a) => (
+								<button
+									type="button"
+									key={a.agent}
+									className={`agent-option ${fields.agent === a.agent ? "picked" : ""}`}
+									onClick={() => setFields({ ...fields, agent: a.agent })}
+									title={a.version || a.path}
+								>
+									<span className="avatar" style={{ background: agentColor(a.agent) }} aria-hidden="true">
+										{agentInitial(a.agent)}
+									</span>
+									{a.agent}
+								</button>
+							))}
+						</div>
+					) : (
+						<input
+							required
+							value={fields.agent}
+							onChange={(e) => setFields({ ...fields, agent: e.target.value })}
+							placeholder="pi, claude, codex..."
+						/>
+					)}
 				</label>
+				{installed.length === 0 && (
+					<p className="form-hint">
+						No detectamos agentes instalados — escribí el comando del CLI igual.
+					</p>
+				)}
 				<label>
 					Rama
 					<input
@@ -376,7 +447,9 @@ function SessionForm() {
 					</p>
 				)}
 				<div className="actions">
-					<button type="submit">Lanzar</button>
+					<button type="submit" disabled={fields.agent === ""}>
+						Lanzar
+					</button>
 					<button type="button" onClick={() => setOpen(false)}>
 						Cancelar
 					</button>

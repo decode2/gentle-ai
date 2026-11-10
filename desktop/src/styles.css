@@ -764,3 +764,79 @@ body {
 		max-width: 100vw;
 	}
 }
+
+/* ---------- product layer: toast, attention pill, agent picker ---------- */
+
+.toast {
+	position: fixed;
+	top: 18px;
+	right: 22px;
+	background: var(--bg2);
+	border: 1px solid rgba(245, 167, 66, 0.4);
+	color: var(--lane-attention);
+	border-radius: var(--r-card);
+	padding: 10px 14px;
+	font-size: 12.5px;
+	cursor: pointer;
+	z-index: 20;
+	max-width: 380px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+	animation: drop-in 300ms var(--enter) both;
+	text-align: left;
+}
+
+.attention-pill {
+	color: var(--lane-attention);
+	border: 1px solid rgba(245, 167, 66, 0.35);
+	background: rgba(245, 167, 66, 0.08);
+	padding: 4px 12px;
+	border-radius: 999px;
+	font-size: 12px;
+	animation: breathe 2.4s ease-in-out infinite;
+}
+
+.agent-picker {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.agent-option {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: var(--bg0);
+	border: 1px solid var(--line);
+	color: var(--text);
+	border-radius: 999px;
+	padding: 4px 12px 4px 5px;
+	font-size: 12.5px;
+	cursor: pointer;
+	transition: border-color 120ms ease, background 120ms ease;
+}
+
+.agent-option:hover {
+	border-color: var(--rose-soft);
+}
+
+.agent-option.picked {
+	border-color: var(--rose);
+	background: rgba(240, 149, 200, 0.12);
+}
+
+.agent-option .avatar {
+	width: 20px;
+	height: 20px;
+	font-size: 8px;
+}
+
+@keyframes drop-in {
+	from {
+		opacity: 0;
+		transform: translateY(-12px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}

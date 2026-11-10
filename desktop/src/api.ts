@@ -54,6 +54,19 @@ export function openLiveBoard(onError: () => void): EventSource {
 	return stream;
 }
 
+export async function fetchAgents(): Promise<DetectedAgent[]> {
+	const response = await fetch(`${DAEMON_BASE}/agents`);
+	if (!response.ok) throw new Error(`GET /agents → ${response.status}`);
+	return (await response.json()) as DetectedAgent[];
+}
+
+export interface DetectedAgent {
+	agent: string;
+	command: string;
+	path?: string;
+	version?: string;
+	found: boolean;
+}
 export interface JournalEntry {
 	at: string;
 	kind: "launched" | "output" | "exited" | "stopped";
