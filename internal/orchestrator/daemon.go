@@ -183,8 +183,13 @@ func (d *DaemonHTTP) liveBoard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 
-	ticker := time.NewTicker(DefaultPollInterval)
-	defer ticker.Stop()
+	// A 5s cadence keeps the board near-live on reconnect (a client that
+	// re-opens its stream waits at most one tick); a comment heartbeat
+	// keeps proxies from reaping an idle stream.
+	boardTicker := time.NewTicker(5 * time.Second)
+	defer boardTicker.Stop()
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
 
 	writeBoard := func() {
 		payload, err := json.Marshal(d.fleet.Board())
@@ -194,13 +199,21 @@ func (d *DaemonHTTP) liveBoard(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: board\ndata: %s\n\n", payload)
 		flusher.Flush()
 	}
+	// Heartbeat: an SSE comment every tick between board pushes; browsers
+	// keep the stream alive and proxies do not reap idle connections.
+	heartbeat := func() {
+		fmt.Fprint(w, ": keep-alive\n\n")
+		flusher.Flush()
+	}
 
 	writeBoard()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-ticker.C:
+		case <-heartbeatTicker.C:
+			heartbeat()
+		case <-boardTicker.C:
 			writeBoard()
 		}
 	}

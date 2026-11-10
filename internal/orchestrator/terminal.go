@@ -57,7 +57,25 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 	if err != nil {
 		return err
 	}
-	defer conn.Close(websocket.StatusInternalError, "terminal closed")
+	// The terminal's closure status belongs to the connection, not to any
+	// goroutine: every exit path closes explicitly and this deferred default
+	// only fires on unexpected paths (never after a normal closure, which
+	// already closed the connection with its own status).
+	closeStatus := websocket.StatusInternalError
+	closeReason := "terminal closed"
+	var closeMu sync.Mutex
+	closeWith := func(status websocket.StatusCode, reason string) {
+		closeMu.Lock()
+		closeStatus, closeReason = status, reason
+		closeMu.Unlock()
+		_ = conn.Close(status, reason)
+	}
+	defer func() {
+		closeMu.Lock()
+		status, reason := closeStatus, closeReason
+		closeMu.Unlock()
+		_ = conn.Close(status, reason)
+	}()
 
 	term, err := h.acquire(id, dir)
 	if err != nil {
@@ -73,6 +91,7 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 		for {
 			_, data, err := conn.Read(r.Context())
 			if err != nil {
+				closeWith(websocket.StatusNormalClosure, "client left")
 				return
 			}
 			if _, err := term.io.Write(data); err != nil {
@@ -87,16 +106,17 @@ func (h *TerminalHub) Open(w http.ResponseWriter, r *http.Request, id SessionID,
 		select {
 		case burst, ok := <-mailbox:
 			if !ok {
-				_ = conn.Close(websocket.StatusNormalClosure, "shell exited")
+				closeWith(websocket.StatusNormalClosure, "shell exited")
 				return nil
 			}
 			if err := conn.Write(r.Context(), websocket.MessageBinary, burst); err != nil {
 				return nil
 			}
 		case <-r.Context().Done():
+			closeWith(websocket.StatusNormalClosure, "client left")
 			return nil
 		case <-term.exited:
-			_ = conn.Close(websocket.StatusNormalClosure, "shell exited")
+			closeWith(websocket.StatusNormalClosure, "shell exited")
 			return nil
 		}
 	}

@@ -120,6 +120,10 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 	if err := validateBranch(session.Branch); err != nil {
 		return err
 	}
+	base := l.Base
+	if base == "" {
+		base = "main"
+	}
 	manager := l.Worktrees
 	if l.Projects != nil && session.Project != "" {
 		resolved, ok := l.Projects.ManagerFor(session.Project)
@@ -132,12 +136,12 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 		return ErrDuplicateSession
 	}
 
-	path, err := manager.Create(session.Branch, l.Base)
+	path, err := manager.Create(session.Branch, base)
 	if err != nil {
 		return err
 	}
 	session.Worktree = path
-	session.Base = l.Base
+	session.Base = base
 	if err := l.Fleet.Start(session); err != nil {
 		_ = l.Worktrees.Remove(session.Branch)
 		return err
