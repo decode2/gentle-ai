@@ -35,6 +35,9 @@ func TestAgentDetectorReportsFoundAndMissing(t *testing.T) {
 	if !pi.Found || pi.Path != "/usr/local/bin/pi" || pi.Version != "pi 1.5.0" {
 		t.Fatalf("pi = %+v, want found with path and version", pi)
 	}
+	if pi.DisplayName != "Gentle Shell" {
+		t.Fatalf("pi display name = %q, want Gentle Shell (the CLI is pi; the product is the shell)", pi.DisplayName)
+	}
 	claude := byAgent["claude"]
 	if !claude.Found || claude.Version == "" {
 		t.Fatalf("claude = %+v, want found with version", claude)

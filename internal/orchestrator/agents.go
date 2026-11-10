@@ -15,32 +15,36 @@ type KnownAgent struct {
 	Command string
 	// Agent is the id used in POST /sessions (agent field).
 	Agent string
+	// DisplayName is what the UI shows: the product the CLI belongs to
+	// (gentle-pi's pi is Gentle Shell, not "pi").
+	DisplayName string
 }
 
 // knownAgents is the detection roster: the CLIs the fleet can drive today
 // (headless forms in agentArgTemplates, extended by the adapters phase).
 var knownAgents = []KnownAgent{
-	{Command: "pi", Agent: "pi"},
-	{Command: "claude", Agent: "claude"},
-	{Command: "codex", Agent: "codex"},
-	{Command: "gemini", Agent: "gemini"},
-	{Command: "opencode", Agent: "opencode"},
-	{Command: "aider", Agent: "aider"},
-	{Command: "cursor-agent", Agent: "cursor"},
-	{Command: "qwen", Agent: "qwen"},
-	{Command: "kimi", Agent: "kimi"},
-	{Command: "crush", Agent: "crush"},
-	{Command: "amp", Agent: "amp"},
-	{Command: "goose", Agent: "goose"},
+	{Command: "pi", Agent: "pi", DisplayName: "Gentle Shell"},
+	{Command: "claude", Agent: "claude", DisplayName: "Claude Code"},
+	{Command: "codex", Agent: "codex", DisplayName: "Codex"},
+	{Command: "gemini", Agent: "gemini", DisplayName: "Gemini CLI"},
+	{Command: "opencode", Agent: "opencode", DisplayName: "OpenCode"},
+	{Command: "aider", Agent: "aider", DisplayName: "Aider"},
+	{Command: "cursor-agent", Agent: "cursor", DisplayName: "Cursor"},
+	{Command: "qwen", Agent: "qwen", DisplayName: "Qwen Code"},
+	{Command: "kimi", Agent: "kimi", DisplayName: "Kimi CLI"},
+	{Command: "crush", Agent: "crush", DisplayName: "Crush"},
+	{Command: "amp", Agent: "amp", DisplayName: "Amp"},
+	{Command: "goose", Agent: "goose", DisplayName: "Goose"},
 }
 
 // DetectedAgent is one roster entry resolved against this machine.
 type DetectedAgent struct {
-	Agent   string `json:"agent"`
-	Command string `json:"command"`
-	Path    string `json:"path,omitempty"`
-	Version string `json:"version,omitempty"`
-	Found   bool   `json:"found"`
+	Agent       string `json:"agent"`
+	Command     string `json:"command"`
+	DisplayName string `json:"displayName"`
+	Path        string `json:"path,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Found       bool   `json:"found"`
 }
 
 // Prober resolves one command name against the machine: path and version.
@@ -56,7 +60,11 @@ func DefaultProber(command string) (string, string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, command, "--version").Output()
+	probe := exec.CommandContext(ctx, command, "--version")
+	// Version probes happen at app open on Windows, where npm shims would
+	// flash a console window per probe — the detection is silent everywhere.
+	applyProcessPlatformTraits(probe)
+	out, err := probe.Output()
 	if err != nil {
 		return path, ""
 	}
@@ -102,11 +110,12 @@ func (d *AgentDetector) Detect(force bool) []DetectedAgent {
 	for _, known := range knownAgents {
 		path, version := d.prober(known.Command)
 		agents = append(agents, DetectedAgent{
-			Agent:   known.Agent,
-			Command: known.Command,
-			Path:    path,
-			Version: version,
-			Found:   path != "",
+			Agent:       known.Agent,
+			Command:     known.Command,
+			DisplayName: known.DisplayName,
+			Path:        path,
+			Version:     version,
+			Found:       path != "",
 		})
 	}
 

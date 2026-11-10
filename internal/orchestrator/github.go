@@ -102,7 +102,11 @@ const ghPullFields = "number,headRefName,state,mergeable,statusCheckRollup,revie
 // Fetch lists the repository's pull requests and maps every one it can. gh
 // emits a bare JSON array; the {"data": [...]} envelope is accepted too.
 func (s GhPullSource) Fetch(ctx context.Context) ([]PRSnapshot, error) {
-	out, err := exec.CommandContext(ctx, "gh", "pr", "list", "-R", s.Repo, "--json", ghPullFields).Output()
+	gh := exec.CommandContext(ctx, "gh", "pr", "list", "-R", s.Repo, "--json", ghPullFields)
+	// gh is an exe (no window), but shimmed or wrapped installs would flash
+	// one on Windows — the watcher is always silent.
+	applyProcessPlatformTraits(gh)
+	out, err := gh.Output()
 	if err != nil {
 		return nil, fmt.Errorf("orchestrator: gh pr list: %w", err)
 	}
