@@ -2,6 +2,12 @@
    Color is information: each lane owns a hue, data lives in mono, and motion
    only answers actions or marks live state. */
 
+/* Focus is always visible for keyboard users: a rose ring with offset. */
+:focus-visible {
+	outline: 2px solid var(--rose);
+	outline-offset: 2px;
+}
+
 :root {
 	--bg0: #140a11;
 	--bg1: #1d1018;
@@ -13,7 +19,7 @@
 	--rose-soft: #d7a0b8;
 	--text: #f2e8ee;
 	--muted: #a08d9a;
-	--faint: #6d5a66;
+	--faint: #9a8691;
 
 	--lane-attention: #f5a742;
 	--lane-working: #f095c8;
@@ -422,6 +428,10 @@ body {
 	gap: 10px;
 }
 
+.drawer:focus {
+	outline: none;
+}
+
 .drawer h3 {
 	margin: 0;
 	font-family: var(--font-display);
@@ -613,9 +623,9 @@ body {
 }
 
 .session-form input:focus {
-	outline: none;
+	outline: 2px solid var(--rose);
+	outline-offset: 1px;
 	border-color: var(--rose);
-	box-shadow: 0 0 0 2px rgba(240, 149, 200, 0.2);
 }
 
 .session-form .actions {

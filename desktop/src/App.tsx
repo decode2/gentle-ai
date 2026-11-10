@@ -311,6 +311,34 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	const [evidence, setEvidence] = useState<Evidence | null>(null);
 	const [showTerminal, setShowTerminal] = useState(false);
 	const journalRef = useRef<HTMLDivElement>(null);
+	const drawerRef = useRef<HTMLElement>(null);
+	const openerRef = useRef<HTMLElement | null>(null);
+
+	// Focus management: remember the opener, land on the dialog, keep Tab
+	// inside while open, and hand focus back on close.
+	useEffect(() => {
+		openerRef.current = document.activeElement as HTMLElement | null;
+		const dialog = drawerRef.current;
+		dialog?.focus();
+		return () => openerRef.current?.focus();
+	}, []);
+
+	const trapTab = (event: React.KeyboardEvent) => {
+		if (event.key !== "Tab" || !drawerRef.current) return;
+		const focusables = drawerRef.current.querySelectorAll<HTMLElement>(
+			'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+		);
+		if (focusables.length === 0) return;
+		const first = focusables[0];
+		const last = focusables[focusables.length - 1];
+		if (event.shiftKey && document.activeElement === first) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && document.activeElement === last) {
+			event.preventDefault();
+			first.focus();
+		}
+	};
 
 	useEffect(() => {
 		let cancelled = false;
@@ -368,7 +396,7 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 	return (
 		<>
 			<div className="backdrop" onClick={onClose} aria-hidden="true" />
-			<aside className="drawer" role="dialog" aria-label={`Sesión ${card.id}`}>
+			<aside className="drawer" role="dialog" aria-modal="true" ref={drawerRef} tabIndex={-1} onKeyDown={trapTab} aria-label={`Sesión ${card.id}`}>
 				<header>
 					<span className="avatar big" style={{ background: agentColor(card.agent) }} aria-hidden="true">
 						{agentInitial(card.agent)}
