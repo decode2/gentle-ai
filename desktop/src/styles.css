@@ -734,6 +734,51 @@ body {
 	}
 }
 
+/* ---------- themes ---------- */
+
+/* Midnight rose (default, defined on :root above). */
+[data-theme="graphite"] {
+	--bg0: #101013;
+	--bg1: #16161b;
+	--bg2: #1d1d24;
+	--bg3: #26262f;
+	--line: #2e2e38;
+	--line-soft: #232329;
+	--rose: #f095c8;
+	--rose-soft: #c9b3c0;
+	--text: #ececf1;
+	--muted: #9a9aa5;
+	--faint: #77777f;
+	--lane-attention: #f5a742;
+	--lane-working: #f095c8;
+	--lane-review: #8ab8f0;
+	--lane-ready: #7ee2b8;
+}
+
+[data-theme="paper"] {
+	color-scheme: light;
+	--bg0: #faf6f8;
+	--bg1: #f3edf1;
+	--bg2: #ece4e9;
+	--bg3: #e2d8df;
+	--line: #d8c9d3;
+	--line-soft: #e4dae1;
+	--rose: #c2437f;
+	--rose-soft: #9d5580;
+	--text: #2b1f28;
+	--muted: #6b5561;
+	--faint: #94808c;
+	--lane-attention: #b06a10;
+	--lane-working: #c2437f;
+	--lane-review: #2f6bbf;
+	--lane-ready: #1f8f5f;
+}
+
+[data-theme="graphite"] .glow,
+[data-theme="paper"] .glow {
+	background: radial-gradient(700px 300px at 8% -8%, rgba(240, 149, 200, 0.06), transparent 70%);
+}
+
 /* ---------- scrollbars ---------- */
 
 ::-webkit-scrollbar {
@@ -1389,4 +1434,19 @@ body {
 	color: var(--lane-review);
 	display: block;
 	margin-top: 4px;
+}
+
+.theme-btn {
+	background: var(--bg1);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	color: var(--text);
+	width: 30px;
+	height: 26px;
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.theme-btn:hover {
+	border-color: var(--rose);
 }

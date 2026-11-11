@@ -100,7 +100,15 @@ export default function App() {
 	const [selectedProject, setSelectedProject] = useState<string>("");
 	const [update, setUpdate] = useState<{ tag: string; url: string } | null>(null);
 	const [toast, setToast] = useState<string | null>(null);
+	const [theme, setTheme] = useState<"midnight" | "graphite" | "paper">(
+		() => (localStorage.getItem("orch-theme") as "midnight" | "graphite" | "paper" | null) ?? "midnight",
+	);
 	const seenNeedsYou = useRef<Set<string>>(new Set());
+
+	useEffect(() => {
+		document.documentElement.dataset.theme = theme;
+		localStorage.setItem("orch-theme", theme);
+	}, [theme]);
 
 	const markDisconnected = useCallback(() => setConnected(false), []);
 
@@ -179,6 +187,15 @@ export default function App() {
 						<span className="conn-dot" aria-hidden="true" />
 						{connected ? "conectado" : "desconectado"}
 					</span>
+					<button
+						className="theme-btn"
+						onClick={() =>
+							setTheme((current) => (current === "midnight" ? "graphite" : current === "graphite" ? "paper" : "midnight"))
+						}
+						title="Cambiar tema"
+					>
+						{theme === "midnight" ? "🌙" : theme === "graphite" ? "◐" : "☀"}
+					</button>
 					<span className="fleet-count">
 						{total} {total === 1 ? "worker" : "workers"} · {installed} agentes
 					</span>
