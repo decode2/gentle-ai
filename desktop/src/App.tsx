@@ -241,8 +241,8 @@ export default function App() {
 				)}
 				<nav aria-label="Sesiones">
 					<h5>Sesiones</h5>
-					{LANES.map((lane: Lane) =>
-						(liveBoard![lane] ?? []).map((card: SessionCard) => (
+					{liveBoard !== null && LANES.map((lane: Lane) =>
+						(liveBoard[lane] ?? []).map((card: SessionCard) => (
 							<button
 								key={card.id}
 								className={`side-item session-item ${selected?.id === card.id ? "picked" : ""}`}
