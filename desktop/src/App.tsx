@@ -195,30 +195,51 @@ export default function App() {
 
 			{update && (
 				<a className="update-banner" href={update.url} target="_blank" rel="noreferrer">
-					Nueva versión disponible: {update.tag} (corre {APP_VERSION}) — descargala del release
+					Nueva versión: {update.tag} (corre {APP_VERSION})
 				</a>
 			)}
 
-			{projects.length > 0 && (
-				<nav className="project-bar" aria-label="Proyectos">
-					<button
-						className={`project-tab ${selectedProject === "" ? "picked" : ""}`}
-						onClick={() => setSelectedProject("")}
-					>
-						Todos
-					</button>
-					{projects.map((p) => (
+			<aside className="sidebar" aria-label="Sesiones y proyectos">
+				{projects.length > 0 && (
+					<nav aria-label="Proyectos">
+						<h5>Proyectos</h5>
 						<button
-							key={p.id}
-							className={`project-tab ${selectedProject === p.id ? "picked" : ""}`}
-							onClick={() => setSelectedProject(p.id)}
-							title={p.repo}
+							className={`side-item ${selectedProject === "" ? "picked" : ""}`}
+							onClick={() => setSelectedProject("")}
 						>
-							{p.id}
+							Todos los proyectos
 						</button>
-					))}
+						{projects.map((p) => (
+							<button
+								key={p.id}
+								className={`side-item ${selectedProject === p.id ? "picked" : ""}`}
+								onClick={() => setSelectedProject(p.id)}
+								title={p.repo}
+							>
+								{p.id}
+							</button>
+						))}
+					</nav>
+				)}
+				<nav aria-label="Sesiones">
+					<h5>Sesiones</h5>
+					{LANES.map((lane: Lane) =>
+						(liveBoard![lane] ?? []).map((card: SessionCard) => (
+							<button
+								key={card.id}
+								className={`side-item session-item ${selected?.id === card.id ? "picked" : ""}`}
+								onClick={() => setSelected(card)}
+								title={card.task}
+							>
+								<span className={`side-dot dot-${lane}`} aria-hidden="true" />
+								<span className="side-label">{card.id}</span>
+								{card.pr ? <span className="side-pr">#{card.pr}</span> : null}
+							</button>
+						)),
+					)}
+					{total === 0 && <p className="side-empty">Sin sesiones todavía</p>}
 				</nav>
-			)}
+			</aside>
 
 			{board === null ? (
 				<section className="lanes" aria-busy="true">
