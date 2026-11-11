@@ -1294,13 +1294,15 @@ body {
 /* ---------- sidebar: Claude-style session rail ---------- */
 
 .shell {
-	display: grid;
-	grid-template-columns: 240px 1fr;
-	grid-template-rows: auto auto 1fr;
+	display: grid !important;
+	flex-direction: initial;
+	gap: 14px;
+	grid-template-columns: 240px minmax(0, 1fr);
+	grid-template-rows: auto auto minmax(0, 1fr);
 	grid-template-areas:
 		"topbar topbar"
+		"side main"
 		"side main";
-	column-gap: 14px;
 }
 
 .topbar {
@@ -1308,8 +1310,8 @@ body {
 }
 
 .update-banner {
-	grid-area: topbar;
-	margin-left: 254px;
+	grid-area: main;
+	align-self: start;
 }
 
 .sidebar {
@@ -1400,6 +1402,8 @@ body {
 /* main content column sits right of the sidebar */
 .lanes, .empty-board, .setup-panel, .banner {
 	grid-area: main;
+	min-height: 0;
+	overflow: auto;
 }
 
 @media (max-width: 900px) {
