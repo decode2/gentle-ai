@@ -29,6 +29,26 @@ func (f *Fleet) Board() map[Lane][]SessionCard {
 	return f.BoardFor("")
 }
 
+// AllCards returns every session's card ungrouped, for persistence sweeps.
+func (f *Fleet) AllCards() []SessionCard {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	cards := make([]SessionCard, 0, len(f.sessions))
+	for id, s := range f.sessions {
+		card := SessionCard{ID: string(id), Task: s.Task, Agent: s.Agent, Branch: s.Branch, Project: s.Project}
+		if p := s.Facts.PR; p != nil {
+			card.PR = p.Number
+			card.GatePending = s.Facts.ReceiptRequired && !s.Facts.ReceiptValid
+		}
+		card.Running = s.Facts.Activity.Running
+		card.Status = cardStatus(&s.Facts)
+		card.Question = s.Facts.Activity.Question
+		cards = append(cards, card)
+	}
+	return cards
+}
+
 // BoardFor groups the board restricted to one project; an empty project
 // means every session.
 func (f *Fleet) BoardFor(project string) map[Lane][]SessionCard {

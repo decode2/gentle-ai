@@ -35,6 +35,8 @@ type ServeOptions struct {
 	PrintBoard bool
 	// ConfigPath overrides where orchestrator.json lives (tests).
 	ConfigPath string
+	// SessionsPath overrides where sessions.json lives (tests).
+	SessionsPath string
 	// Command replaces the worker command builder (tests inject fakes).
 	Command func(ctx context.Context, s Session, dir string) *workProcess
 }
@@ -44,6 +46,9 @@ type ServeOptions struct {
 type ServeHandle struct {
 	Addr string
 	Done chan error
+	// Rehydrated counts the sessions restored from the last run's persisted
+	// history; the UI shows it so a restart is not a silent reset.
+	Rehydrated int
 }
 
 // Serve wires the Phase 0 fleet — fleet, router, watcher, HTTP daemon with
@@ -52,6 +57,7 @@ type ServeHandle struct {
 // ctx.Err() after the server drained.
 func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 	fleet := NewFleet()
+	rehydrated := 0
 	router := NewRouter(DefaultFixCycles)
 
 	source := opts.Source
@@ -66,7 +72,55 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 	detector := NewAgentDetector(nil, 0)
 	projects := NewProjects()
 
+	// Session history survives daemon restarts: load what the last run
+	// persisted and keep saving as the fleet changes.
 	journal := NewJournal()
+
+	// The default store anchors sessions.json beside the config; an explicit
+	// SessionsPath is the file itself (tests and packaging overrides).
+	sessionStore := NewSessionStore(filepath.Dir(configPath(opts)))
+	if opts.SessionsPath != "" {
+		sessionStore = &SessionStore{path: opts.SessionsPath}
+	}
+	sessions, err := sessionStore.Load()
+	if err != nil {
+		sessions = nil
+	}
+	for _, persisted := range sessions {
+		if persisted.Session.ID == "" {
+			continue
+		}
+		s := persisted.Session
+		s.Facts.Activity.Detail = "De la corrida anterior"
+		if startErr := fleet.Start(s); startErr != nil {
+			continue
+		}
+		rehydrated++
+		if persisted.Summary != "" {
+			journal.Append(s.ID, "summary", persisted.Summary)
+		}
+	}
+	go func() {
+		ticker := time.NewTicker(persistEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				rows := make([]PersistedSession, 0, fleet.Count())
+				for _, card := range fleet.AllCards() {
+					s, err := fleet.Get(SessionID(card.ID))
+					if err != nil {
+						continue
+					}
+					rows = append(rows, PersistedSession{Session: s})
+				}
+				_ = sessionStore.Save(rows)
+			}
+		}
+	}()
+
 	var launcher *Launcher
 	if opts.RepoPath != "" {
 		base := opts.BaseBranch
@@ -98,7 +152,7 @@ func Serve(ctx context.Context, opts ServeOptions) (*ServeHandle, error) {
 		return nil, fmt.Errorf("orchestrator: listen %s: %w", opts.ListenAddr, err)
 	}
 
-	handle := &ServeHandle{Addr: ln.Addr().String(), Done: make(chan error, 1)}
+	handle := &ServeHandle{Addr: ln.Addr().String(), Done: make(chan error, 1), Rehydrated: rehydrated}
 	server := &http.Server{Handler: newDaemonServer(fleet, journal, launcher, detector, nil, &configStore{path: configPath(opts)})}
 	go func() {
 		serveErr := server.Serve(ln)
