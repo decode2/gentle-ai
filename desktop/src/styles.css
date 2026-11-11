@@ -1370,3 +1370,23 @@ body {
 		max-height: 220px;
 	}
 }
+
+/* ---------- patch line coloring ---------- */
+
+.line-add {
+	color: #a8e6c4;
+	background: rgba(126, 226, 184, 0.09);
+	display: block;
+}
+
+.line-del {
+	color: #f0b8b8;
+	background: rgba(240, 169, 169, 0.09);
+	display: block;
+}
+
+.line-hunk {
+	color: var(--lane-review);
+	display: block;
+	margin-top: 4px;
+}

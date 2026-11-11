@@ -501,7 +501,25 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 								</p>
 							))}
 						</div>
-						<pre className="patch">{diff.patch || "(sin cambios contra la base)"}</pre>
+						<pre className="patch">
+							{diff.patch.split("\n").map((line, i) => (
+								<span
+									key={i}
+									className={
+										line.startsWith("+") && !line.startsWith("+++")
+											? "line-add"
+											: line.startsWith("-") && !line.startsWith("---")
+												? "line-del"
+												: line.startsWith("@@")
+													? "line-hunk"
+													: undefined
+									}
+								>
+									{line}
+									{"\n"}
+								</span>
+							))}
+						</pre>
 					</div>
 				)}
 				{tab === "journal" && (
