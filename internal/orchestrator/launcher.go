@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -16,8 +18,28 @@ import (
 // cmd.Wait returned: every kill/monitor path checks it instead of touching
 // cmd fields that Wait writes concurrently.
 type workProcess struct {
-	cmd  *exec.Cmd
-	done chan struct{}
+	cmd    *exec.Cmd
+	done   chan struct{}
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+}
+
+// launch wires the pipes and starts the process; on success the stdin is
+// held for chat delivery until the worker exits. Platform traits (process
+// group, daemon-death linkage) apply here so every builder benefits.
+func (wp *workProcess) launch() error {
+	applyProcessPlatformTraits(wp.cmd)
+	stdin, stdinErr := wp.cmd.StdinPipe()
+	stdout, stdoutErr := wp.cmd.StdoutPipe()
+	if stdinErr != nil || stdoutErr != nil {
+		return errors.New("worker pipes unavailable")
+	}
+	wp.stdin = stdin
+	wp.stdout = stdout
+	if err := wp.cmd.Start(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // finished reports whether the worker already exited.
@@ -169,6 +191,18 @@ func (l *Launcher) StartTask(ctx context.Context, session Session) error {
 	l.running[session.ID] = wp
 	l.mu.Unlock()
 
+	// Pipes are created and the process started synchronously: by the time
+	// StartTask returns, SendToWorker can write and Stop can kill — no
+	// launch race.
+	if startErr := wp.launch(); startErr != nil {
+		l.Journal.Append(session.ID, "exited", fmt.Sprintf("launch failed: %v", startErr))
+		l.finish(session, fmt.Sprintf("worker launch failed: %v", startErr))
+		l.mu.Lock()
+		delete(l.running, session.ID)
+		l.mu.Unlock()
+		return startErr
+	}
+	l.Journal.Append(session.ID, "started", session.Worktree)
 	l.Fleet.Update(session.ID, func(f *Facts) {
 		f.Activity.Running = true
 		if l.ReceiptGate {
@@ -207,17 +241,6 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 		return
 	}
 
-	applyProcessPlatformTraits(wp.cmd)
-	stdout, err := wp.cmd.StdoutPipe()
-	if err == nil {
-		err = wp.cmd.Start()
-	}
-	if err != nil {
-		l.Journal.Append(session.ID, "exited", fmt.Sprintf("launch failed: %v", err))
-		l.finish(session, fmt.Sprintf("worker launch failed: %v", err))
-		return
-	}
-
 	// A stop that raced the launch wins here: kill the just-started process
 	// so the wait below observes it.
 	l.mu.Lock()
@@ -233,6 +256,10 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 		scanner := bufio.NewScanner(reader)
 		for scanner.Scan() {
 			line := scanner.Text()
+			if says, ok := strings.CutPrefix(line, "SAY:"); ok {
+				l.Journal.Append(session.ID, "chat-in", strings.TrimSpace(says))
+				continue
+			}
 			l.Journal.Append(session.ID, "output", line)
 			if question, ok := strings.CutPrefix(line, "QUESTION:"); ok {
 				_ = l.Router.Route(Event{Kind: EventQuestion, Session: session.ID, Note: strings.TrimSpace(question)})
@@ -253,7 +280,7 @@ func (l *Launcher) run(ctx context.Context, session Session, wp *workProcess) {
 		}
 	}
 	wg.Add(2)
-	go scan(stdout)
+	go scan(wp.stdout)
 	stderr, _ := wp.cmd.StderrPipe()
 	if stderr != nil {
 		go scan(stderr)
@@ -318,6 +345,26 @@ func (l *Launcher) KillAll() {
 	for _, wp := range live {
 		_ = killProcessTree(wp.cmd, wp.cmd.Process)
 	}
+}
+
+// SendToWorker delivers one chat message to the running worker's stdin:
+// the agent reads it as a line next to its task stream.
+func (l *Launcher) SendToWorker(id SessionID, message string) error {
+	l.mu.Lock()
+	wp, ok := l.running[id]
+	l.mu.Unlock()
+
+	if !ok || wp.stdin == nil || wp.finished() {
+		return ErrUnknownSession
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("orchestrator: empty chat message")
+	}
+	if _, err := io.WriteString(wp.stdin, strings.TrimRight(message, "\n")+"\n"); err != nil {
+		return fmt.Errorf("orchestrator: chat delivery failed: %w", err)
+	}
+	l.Journal.Append(id, "chat-out", strings.TrimSpace(message))
+	return nil
 }
 
 // finish marks the worker idle in the fleet and records the outcome in

@@ -61,8 +61,17 @@ func TestLauncherStartsWorkerInItsOwnWorktree(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if entries[0].Kind != "launched" || entries[1].Kind != "output" || !strings.Contains(entries[1].Text, "worker-output") {
-		t.Fatalf("journal = %+v, want launched+output sequence", entries)
+	if entries[0].Kind != "launched" || entries[1].Kind != "started" {
+		t.Fatalf("journal head = %+v, want launched then started", entries[:2])
+	}
+	sawOutput := false
+	for _, e := range entries {
+		if e.Kind == "output" && strings.Contains(e.Text, "worker-output") {
+			sawOutput = true
+		}
+	}
+	if !sawOutput {
+		t.Fatalf("journal = %+v, want the worker output", entries)
 	}
 	var sawExit bool
 	for _, e := range entries {
@@ -198,8 +207,8 @@ func TestLauncherRootCancelKillsWorkers(t *testing.T) {
 	for {
 		entries := journal.Get("long")
 		last := entries[len(entries)-1]
-		if last.Kind == "exited" || last.Kind == "stopped" {
-			return
+		if last.Kind == "exited" || last.Kind == "stopped" || last.Kind == "receipt" {
+			return // the freeze entry always trails the exit record
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("worker outlived the lifecycle context: %+v", entries)

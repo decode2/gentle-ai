@@ -103,6 +103,7 @@ func newDaemonServerProjects(fleet *Fleet, journal *Journal, launcher *Launcher,
 	mux.HandleFunc("GET /sessions/{id}/events", d.sessionEvents)
 	mux.HandleFunc("GET /sessions/{id}/diff", d.sessionDiff)
 	mux.HandleFunc("POST /sessions/{id}/stop", d.stopSession)
+	mux.HandleFunc("POST /sessions/{id}/chat", d.sendChat)
 	mux.HandleFunc("POST /sessions/{id}/terminal", d.openSessionTerminal)
 	return withBoundary(withCORS(mux))
 }
@@ -302,6 +303,30 @@ func (d *DaemonHTTP) sessionEvents(w http.ResponseWriter, r *http.Request) {
 		entries = []JournalEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// sendChat delivers one message to the running worker's stdin.
+func (d *DaemonHTTP) sendChat(w http.ResponseWriter, r *http.Request) {
+	if d.launcher == nil {
+		http.Error(w, "chat requires the daemon launcher", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if err := d.launcher.SendToWorker(SessionID(r.PathValue("id")), body.Message); err != nil {
+		if errors.Is(err, ErrUnknownSession) {
+			http.Error(w, "no running worker for that session", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // stopSession kills a running worker spawned by the daemon.

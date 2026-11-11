@@ -186,6 +186,16 @@ export async function openTerminal(id: string): Promise<void> {
 	if (response.status === 404) throw new Error("Sesión desconocida.");
 	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
 }
+export async function sendChat(id: string, message: string): Promise<void> {
+	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/chat`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ message }),
+	});
+	if (response.status === 404) throw new Error("No hay worker corriendo para esa sesión.");
+	if (!response.ok) throw new Error((await response.text()).replace(/\n$/, ""));
+}
+
 export async function stopSession(id: string): Promise<void> {
 	const response = await fetch(`${DAEMON_BASE}/sessions/${encodeURIComponent(id)}/stop`, { method: "POST" });
 	if (response.status === 404) throw new Error("No hay worker corriendo para esa sesión.");

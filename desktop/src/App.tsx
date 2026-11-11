@@ -12,6 +12,7 @@ import {
 	openLiveBoard,
 	openTerminal,
 	saveConfig,
+	sendChat,
 	startSession,
 	stopSession,
 	type Board,
@@ -553,6 +554,7 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 								</p>
 							))}
 						</div>
+						<ChatComposer sessionId={card.id} />
 						{stopError && (
 							<p className="banner" role="alert">
 								{stopError}
@@ -585,6 +587,44 @@ function SessionDrawer({ card, onClose }: { card: SessionCard; onClose: () => vo
 		</>
 	);
 }
+/** ChatComposer: one message to the running worker's stdin. */
+function ChatComposer({ sessionId }: { sessionId: string }) {
+	const [message, setMessage] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const [sent, setSent] = useState(false);
+
+	const send = async (event: React.FormEvent) => {
+		event.preventDefault();
+		if (!message.trim()) return;
+		setError(null);
+		setSent(false);
+		try {
+			await sendChat(sessionId, message.trim());
+			setMessage("");
+			setSent(true);
+			setTimeout(() => setSent(false), 1500);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		}
+	};
+
+	return (
+		<form className="chat-composer" onSubmit={send}>
+			<input
+				value={message}
+				onChange={(e) => setMessage(e.target.value)}
+				placeholder="Escribile al worker…"
+				aria-label="Mensaje para el worker"
+			/>
+			<button type="submit" disabled={!message.trim()}>
+				Enviar
+			</button>
+			{sent && <span className="chat-sent">enviado</span>}
+			{error && <p className="banner" role="alert">{error}</p>}
+		</form>
+	);
+}
+
 function SessionForm({ agents }: { agents: DetectedAgent[] }) {
 	const [open, setOpen] = useState(false);
 	const [fields, setFields] = useState({ id: "", task: "", agent: "", branch: "" });

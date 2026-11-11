@@ -1450,3 +1450,55 @@ body {
 .theme-btn:hover {
 	border-color: var(--rose);
 }
+
+.chat-composer {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.chat-composer input {
+	flex: 1;
+	min-width: 140px;
+	background: var(--bg0);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	color: var(--text);
+	padding: 7px 9px;
+	font-size: 12.5px;
+}
+
+.chat-composer input:focus {
+	outline: 2px solid var(--rose);
+	outline-offset: 1px;
+}
+
+.chat-composer button {
+	background: var(--rose);
+	color: #1b0f17;
+	border: none;
+	border-radius: 8px;
+	padding: 7px 14px;
+	font-weight: 700;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.chat-composer button:disabled {
+	background: var(--bg3);
+	color: var(--faint);
+}
+
+.chat-sent {
+	font-size: 10.5px;
+	color: var(--lane-ready);
+}
+
+.entry-chat-in .kind {
+	color: var(--lane-ready) !important;
+}
+
+.entry-chat-out .kind {
+	color: var(--lane-attention) !important;
+}
