@@ -158,7 +158,9 @@ export default function App() {
 			.then(setProjects)
 			.catch(() => setProjects([]));
 		fetchLatestRelease().then((latest) => {
-			if (latest && latest.tag !== APP_VERSION) setUpdate(latest);
+			// GitHub tags carry the v prefix; the running version doesn't.
+			const normalized = latest?.tag.replace(/^v/, "") ?? "";
+			if (latest && normalized !== APP_VERSION) setUpdate(latest);
 		});
 	}, []);
 
