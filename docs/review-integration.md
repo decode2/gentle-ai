@@ -134,6 +134,8 @@ Without the flags, START keeps the tier default and the persisted authority is u
 
 Callers detect both START inputs, and their STATUS preflight, from `gentle-ai review capabilities` instead of probing START or STATUS. Both negotiated advertisements (`capabilities/v1.5` and `capabilities/v2.6`) list four optional features:
 
+Legacy v1 authority is unsupported, so `capabilities/v2.6` does not announce it: `compatibility.modes` is `["compact-v2"]`, there is no `compatibility.legacy_window`, and `legacy_v1_target_scoped_read_only` is not a mandatory feature. The published `capabilities-v2.6.schema.json` was corrected in place for this (no version bump). The frozen `capabilities/v1.5` advertisement still carries the legacy mode and window its published schema requires.
+
 | Feature | Input | Requires |
 | --- | --- | --- |
 | `start_request_context` | START `--request-context <file>` | `compact_v2_authority` |
@@ -244,6 +246,8 @@ Native Go alone selects lenses, classifies candidate causality, performs refutat
 
 A committed-range correction re-entered with the exact selector the final capture returned (`--base-ref <frozen tree> --committed-only`), or with the commit START was pinned to, keeps its frozen empty intended-untracked exclusion. Unrelated untracked files do not reopen that decision or require a new `--untracked-scope` declaration. A different base tree names a different target and never inherits the frozen decision.
 
+After a targeted validator rejects that correction, bound STATUS with the same committed-only range and unchanged rejected candidate still reports `native_stop_required`, even if unrelated untracked files now exist. This does not authorize recovery. A changed committed candidate or a fresh lineage does not inherit the exclusion.
+
 ### Non-blocking findings of a stopped review (`--non-blocking-findings`)
 
 If the authority revision changes during this read, STATUS refuses rather than mixing revisions. Rerun the same `gentle-ai review status` command with unchanged arguments; the refusal grants no new authority.
@@ -348,7 +352,7 @@ A `stop` carries one reason code and no executable transition. The table below i
 | `corrupted_or_unverifiable_authority` | Terminal — the authority is unreadable or unsupported. Ask a maintainer to inspect it, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
 | `manual_intervention_required` | Terminal — the authority state is outside the negotiated lifecycle. Ask a maintainer to inspect it, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
 | `missing_authority_binding` | Terminal — a current target had no authority binding. File a bounded defect with the lineage, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
-| `native_stop_required` | Terminal — the lineage is escalated but has no native continuation. Ask a maintainer to inspect it, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
+| `native_stop_required` | Terminal — there is no in-lineage continuation. For an isolated canonical rejected-validator terminal, a maintainer can follow the [exact `review repair` disposition procedure](review-authority-threat-model.md#rejected-validator-terminal-disposition). Otherwise ask a maintainer to inspect the lineage, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. Disposition does not approve the candidate or authorize delivery. |
 | `recovery_scope_unchanged` | Change B so its target identity differs, then retry the exact returned `gentle-ai review recover` invocation. |
 | `staged_workspace_overlay_recovery_unavailable` | Terminal — pass `--lineage <id>` to recover an existing lineage, or drop `--workspace-overlay` and start a fresh target; otherwise run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
 | `unachievable_lens_slot` | A host reported a selected reviewer slot unachievable under current conditions. If that was transient, re-run `gentle-ai review capture-unachievable` with the same binding and `--withdraw=true` so B re-offers the same slot. If it is not transient, reduce the B candidate scope and start a new `gentle-ai review start`, or run `gentle-ai review mode disable --scope clone --cwd <repo>`. |
